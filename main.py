@@ -1,5 +1,10 @@
+from agent.graphs.simple_graph.api.app import app
+
+
 def main():
-    print("Hello from h-agent!")
+    import uvicorn
+
+    uvicorn.run(app, host="127.0.0.1", port=8000)
 
 
 if __name__ == "__main__":

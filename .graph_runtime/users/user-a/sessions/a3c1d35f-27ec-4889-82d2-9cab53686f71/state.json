@@ -1,0 +1,387 @@
+{
+  "metadata": {
+    "graph_id": "simple_demo_graph",
+    "graph_name": "Simple Graph Demo",
+    "graph_version": "1.0.0",
+    "user_id": "user-a",
+    "session_id": "a3c1d35f-27ec-4889-82d2-9cab53686f71",
+    "created_at": "2026-05-15T07:50:50.874070+00:00",
+    "updated_at": "2026-05-15T07:50:54.736368+00:00"
+  },
+  "definition": {
+    "graph_id": "simple_demo_graph",
+    "name": "Simple Graph Demo",
+    "version": "1.0.0",
+    "entrypoint": "collect_input",
+    "nodes": [
+      {
+        "node_id": "collect_input",
+        "label": "收集输入",
+        "kind": "input",
+        "depends_on": [],
+        "tool_name": null,
+        "prompt_template": null,
+        "input_mapping": {},
+        "output_key": "numbers",
+        "allow_interrupt": true,
+        "metadata": {
+          "description": "接收前端提供的两个输入参数"
+        }
+      },
+      {
+        "node_id": "add_numbers",
+        "label": "调用加法工具",
+        "kind": "tool",
+        "depends_on": [
+          "collect_input"
+        ],
+        "tool_name": "add",
+        "prompt_template": null,
+        "input_mapping": {
+          "a": "request.a",
+          "b": "request.b"
+        },
+        "output_key": "sum_result",
+        "allow_interrupt": true,
+        "metadata": {}
+      },
+      {
+        "node_id": "multiply_numbers",
+        "label": "调用乘法工具",
+        "kind": "tool",
+        "depends_on": [
+          "collect_input",
+          "add_numbers"
+        ],
+        "tool_name": "multiply",
+        "prompt_template": null,
+        "input_mapping": {
+          "a": "add_numbers",
+          "b": "request.multiplier"
+        },
+        "output_key": "product_result",
+        "allow_interrupt": true,
+        "metadata": {}
+      },
+      {
+        "node_id": "reason_about_result",
+        "label": "推理总结",
+        "kind": "reasoning",
+        "depends_on": [
+          "add_numbers",
+          "multiply_numbers"
+        ],
+        "tool_name": null,
+        "prompt_template": "请基于以下结果生成中文解释。加法结果: {sum_result}; 乘法结果: {product_result}; 用户目标: {goal}",
+        "input_mapping": {
+          "sum_result": "add_numbers",
+          "product_result": "multiply_numbers",
+          "goal": "request.goal"
+        },
+        "output_key": "final_answer",
+        "allow_interrupt": true,
+        "metadata": {}
+      }
+    ],
+    "edges": [
+      {
+        "source": "collect_input",
+        "target": "add_numbers"
+      },
+      {
+        "source": "collect_input",
+        "target": "multiply_numbers"
+      },
+      {
+        "source": "add_numbers",
+        "target": "multiply_numbers"
+      },
+      {
+        "source": "add_numbers",
+        "target": "reason_about_result"
+      },
+      {
+        "source": "multiply_numbers",
+        "target": "reason_about_result"
+      }
+    ],
+    "metadata": {
+      "purpose": "演示工具调用、流式推理、快照和会话隔离"
+    }
+  },
+  "status": "completed",
+  "current_node_id": "reason_about_result",
+  "graph_context": {
+    "request": {
+      "a": 2,
+      "b": 3,
+      "multiplier": 4,
+      "goal": "请解释工具计算和推理结果"
+    },
+    "topology": [
+      "collect_input",
+      "add_numbers",
+      "multiply_numbers",
+      "reason_about_result"
+    ],
+    "numbers": {
+      "a": 2,
+      "b": 3,
+      "multiplier": 4,
+      "goal": "请解释工具计算和推理结果"
+    },
+    "collect_input": {
+      "a": 2,
+      "b": 3,
+      "multiplier": 4,
+      "goal": "请解释工具计算和推理结果"
+    },
+    "sum_result": 5,
+    "add_numbers": 5,
+    "product_result": 20,
+    "multiply_numbers": 20,
+    "final_answer": "这是一个本地模拟推理结果。我收到了提示词: 请基于以下结果生成中文解释。加法结果: 5; 乘法结果: 20; 用户目标: 请解释工具计算和推理结果。上下文摘要: {'sum_result': 5, 'product_result': 20, 'goal': '请解释工具计算和推理结果'}。图执行已经完成工具调用并生成了可演示的流式结果。",
+    "reason_about_result": "这是一个本地模拟推理结果。我收到了提示词: 请基于以下结果生成中文解释。加法结果: 5; 乘法结果: 20; 用户目标: 请解释工具计算和推理结果。上下文摘要: {'sum_result': 5, 'product_result': 20, 'goal': '请解释工具计算和推理结果'}。图执行已经完成工具调用并生成了可演示的流式结果。"
+  },
+  "node_records": {
+    "collect_input": {
+      "node_id": "collect_input",
+      "status": "completed",
+      "started_at": "2026-05-15T07:50:50.908306+00:00",
+      "ended_at": "2026-05-15T07:50:50.911664+00:00",
+      "attempts": 1,
+      "inputs": {},
+      "output": {
+        "a": 2,
+        "b": 3,
+        "multiplier": 4,
+        "goal": "请解释工具计算和推理结果"
+      },
+      "error": null,
+      "stream_chunks": []
+    },
+    "add_numbers": {
+      "node_id": "add_numbers",
+      "status": "completed",
+      "started_at": "2026-05-15T07:50:50.937959+00:00",
+      "ended_at": "2026-05-15T07:50:50.959927+00:00",
+      "attempts": 1,
+      "inputs": {
+        "a": 2,
+        "b": 3
+      },
+      "output": 5,
+      "error": null,
+      "stream_chunks": []
+    },
+    "multiply_numbers": {
+      "node_id": "multiply_numbers",
+      "status": "completed",
+      "started_at": "2026-05-15T07:50:50.964216+00:00",
+      "ended_at": "2026-05-15T07:50:50.968731+00:00",
+      "attempts": 1,
+      "inputs": {
+        "a": 5,
+        "b": 4
+      },
+      "output": 20,
+      "error": null,
+      "stream_chunks": []
+    },
+    "reason_about_result": {
+      "node_id": "reason_about_result",
+      "status": "completed",
+      "started_at": "2026-05-15T07:50:50.973831+00:00",
+      "ended_at": "2026-05-15T07:50:54.722338+00:00",
+      "attempts": 1,
+      "inputs": {
+        "sum_result": 5,
+        "product_result": 20,
+        "goal": "请解释工具计算和推理结果"
+      },
+      "output": "这是一个本地模拟推理结果。我收到了提示词: 请基于以下结果生成中文解释。加法结果: 5; 乘法结果: 20; 用户目标: 请解释工具计算和推理结果。上下文摘要: {'sum_result': 5, 'product_result': 20, 'goal': '请解释工具计算和推理结果'}。图执行已经完成工具调用并生成了可演示的流式结果。",
+      "error": null,
+      "stream_chunks": [
+        "这",
+        "是",
+        "一",
+        "个",
+        "本",
+        "地",
+        "模",
+        "拟",
+        "推",
+        "理",
+        "结",
+        "果",
+        "。",
+        "我",
+        "收",
+        "到",
+        "了",
+        "提",
+        "示",
+        "词",
+        ":",
+        " ",
+        "请",
+        "基",
+        "于",
+        "以",
+        "下",
+        "结",
+        "果",
+        "生",
+        "成",
+        "中",
+        "文",
+        "解",
+        "释",
+        "。",
+        "加",
+        "法",
+        "结",
+        "果",
+        ":",
+        " ",
+        "5",
+        ";",
+        " ",
+        "乘",
+        "法",
+        "结",
+        "果",
+        ":",
+        " ",
+        "2",
+        "0",
+        ";",
+        " ",
+        "用",
+        "户",
+        "目",
+        "标",
+        ":",
+        " ",
+        "请",
+        "解",
+        "释",
+        "工",
+        "具",
+        "计",
+        "算",
+        "和",
+        "推",
+        "理",
+        "结",
+        "果",
+        "。",
+        "上",
+        "下",
+        "文",
+        "摘",
+        "要",
+        ":",
+        " ",
+        "{",
+        "'",
+        "s",
+        "u",
+        "m",
+        "_",
+        "r",
+        "e",
+        "s",
+        "u",
+        "l",
+        "t",
+        "'",
+        ":",
+        " ",
+        "5",
+        ",",
+        " ",
+        "'",
+        "p",
+        "r",
+        "o",
+        "d",
+        "u",
+        "c",
+        "t",
+        "_",
+        "r",
+        "e",
+        "s",
+        "u",
+        "l",
+        "t",
+        "'",
+        ":",
+        " ",
+        "2",
+        "0",
+        ",",
+        " ",
+        "'",
+        "g",
+        "o",
+        "a",
+        "l",
+        "'",
+        ":",
+        " ",
+        "'",
+        "请",
+        "解",
+        "释",
+        "工",
+        "具",
+        "计",
+        "算",
+        "和",
+        "推",
+        "理",
+        "结",
+        "果",
+        "'",
+        "}",
+        "。",
+        "图",
+        "执",
+        "行",
+        "已",
+        "经",
+        "完",
+        "成",
+        "工",
+        "具",
+        "调",
+        "用",
+        "并",
+        "生",
+        "成",
+        "了",
+        "可",
+        "演",
+        "示",
+        "的",
+        "流",
+        "式",
+        "结",
+        "果",
+        "。"
+      ]
+    }
+  },
+  "completed_order": [
+    "collect_input",
+    "add_numbers",
+    "multiply_numbers",
+    "reason_about_result"
+  ],
+  "event_sequence": 183,
+  "snapshot_sequence": 10,
+  "last_error": null,
+  "restored_from_snapshot": null
+}

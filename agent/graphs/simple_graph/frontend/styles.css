@@ -1,0 +1,58 @@
+body {
+  font-family: Arial, sans-serif;
+  background: #0f172a;
+  color: #e2e8f0;
+  margin: 0;
+}
+
+.container {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  padding: 24px;
+}
+
+.panel {
+  background: #1e293b;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.25);
+}
+
+form,
+.actions {
+  display: grid;
+  gap: 8px;
+}
+
+label {
+  display: grid;
+  gap: 4px;
+}
+
+input,
+button {
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: none;
+}
+
+button {
+  background: #3b82f6;
+  color: white;
+  cursor: pointer;
+}
+
+pre,
+ul {
+  background: #020617;
+  border-radius: 8px;
+  padding: 12px;
+  min-height: 160px;
+  overflow: auto;
+}
+
+.meta {
+  margin-top: 12px;
+  color: #93c5fd;
+}

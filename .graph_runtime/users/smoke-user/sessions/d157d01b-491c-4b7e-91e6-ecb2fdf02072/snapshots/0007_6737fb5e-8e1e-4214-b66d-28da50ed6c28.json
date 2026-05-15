@@ -1,0 +1,100 @@
+{
+  "snapshot_id": "6737fb5e-8e1e-4214-b66d-28da50ed6c28",
+  "sequence": 7,
+  "reason": "node_completed:multiply_numbers",
+  "created_at": "2026-05-15T07:35:16.566741+00:00",
+  "graph_status": "running",
+  "current_node_id": "multiply_numbers",
+  "graph_context": {
+    "request": {
+      "a": 2,
+      "b": 3,
+      "multiplier": 4,
+      "goal": "smoke"
+    },
+    "topology": [
+      "collect_input",
+      "add_numbers",
+      "multiply_numbers",
+      "reason_about_result"
+    ],
+    "numbers": {
+      "a": 2,
+      "b": 3,
+      "multiplier": 4,
+      "goal": "smoke"
+    },
+    "collect_input": {
+      "a": 2,
+      "b": 3,
+      "multiplier": 4,
+      "goal": "smoke"
+    },
+    "sum_result": 5,
+    "add_numbers": 5,
+    "product_result": 20,
+    "multiply_numbers": 20
+  },
+  "node_records": {
+    "collect_input": {
+      "node_id": "collect_input",
+      "status": "completed",
+      "started_at": "2026-05-15T07:35:16.548417+00:00",
+      "ended_at": "2026-05-15T07:35:16.550226+00:00",
+      "attempts": 1,
+      "inputs": {},
+      "output": {
+        "a": 2,
+        "b": 3,
+        "multiplier": 4,
+        "goal": "smoke"
+      },
+      "error": null,
+      "stream_chunks": []
+    },
+    "add_numbers": {
+      "node_id": "add_numbers",
+      "status": "completed",
+      "started_at": "2026-05-15T07:35:16.554035+00:00",
+      "ended_at": "2026-05-15T07:35:16.560184+00:00",
+      "attempts": 1,
+      "inputs": {
+        "a": 2,
+        "b": 3
+      },
+      "output": 5,
+      "error": null,
+      "stream_chunks": []
+    },
+    "multiply_numbers": {
+      "node_id": "multiply_numbers",
+      "status": "completed",
+      "started_at": "2026-05-15T07:35:16.563119+00:00",
+      "ended_at": "2026-05-15T07:35:16.566236+00:00",
+      "attempts": 1,
+      "inputs": {
+        "a": 5,
+        "b": 4
+      },
+      "output": 20,
+      "error": null,
+      "stream_chunks": []
+    },
+    "reason_about_result": {
+      "node_id": "reason_about_result",
+      "status": "pending",
+      "started_at": null,
+      "ended_at": null,
+      "attempts": 0,
+      "inputs": {},
+      "output": null,
+      "error": null,
+      "stream_chunks": []
+    }
+  },
+  "completed_order": [
+    "collect_input",
+    "add_numbers",
+    "multiply_numbers"
+  ]
+}

@@ -1,0 +1,210 @@
+{
+  "metadata": {
+    "graph_id": "simple_demo_graph",
+    "graph_name": "Simple Graph Demo",
+    "graph_version": "1.0.0",
+    "user_id": "test-123",
+    "session_id": "9b3f8b1d-7741-4d63-8643-1ed51782eb0a",
+    "created_at": "2026-05-15T07:48:00.011620+00:00",
+    "updated_at": "2026-05-15T07:50:01.455895+00:00"
+  },
+  "definition": {
+    "graph_id": "simple_demo_graph",
+    "name": "Simple Graph Demo",
+    "version": "1.0.0",
+    "entrypoint": "collect_input",
+    "nodes": [
+      {
+        "node_id": "collect_input",
+        "label": "收集输入",
+        "kind": "input",
+        "depends_on": [],
+        "tool_name": null,
+        "prompt_template": null,
+        "input_mapping": {},
+        "output_key": "numbers",
+        "allow_interrupt": true,
+        "metadata": {
+          "description": "接收前端提供的两个输入参数"
+        }
+      },
+      {
+        "node_id": "add_numbers",
+        "label": "调用加法工具",
+        "kind": "tool",
+        "depends_on": [
+          "collect_input"
+        ],
+        "tool_name": "add",
+        "prompt_template": null,
+        "input_mapping": {
+          "a": "request.a",
+          "b": "request.b"
+        },
+        "output_key": "sum_result",
+        "allow_interrupt": true,
+        "metadata": {}
+      },
+      {
+        "node_id": "multiply_numbers",
+        "label": "调用乘法工具",
+        "kind": "tool",
+        "depends_on": [
+          "collect_input",
+          "add_numbers"
+        ],
+        "tool_name": "multiply",
+        "prompt_template": null,
+        "input_mapping": {
+          "a": "add_numbers",
+          "b": "request.multiplier"
+        },
+        "output_key": "product_result",
+        "allow_interrupt": true,
+        "metadata": {}
+      },
+      {
+        "node_id": "reason_about_result",
+        "label": "推理总结",
+        "kind": "reasoning",
+        "depends_on": [
+          "add_numbers",
+          "multiply_numbers"
+        ],
+        "tool_name": null,
+        "prompt_template": "请基于以下结果生成中文解释。加法结果: {sum_result}; 乘法结果: {product_result}; 用户目标: {goal}",
+        "input_mapping": {
+          "sum_result": "add_numbers",
+          "product_result": "multiply_numbers",
+          "goal": "request.goal"
+        },
+        "output_key": "final_answer",
+        "allow_interrupt": true,
+        "metadata": {}
+      }
+    ],
+    "edges": [
+      {
+        "source": "collect_input",
+        "target": "add_numbers"
+      },
+      {
+        "source": "collect_input",
+        "target": "multiply_numbers"
+      },
+      {
+        "source": "add_numbers",
+        "target": "multiply_numbers"
+      },
+      {
+        "source": "add_numbers",
+        "target": "reason_about_result"
+      },
+      {
+        "source": "multiply_numbers",
+        "target": "reason_about_result"
+      }
+    ],
+    "metadata": {
+      "purpose": "演示工具调用、流式推理、快照和会话隔离"
+    }
+  },
+  "status": "restored",
+  "current_node_id": "reason_about_result",
+  "graph_context": {
+    "request": {
+      "a": 2,
+      "b": 3,
+      "multiplier": 4,
+      "goal": "请解释工具计算和推理结果"
+    },
+    "topology": [
+      "collect_input",
+      "add_numbers",
+      "multiply_numbers",
+      "reason_about_result"
+    ],
+    "numbers": {
+      "a": 2,
+      "b": 3,
+      "multiplier": 4,
+      "goal": "请解释工具计算和推理结果"
+    },
+    "collect_input": {
+      "a": 2,
+      "b": 3,
+      "multiplier": 4,
+      "goal": "请解释工具计算和推理结果"
+    },
+    "sum_result": 5,
+    "add_numbers": 5,
+    "product_result": 20,
+    "multiply_numbers": 20
+  },
+  "node_records": {
+    "collect_input": {
+      "node_id": "collect_input",
+      "status": "completed",
+      "started_at": "2026-05-15T07:48:00.037419+00:00",
+      "ended_at": "2026-05-15T07:48:00.052966+00:00",
+      "attempts": 1,
+      "inputs": {},
+      "output": {
+        "a": 2,
+        "b": 3,
+        "multiplier": 4,
+        "goal": "请解释工具计算和推理结果"
+      },
+      "error": null,
+      "stream_chunks": []
+    },
+    "add_numbers": {
+      "node_id": "add_numbers",
+      "status": "completed",
+      "started_at": "2026-05-15T07:48:00.057940+00:00",
+      "ended_at": "2026-05-15T07:48:00.061977+00:00",
+      "attempts": 1,
+      "inputs": {
+        "a": 2,
+        "b": 3
+      },
+      "output": 5,
+      "error": null,
+      "stream_chunks": []
+    },
+    "multiply_numbers": {
+      "node_id": "multiply_numbers",
+      "status": "completed",
+      "started_at": "2026-05-15T07:48:00.065649+00:00",
+      "ended_at": "2026-05-15T07:48:00.068896+00:00",
+      "attempts": 1,
+      "inputs": {
+        "a": 5,
+        "b": 4
+      },
+      "output": 20,
+      "error": null,
+      "stream_chunks": []
+    },
+    "reason_about_result": {
+      "node_id": "reason_about_result",
+      "status": "running",
+      "started_at": "2026-05-15T07:48:00.072244+00:00",
+      "ended_at": null,
+      "attempts": 1,
+      "inputs": {},
+      "output": null,
+      "error": null,
+      "stream_chunks": []
+    }
+  },
+  "completed_order": [
+    "collect_input",
+    "add_numbers",
+    "multiply_numbers"
+  ],
+  "event_sequence": 101,
+  "snapshot_sequence": 9,
+  "last_error": "[WinError 5] 拒绝访问。: 'C:\\\\HGJ-T\\\\H-AGENT\\\\.graph_runtime\\\\users\\\\test-123\\\\sessions\\\\9b3f8b1d-7741-4d63-8643-1ed51782eb0a\\\\state.json.2958ed54d99c41969c41a9a2d0b807cc.tmp' -> 'C:\\\\HGJ-T\\\\H-AGENT\\\\.graph_runtime\\\\users\\\\test-123\\\\sessions\\\\9b3f8b1d-7741-4d63-8643-1ed51782eb0a\\\\state.json'",
+  "restored_from_snapshot": "92d31555-69f5-4389-ab24-220a009370da"
+}

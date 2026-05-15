@@ -1,0 +1,88 @@
+{
+  "snapshot_id": "19513c35-8c9e-4a3c-8e50-341d8582938a",
+  "sequence": 3,
+  "reason": "node_completed:collect_input",
+  "created_at": "2026-05-15T07:50:50.929395+00:00",
+  "graph_status": "running",
+  "current_node_id": "collect_input",
+  "graph_context": {
+    "request": {
+      "a": 2,
+      "b": 3,
+      "multiplier": 4,
+      "goal": "请解释工具计算和推理结果"
+    },
+    "topology": [
+      "collect_input",
+      "add_numbers",
+      "multiply_numbers",
+      "reason_about_result"
+    ],
+    "numbers": {
+      "a": 2,
+      "b": 3,
+      "multiplier": 4,
+      "goal": "请解释工具计算和推理结果"
+    },
+    "collect_input": {
+      "a": 2,
+      "b": 3,
+      "multiplier": 4,
+      "goal": "请解释工具计算和推理结果"
+    }
+  },
+  "node_records": {
+    "collect_input": {
+      "node_id": "collect_input",
+      "status": "completed",
+      "started_at": "2026-05-15T07:50:50.908306+00:00",
+      "ended_at": "2026-05-15T07:50:50.911664+00:00",
+      "attempts": 1,
+      "inputs": {},
+      "output": {
+        "a": 2,
+        "b": 3,
+        "multiplier": 4,
+        "goal": "请解释工具计算和推理结果"
+      },
+      "error": null,
+      "stream_chunks": []
+    },
+    "add_numbers": {
+      "node_id": "add_numbers",
+      "status": "pending",
+      "started_at": null,
+      "ended_at": null,
+      "attempts": 0,
+      "inputs": {},
+      "output": null,
+      "error": null,
+      "stream_chunks": []
+    },
+    "multiply_numbers": {
+      "node_id": "multiply_numbers",
+      "status": "pending",
+      "started_at": null,
+      "ended_at": null,
+      "attempts": 0,
+      "inputs": {},
+      "output": null,
+      "error": null,
+      "stream_chunks": []
+    },
+    "reason_about_result": {
+      "node_id": "reason_about_result",
+      "status": "pending",
+      "started_at": null,
+      "ended_at": null,
+      "attempts": 0,
+      "inputs": {},
+      "output": null,
+      "error": null,
+      "stream_chunks": []
+    }
+  },
+  "completed_order": [
+    "collect_input"
+  ]
+}

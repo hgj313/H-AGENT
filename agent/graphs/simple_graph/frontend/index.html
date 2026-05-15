@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Simple Graph Demo</title>
+    <link rel="stylesheet" href="/frontend/styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <section class="panel">
+        <h1>Simple Graph 演示</h1>
+        <p>支持多用户、多会话、interrupt、快照回溯、流式事件与工具调用全链路展示。</p>
+        <form id="session-form">
+          <label>用户 ID <input name="user_id" value="user-a" /></label>
+          <label>a <input name="a" type="number" value="2" /></label>
+          <label>b <input name="b" type="number" value="3" /></label>
+          <label>multiplier <input name="multiplier" type="number" value="4" /></label>
+          <label>goal <input name="goal" value="请解释工具计算和推理结果" /></label>
+          <button type="submit">创建并启动会话</button>
+        </form>
+        <div class="actions">
+          <button id="pause-btn">暂停</button>
+          <button id="resume-btn">继续</button>
+          <button id="update-btn">修改目标</button>
+          <button id="refresh-btn">刷新状态</button>
+          <button id="snapshots-btn">加载快照</button>
+        </div>
+        <div id="meta" class="meta"></div>
+      </section>
+      <section class="panel">
+        <h2>流式事件</h2>
+        <pre id="events"></pre>
+      </section>
+      <section class="panel">
+        <h2>状态视图</h2>
+        <pre id="state"></pre>
+      </section>
+      <section class="panel">
+        <h2>快照列表</h2>
+        <ul id="snapshots"></ul>
+      </section>
+    </main>
+    <script src="/frontend/app.js"></script>
+  </body>
+  </html>

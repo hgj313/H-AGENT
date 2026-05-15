@@ -1,0 +1,69 @@
+{
+  "snapshot_id": "dda2d470-7775-44a3-895b-9de2d1ffd42a",
+  "sequence": 1,
+  "reason": "graph_started",
+  "created_at": "2026-05-15T07:35:16.547261+00:00",
+  "graph_status": "running",
+  "current_node_id": null,
+  "graph_context": {
+    "request": {
+      "a": 2,
+      "b": 3,
+      "multiplier": 4,
+      "goal": "smoke"
+    },
+    "topology": [
+      "collect_input",
+      "add_numbers",
+      "multiply_numbers",
+      "reason_about_result"
+    ]
+  },
+  "node_records": {
+    "collect_input": {
+      "node_id": "collect_input",
+      "status": "ready",
+      "started_at": null,
+      "ended_at": null,
+      "attempts": 0,
+      "inputs": {},
+      "output": null,
+      "error": null,
+      "stream_chunks": []
+    },
+    "add_numbers": {
+      "node_id": "add_numbers",
+      "status": "pending",
+      "started_at": null,
+      "ended_at": null,
+      "attempts": 0,
+      "inputs": {},
+      "output": null,
+      "error": null,
+      "stream_chunks": []
+    },
+    "multiply_numbers": {
+      "node_id": "multiply_numbers",
+      "status": "pending",
+      "started_at": null,
+      "ended_at": null,
+      "attempts": 0,
+      "inputs": {},
+      "output": null,
+      "error": null,
+      "stream_chunks": []
+    },
+    "reason_about_result": {
+      "node_id": "reason_about_result",
+      "status": "pending",
+      "started_at": null,
+      "ended_at": null,
+      "attempts": 0,
+      "inputs": {},
+      "output": null,
+      "error": null,
+      "stream_chunks": []
+    }
+  },
+  "completed_order": []
+}
