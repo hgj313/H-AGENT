@@ -4,7 +4,7 @@ from typing import Optional
 from persistence.vector.protocol.query import BaseVectorSearcher
 from persistence.vector.protocol.engine import BaseSearchEngine
 from persistence.vector.protocol.storage import BaseVectorStorage
-from persistence.vector.implementation.domain import QueryResult
+from persistence.vector.implementation.domain.business import BusinessQueryResult
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ class ChromaVectorSearcher(BaseVectorSearcher):
         query_text: str,
         k: int = 4,
         filter_metadata: Optional[dict] = None
-    ) -> list[QueryResult]:
+    ) -> list[BusinessQueryResult]:
         vectors = self._embedder.embed_documents([query_text])
         query_vector = vectors[0]
         
@@ -57,7 +57,7 @@ class ChromaVectorSearcher(BaseVectorSearcher):
     def _convert_from_engine_results(
         self,
         raw_results: list[tuple[str, list[float]]]
-    ) -> list[QueryResult]:
+    ) -> list[BusinessQueryResult]:
         if not raw_results:
             return []
         
@@ -66,12 +66,12 @@ class ChromaVectorSearcher(BaseVectorSearcher):
         id_to_vector = {v.id: v for v in vectors}
         
         return [
-            QueryResult(
+            BusinessQueryResult(
+                id=id_,
                 content=id_to_vector[id_].content if id_ in id_to_vector else "",
                 score=score_vector[0],
                 metadata=id_to_vector[id_].metadata if id_ in id_to_vector else {},
-                rank=i,
-                id=id_
+                rank=i
             )
             for i, (id_, score_vector) in enumerate(raw_results)
         ]
@@ -82,7 +82,7 @@ class ChromaVectorSearcher(BaseVectorSearcher):
         k: int = 4,
         where_filter: Optional[dict] = None,
         where_document: Optional[dict] = None
-    ) -> list[QueryResult]:
+    ) -> list[BusinessQueryResult]:
         vectors = self._embedder.embed_documents([query_text])
         query_vector = vectors[0]
         

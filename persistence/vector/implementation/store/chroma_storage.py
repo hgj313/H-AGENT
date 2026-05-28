@@ -1,12 +1,12 @@
 import logging
 import os
-from typing import Optional
+from typing import Optional, Literal
 
 import chromadb
 from chromadb.config import Settings, DEFAULT_TENANT, DEFAULT_DATABASE
 
 from persistence.vector.protocol.storage import BaseVectorStorage
-from persistence.vector.implementation.domain import VectorItem
+from persistence.vector.implementation.domain.engine import EngineVectorItem
 from persistence.vector.implementation.domain.id_generator import VectorIdGenerator
 
 logger = logging.getLogger(__name__)
@@ -84,10 +84,15 @@ class ChromaVectorStorage(BaseVectorStorage):
         return self._collection.count()
     
     @property
+    def distance_metric(self) -> Literal["cosine", "l2", "ip"]:
+        collection_metadata = self._collection.metadata or {}
+        return collection_metadata.get("hnsw:space", "cosine")
+    
+    @property
     def collection_name(self) -> str:
         return self._collection_name
     
-    def add_vectors(self, items: list[VectorItem]) -> int:
+    def add_vectors(self, items: list[EngineVectorItem]) -> int:
         if not items:
             return 0
         
@@ -99,10 +104,10 @@ class ChromaVectorStorage(BaseVectorStorage):
             
             if self._auto_generate_id and not item_id:
                 item_id = VectorIdGenerator.generate(item.content)
-                item = VectorItem(
+                item = EngineVectorItem(
                     id=item_id,
-                    vector=item.vector,
                     content=item.content,
+                    vector=item.vector,
                     metadata=item.metadata,
                     chunk_index=item.chunk_index,
                     chunk_type=item.chunk_type
@@ -126,6 +131,8 @@ class ChromaVectorStorage(BaseVectorStorage):
         documents = [item.content for item in processed_items]
         metadatas = [item.metadata for item in processed_items]
         
+        logger.debug(f"Adding vectors - count: {len(ids)}, embeddings sample: {embeddings[0][:5] if embeddings and embeddings[0] else None}")
+        
         self._collection.add(
             ids=ids,
             embeddings=embeddings,
@@ -139,27 +146,27 @@ class ChromaVectorStorage(BaseVectorStorage):
         
         return total
     
-    def get_vectors(self, ids: list[str]) -> list[VectorItem]:
+    def get_vectors(self, ids: list[str]) -> list[EngineVectorItem]:
         if not ids:
             return []
         
-        results = self._collection.get(ids=ids)
+        results = self._collection.get(
+            ids=ids,
+            include=["embeddings", "documents", "metadatas"]
+        )
         
         if not results or not results.get('ids'):
+            logger.debug(f"No results found for ids: {ids}")
             return []
+        
+        logger.debug(f"Get results - ids count: {len(results.get('ids', []))}")
+        logger.debug(f"Get results - embeddings type: {type(results.get('embeddings'))}")
+        logger.debug(f"Get results - embeddings value: {results.get('embeddings')}")
         
         items = []
         for i, vector_id in enumerate(results['ids']):
-            vector = results['embeddings'][i] if 'embeddings' in results else None
-            content = results['documents'][i] if 'documents' in results else ""
-            metadata = results['metadatas'][i] if 'metadatas' in results else {}
-            
-            items.append(VectorItem(
-                id=vector_id,
-                vector=vector,
-                content=content,
-                metadata=metadata
-            ))
+            item = EngineVectorItem.from_chroma_result(vector_id, i, results)
+            items.append(item)
         
         return items
     
@@ -171,7 +178,7 @@ class ChromaVectorStorage(BaseVectorStorage):
         logger.info(f"Deleted {len(ids)} vectors from ChromaDB collection {self._collection_name}")
         return len(ids)
     
-    def update_vectors(self, items: list[VectorItem]) -> int:
+    def update_vectors(self, items: list[EngineVectorItem]) -> int:
         if not items:
             return 0
         
@@ -189,35 +196,3 @@ class ChromaVectorStorage(BaseVectorStorage):
         
         logger.info(f"Updated {len(items)} vectors in ChromaDB collection {self._collection_name}")
         return len(items)
-    
-    def search(
-        self,
-        query_vector: list[float],
-        k: int = 4,
-        filter_metadata: Optional[dict] = None
-    ) -> list[tuple[VectorItem, float]]:
-        results = self._collection.query(
-            query_embeddings=[query_vector],
-            n_results=k,
-            where=filter_metadata
-        )
-        
-        if not results or not results.get('ids'):
-            return []
-        
-        items_with_scores = []
-        for i, vector_id in enumerate(results['ids'][0]):
-            vector = results['embeddings'][0][i] if 'embeddings' in results else None
-            content = results['documents'][0][i] if 'documents' in results else ""
-            metadata = results['metadatas'][0][i] if 'metadatas' in results else {}
-            distance = results['distances'][0][i] if 'distances' in results else 0.0
-            
-            item = VectorItem(
-                id=vector_id,
-                vector=vector,
-                content=content,
-                metadata=metadata
-            )
-            items_with_scores.append((item, distance))
-        
-        return items_with_scores

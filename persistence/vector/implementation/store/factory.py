@@ -1,7 +1,7 @@
 """
 存储层工厂 - 管理存储实例
 """
-from persistence.vector.implementation.store.chroma_store import ChromaVectorStorage
+from persistence.vector.implementation.store.chroma_storage import ChromaVectorStorage
 
 
 class VectorStoreFactory:

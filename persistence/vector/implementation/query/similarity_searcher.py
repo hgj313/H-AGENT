@@ -3,7 +3,7 @@ from typing import Optional
 
 from persistence.vector.protocol.query import BaseVectorSearcher
 from persistence.vector.protocol.engine import BaseSearchEngine
-from persistence.vector.implementation.domain import QueryResult
+from persistence.vector.implementation.domain import BusinessQueryResult
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +31,7 @@ class SimilaritySearcher(BaseVectorSearcher):
         query_text: str,
         k: int = 4,
         filter_metadata: Optional[dict] = None
-    ) -> list[QueryResult]:
+    ) -> list[BusinessQueryResult]:
         vectors = self._embedder.embed_documents([query_text])
         query_vector = vectors[0]
         
@@ -53,7 +53,7 @@ class SimilaritySearcher(BaseVectorSearcher):
     def _convert_from_engine_results(
         self,
         raw_results: list[tuple[str, list[float]]]
-    ) -> list[QueryResult]:
+    ) -> list[BusinessQueryResult]:
         if not raw_results:
             return []
         
@@ -62,7 +62,7 @@ class SimilaritySearcher(BaseVectorSearcher):
         id_to_vector = {v.id: v for v in vectors}
         
         return [
-            QueryResult(
+            BusinessQueryResult(
                 content=id_to_vector[id_].content if id_ in id_to_vector else "",
                 score=score_vector[0],
                 metadata=id_to_vector[id_].metadata if id_ in id_to_vector else {},

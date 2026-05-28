@@ -9,7 +9,7 @@ except ImportError:
     np = None
 
 
-@dataclass 
+@dataclass
 class ChromaGetResult:
     """ChromaDB Get 结果 - 耦合层：完整映射 ChromaDB GetResult API"""
     ids: list[str]

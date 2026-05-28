@@ -11,8 +11,8 @@ import logging
 from typing import Any, Callable, Optional
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from ..chunker.chunker_base import BaseChunker
-from ..domain import ChunkResult
+from persistence.vector.implementation.chunker.chunker_base import BaseChunker
+from persistence.vector.implementation.domain.business import BusinessChunkResult
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +99,7 @@ class MarkdownChunker(BaseChunker):
         self,
         text: str,
         metadata: dict[str, Any] | None = None
-    ) -> list[ChunkResult]:
+    ) -> list[BusinessChunkResult]:
         """
         执行切分
 
@@ -138,7 +138,7 @@ class MarkdownChunker(BaseChunker):
             section_tokens = self._token_count(section_text)
 
             if section_tokens <= self.chunk_size:
-                chunk = ChunkResult(
+                chunk = BusinessChunkResult(
                     content=section_text.strip(),
                     metadata=combined_meta,
                     chunk_index=chunk_index,
@@ -155,7 +155,7 @@ class MarkdownChunker(BaseChunker):
                 )
 
                 for section_doc in section_docs:
-                    chunk = ChunkResult(
+                    chunk = BusinessChunkResult(
                         content=section_doc.page_content,
                         metadata={
                             **section_doc.metadata,
@@ -183,7 +183,7 @@ class MarkdownChunker(BaseChunker):
 
         return all_chunks
 
-    def _merge_small_chunks(self, chunks: list[ChunkResult]) -> list[ChunkResult]:
+    def _merge_small_chunks(self, chunks: list[BusinessChunkResult]) -> list[BusinessChunkResult]:
         """
         合并只有标题的小 chunks
         """
@@ -223,7 +223,7 @@ class MarkdownChunker(BaseChunker):
 
         return merged
 
-    def _combine_chunks(self, chunks: list[ChunkResult]) -> ChunkResult | None:
+    def _combine_chunks(self, chunks: list[BusinessChunkResult]) -> BusinessChunkResult | None:
         """
         将多个 chunks 合并为一个
         """
@@ -237,7 +237,7 @@ class MarkdownChunker(BaseChunker):
         first_chunk = chunks[0]
         combined_metadata = dict(first_chunk.metadata)
 
-        return ChunkResult(
+        return BusinessChunkResult(
             content=combined_content,
             metadata=combined_metadata,
             chunk_type="text",
@@ -323,13 +323,13 @@ class MarkdownChunker(BaseChunker):
         self,
         text: str,
         base_metadata: dict[str, Any]
-    ) -> list[ChunkResult]:
+    ) -> list[BusinessChunkResult]:
         """提取表格并创建独立的 table chunks"""
         table_chunks = []
         tables = self._extract_tables(text)
 
         for i, table in enumerate(tables):
-            table_chunks.append(ChunkResult(
+            table_chunks.append(BusinessChunkResult(
                 content=table,
                 metadata=self._create_metadata(
                     base_metadata,
