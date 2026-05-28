@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Optional, Any, Callable, Protocol, runtime_checkable
 
-from persistence.vector.implementation.domain.VectorItem import VectorItem
+from persistence.vector.implementation.domain.engine import EngineVectorItem
 from persistence.protocols.transaction.base import (
     BaseTransaction,
     BaseTransactionManager,
@@ -41,7 +41,7 @@ class BaseVectorTransaction(BaseTransaction):
         pass
     
     @abstractmethod
-    def add_vectors(self, items: list[VectorItem]) -> bool:
+    def add_vectors(self, items: list[EngineVectorItem]) -> bool:
         """添加向量"""
         pass
     
@@ -51,7 +51,7 @@ class BaseVectorTransaction(BaseTransaction):
         pass
     
     @abstractmethod
-    def update_vectors(self, items: list[VectorItem]) -> bool:
+    def update_vectors(self, items: list[EngineVectorItem]) -> bool:
         """更新向量"""
         pass
     
@@ -61,7 +61,7 @@ class BaseVectorTransaction(BaseTransaction):
         query_vector: list[float],
         k: int = 4,
         filter_metadata: Optional[dict] = None
-    ) -> list[tuple[VectorItem, float]]:
+    ) -> list[tuple[EngineVectorItem, float]]:
         """搜索向量"""
         pass
 
