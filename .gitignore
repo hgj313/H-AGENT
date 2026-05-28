@@ -29,3 +29,9 @@ ENV/
 
 .DS_Store
 Thumbs.db
+
+.claude/
+.graph_runtime/
+persistence/data/chroma_db/
+test_data/
+persistence/vector/implementation/embedding/models/
