@@ -2,14 +2,14 @@ from abc import ABC, abstractmethod
 from typing import Any
 
 from persistence.vector.protocol.chunker import BaseChunker as ProtocolBaseChunker
-from persistence.vector.implementation.domain import ChunkResult
+from persistence.vector.implementation.domain.business import BusinessChunkResult
 
 
 class BaseChunker(ProtocolBaseChunker):
     """切分器基类"""
 
     @abstractmethod
-    def chunk(self, text: str, metadata: dict[str, Any] | None = None) -> list[ChunkResult]:
+    def chunk(self, text: str, metadata: dict[str, Any] | None = None) -> list[BusinessChunkResult]:
         """
         执行切分
 

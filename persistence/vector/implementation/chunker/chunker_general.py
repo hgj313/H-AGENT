@@ -9,8 +9,8 @@ import logging
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from typing import Any, Callable,Optional
 
-from ..chunker.chunker_base import BaseChunker
-from ..domain import ChunkResult
+from persistence.vector.implementation.chunker.chunker_base import BaseChunker
+from persistence.vector.implementation.domain.business import BusinessChunkResult
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +79,7 @@ class GeneralChunker(BaseChunker):
         self,
         text: str,
         metadata: dict[str, Any] | None = None
-    ) -> list[ChunkResult]:
+    ) -> list[BusinessChunkResult]:
         """执行递归切分"""
         if not text or not text.strip():
             return []
@@ -90,7 +90,7 @@ class GeneralChunker(BaseChunker):
         )
 
         return [
-            ChunkResult(
+            BusinessChunkResult(
                 content=doc.page_content,
                 metadata={
                     **doc.metadata,
