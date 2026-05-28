@@ -8,6 +8,6 @@ class EngineSearchResult:
     id: str
     distance: float
     similarity: float
-    document: str = ""
+    content: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
     embedding: Optional[list[float]] = None

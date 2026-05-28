@@ -1,10 +1,10 @@
 import os
 from persistence.vector.implementation.chunker import GeneralChunker, MarkdownChunker
-from persistence.vector.implementation.domain import VectorItem, VectorIdGenerator
+from persistence.vector.implementation.domain import EngineVectorItem, VectorIdGenerator
 from persistence.vector.implementation.store import VectorStoreFactory
 from persistence.vector.implementation.query import ChromaVectorSearcher
 from persistence.vector.implementation.engine import SearchEngineFactory
-from persistence.vector.implementation.pipeline_factory import PipelineFactory
+from persistence.vector.implementation.pipeline import PipelineFactory
 from persistence.vector.implementation.embedding import EmbedderFactory
 from persistence.vector.implementation.transaction import (
     ChromaVectorTransactionManager,
@@ -36,7 +36,7 @@ searcher = ChromaVectorSearcher(
     search_engine=search_engine
 )
 id_generator = VectorIdGenerator()
-pipeline = PipelineFactory.create(
+pipeline = PipelineFactory.create_sync(
     embedder=embedder,
     chunker=chunker,
     storage=storage,

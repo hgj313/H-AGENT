@@ -14,7 +14,7 @@ from persistence.vector.protocol.vector_transaction import (
     BaseVectorTransactionManager,
     VectorStorageConnection
 )
-from persistence.vector.implementation.domain.VectorItem import VectorItem
+from persistence.vector.implementation.domain.engine import EngineVectorItem
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +33,8 @@ class UnitOfWorkVectorTransaction(BaseVectorTransaction):
         self._options = options or TransactionOptions()
         self._state = TransactionState.INACTIVE
         self._savepoints: dict[str, dict] = {}
-        self._added_items: list[VectorItem] = []
-        self._updated_items: list[VectorItem] = []
+        self._added_items: list[EngineVectorItem] = []
+        self._updated_items: list[EngineVectorItem] = []
         self._deleted_ids: list[str] = []
         
         logger.info(f"UnitOfWorkVectorTransaction created: {self._transaction_id}")
@@ -146,7 +146,7 @@ class UnitOfWorkVectorTransaction(BaseVectorTransaction):
             del self._savepoints[name]
             logger.debug(f"Savepoint '{name}' released")
     
-    def add_vectors(self, items: list[VectorItem]) -> bool:
+    def add_vectors(self, items: list[EngineVectorItem]) -> bool:
         if not self.is_active:
             logger.warning("Cannot add vectors outside active transaction")
             return False
@@ -164,7 +164,7 @@ class UnitOfWorkVectorTransaction(BaseVectorTransaction):
         logger.debug(f"Marked {len(ids)} vectors for deletion")
         return True
     
-    def update_vectors(self, items: list[VectorItem]) -> bool:
+    def update_vectors(self, items: list[EngineVectorItem]) -> bool:
         if not self.is_active:
             logger.warning("Cannot update vectors outside active transaction")
             return False
@@ -178,7 +178,7 @@ class UnitOfWorkVectorTransaction(BaseVectorTransaction):
         query_vector: list[float],
         k: int = 4,
         filter_metadata: Optional[dict] = None
-    ) -> list[tuple[VectorItem, float]]:
+    ) -> list[tuple[EngineVectorItem, float]]:
         raise NotImplementedError("Search should be done through QueryEngine, not storage transaction")
     
     def _clear_pending(self) -> None:
