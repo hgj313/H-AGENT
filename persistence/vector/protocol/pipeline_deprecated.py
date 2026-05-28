@@ -1,6 +1,9 @@
+"""
+第一版的混合编排协议已废弃，原协议被拆分为异步和同步协议
+"""
+
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Optional, Any, Callable
-from typing_extensions import Self
+from typing import TYPE_CHECKING, Optional, Any
 
 from persistence.vector.implementation.domain.ChunkResult import ChunkResult
 from persistence.vector.implementation.domain.QueryResult import QueryResult

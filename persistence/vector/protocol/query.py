@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from persistence.vector.implementation.domain.QueryResult import QueryResult
+from persistence.vector.implementation.domain.business import BusinessQueryResult
 from persistence.vector.protocol.embedding import BaseEmbedder
 from persistence.vector.protocol.storage import BaseVectorStorage
 from persistence.vector.protocol.engine import BaseSearchEngine
@@ -27,7 +27,7 @@ class BaseVectorSearcher(ABC):
         query_text: str,
         k: int = 4,
         filter_metadata: Optional[dict] = None
-    ) -> list[QueryResult]:
+    ) -> list[BusinessQueryResult]:
         pass
 
     def _embed_query(self, text: str) -> list[float]:
@@ -38,14 +38,14 @@ class BaseVectorSearcher(ABC):
         self,
         items: list,
         scores: list[float]
-    ) -> list[QueryResult]:
+    ) -> list[BusinessQueryResult]:
         return [
-            QueryResult(
+            BusinessQueryResult(
+                id=item.id,
                 content=item.content,
                 score=scores[i],
                 metadata=item.metadata,
-                rank=i,
-                id=item.id
+                rank=i
             )
             for i, item in enumerate(items)
         ]

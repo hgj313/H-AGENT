@@ -1,7 +1,11 @@
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, Literal
 
 class BaseSearchEngine(ABC):
+    @property
+    def distance_metric(self) -> Literal["cosine", "l2", "ip"]:
+        return "cosine"
+    
     @abstractmethod
     def search(
         self,

@@ -6,11 +6,12 @@ from persistence.vector.protocol.vector_transaction import (
 
 from persistence.vector.protocol.embedding import BaseEmbedder
 from persistence.vector.protocol.storage import BaseVectorStorage
-from persistence.vector.protocol.query import BaseVectorSearcher, QueryResult
+from persistence.vector.protocol.query import BaseVectorSearcher
 from persistence.vector.protocol.engine import BaseSearchEngine
 from persistence.vector.protocol.pipeline import (
     BaseVectorPipeline,
-    AsyncBaseVectorPipeline,
+    SyncVectorPipelineProtocol,
+    AsyncVectorPipelineProtocol,
     PipelineConfig,
     PipelineStats,
     PipelineProgressCallback,
@@ -28,7 +29,8 @@ __all__ = [
     "QueryResult",
     "BaseSearchEngine",
     "BaseVectorPipeline",
-    "AsyncBaseVectorPipeline",
+    "SyncVectorPipelineProtocol",
+    "AsyncVectorPipelineProtocol",
     "PipelineConfig",
     "PipelineStats",
     "PipelineProgressCallback",

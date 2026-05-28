@@ -1,12 +1,12 @@
 from abc import ABC, abstractmethod
 from typing import Any
 
-from persistence.vector.implementation.domain.ChunkResult import ChunkResult
+from persistence.vector.implementation.domain.business import BusinessChunkResult
 
 
 class BaseChunker(ABC):
     @abstractmethod
-    def chunk(self, text: str, metadata: dict[str, Any] | None = None) -> list[ChunkResult]:
+    def chunk(self, text: str, metadata: dict[str, Any] | None = None) -> list[BusinessChunkResult]:
         pass
 
     def _create_metadata(

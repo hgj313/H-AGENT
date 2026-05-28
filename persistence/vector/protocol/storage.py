@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, Literal
 
-from persistence.vector.implementation.domain.VectorItem import VectorItem
+from persistence.vector.implementation.domain.engine import EngineVectorItem
 
 
 class BaseVectorStorage(ABC):
@@ -16,13 +16,18 @@ class BaseVectorStorage(ABC):
     def count(self) -> int:
         raise NotImplementedError
 
+    @property
+    def distance_metric(self) -> Literal["cosine", "l2", "ip"]:
+        return "cosine"
+
     @abstractmethod
-    def add_vectors(self, items: list[VectorItem]) -> int:
+    def add_vectors(self, items: list[EngineVectorItem]) -> int:
         """添加向量到存储，返回实际添加的数量"""
         pass
 
     @abstractmethod
-    def get_vectors(self, ids: list[str]) -> list[VectorItem]:
+    def get_vectors(self, ids: list[str]) -> list[EngineVectorItem]:
+        """根据 IDs 查询向量数据"""
         pass
 
     @abstractmethod
@@ -30,16 +35,7 @@ class BaseVectorStorage(ABC):
         pass
 
     @abstractmethod
-    def update_vectors(self, items: list[VectorItem]) -> int:
-        pass
-    
-    @abstractmethod
-    def search(
-        self,
-        query_vector: list[float],
-        k: int = 4,
-        filter_metadata: Optional[dict] = None
-    ) -> list[tuple[VectorItem, float]]:
+    def update_vectors(self, items: list[EngineVectorItem]) -> int:
         pass
 
     def save(self, path: str) -> None:
