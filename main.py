@@ -40,53 +40,62 @@ def on_progress(uploaded: int, total: int):
     percent = int(uploaded * 100 / total) if total else 0
     print(f"  上传进度: {uploaded}/{total} bytes ({percent}%)")
 
-upload_service = UploadService()
+# upload_service = UploadService()
 
-local_photo = r"C:\HGJ-T\H-AGENT\maqima.jpeg"       # 本地文件路径
+# local_photo = r"C:\HGJ-T\H-AGENT\maqima.jpeg"       # 本地文件路径
 oss_key = "photos/2025/girlfriends/maqima.jpeg"         # OSS 上存储的路径
 
-logger.info("开始上传照片: %s → oss://%s", local_photo, oss_key)
+# logger.info("开始上传照片: %s → oss://%s", local_photo, oss_key)
 
-result = upload_service.upload(
-    file_path=local_photo,
-    object_name=oss_key,
-    content_type="image/jpeg",                # 让浏览器正确识别图片类型
-    metadata={"author": "maqima", "location": "重庆"},  # 自定义元数据
-    progress_callback=on_progress,             # 可选：实时进度
-)
+# result = upload_service.upload(
+#     file_path=local_photo,
+#     object_name=oss_key,
+#     content_type="image/jpeg",                # 让浏览器正确识别图片类型
+#     metadata={"author": "maqima", "location": "重庆"},  # 自定义元数据
+#     progress_callback=on_progress,             # 可选：实时进度
+# )
 
-print(f"✅ 上传成功!")
-print(result)
-print("="*50)
-print(f"   对象名称: {result.object_name}")
-print(f"   ETag:     {result.etag}")
-print(f"   UploadID: {result.upload_id}")
+# print(f"✅ 上传成功!")
+# print(result)
+# print("="*50)
+# print(f"   对象名称: {result.object_name}")
+# print(f"   ETag:     {result.etag}")
+# print(f"   UploadID: {result.upload_id}")
 
 
 # 4. 下载照片
 download_service = DownloadService()
 
-local_save_path = Path(r"c:\HGJ-T\H-AGENT\ls_copy.jpg")
+# local_save_path = Path(r"c:\HGJ-T\H-AGENT\ls_copy.jpg")
 
-logger.info("开始下载照片: oss://%s → %s", oss_key, local_save_path)
+# logger.info("开始下载照片: oss://%s → %s", oss_key, local_save_path)
 
-download_result = download_service.download(
-    object_name=oss_key,
-    target_path=local_save_path,
-)
+# download_result = download_service.download(
+#     object_name=oss_key,
+#     target_path=local_save_path,
+# )
 
-print(f"✅ 下载成功!")
-print(download_result)
-print("="*50)
-print(f"   保存路径: {download_result.target_path}")
-print(f"   文件大小: {download_result.written_bytes} bytes")
+# print(f"✅ 下载成功!")
+# print(download_result)
+# print("="*50)
+# print(f"   保存路径: {download_result.target_path}")
+# print(f"   文件大小: {download_result.written_bytes} bytes")
 
 
 # 5. 生成私有文件访问链接（可选）
 url_result = download_service.get_signed_url(
     object_name=oss_key,
     expire_seconds=3600,    # 链接有效期 1 小时
+    method="GET",
 )
 
 print(f"🔗 临时访问链接（1小时内有效）:")
 print(f"   {url_result.url}")
+from llm_model.reasoning_model.minimax import minimax_reasoning_model
+from llm_model.vision_model.aliyun import model as vision_model
+reasoning_llm = minimax_reasoning_model().get_model()
+
+result_photo = vision_model.invoke(f"{url_result.url} 请描述照片中的内容")
+
+print(result_photo)
+print(result_photo.content)

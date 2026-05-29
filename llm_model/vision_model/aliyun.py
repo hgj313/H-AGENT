@@ -14,7 +14,8 @@ else:
     print("api_key 或 base_url 未加载成功")
 
 model = init_chat_model(
-    model_name="qwen-plus",
+    model="kimi-k2.6",
+    model_provider="openai",
     api_key=api_key,
     base_url=base_url,
 )

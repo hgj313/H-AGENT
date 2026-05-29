@@ -35,3 +35,4 @@ Thumbs.db
 persistence/data/chroma_db/
 test_data/
 persistence/vector/implementation/embedding/models/
+DOCS/
