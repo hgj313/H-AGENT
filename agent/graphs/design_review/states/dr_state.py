@@ -4,4 +4,4 @@ from typing_extensions import Annotated,TypedDict
 
 class DRState(TypedDict):
     messages: Annotated[list[AnyMessage],operator.add]
-    llm_calls:int
+    llm_calls:int = 0

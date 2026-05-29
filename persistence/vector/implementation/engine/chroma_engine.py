@@ -61,8 +61,10 @@ class ChromaSearchEngine(BaseSearchEngine):
             
             if not results['ids'] or not results['ids'][0]:
                 return []
-            print(results)
-            print("="*50)
+            
+            # ## debug 代码
+            # print(results)
+            # print("="*50)
             
             raw_results = []
             metric = self.distance_metric
