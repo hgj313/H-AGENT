@@ -3,7 +3,9 @@ from dotenv import load_dotenv
 import time
 from typing import Iterator
 from langchain.chat_models import init_chat_model
+from langchain.chat_models.base import BaseChatModel
 from langchain.messages import HumanMessage, AIMessage, SystemMessage, AIMessageChunk
+
 
 load_dotenv()
 
@@ -31,7 +33,7 @@ class  minimax_reasoning_model:
         self.provider = provider
         self.base_url = None
 
-    def get_model(self)->init_chat_model:
+    def get_model(self)->BaseChatModel:
         if self.provider == "openai":
             base_url = base_url_openai
         elif self.provider == "anthropic":

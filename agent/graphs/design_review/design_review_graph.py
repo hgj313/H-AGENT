@@ -27,7 +27,11 @@ def create_design_review_graph(llm):
 
     def llm_node(state: DRState) -> dict:
         result = llm_with_tools.invoke(state["messages"])
-        return {"messages": [result]}
+        print(state.get("llm_calls", 0))
+        return {
+            "messages": [result],
+            "llm_calls": state.get("llm_calls", 0) + 1,
+        }
 
     graph.add_node("llm", llm_node)
     graph.add_node("tools", tool_node)
