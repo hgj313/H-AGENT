@@ -148,6 +148,22 @@ class SignedURLResult:
     signed_headers: Mapping[str, str] = field(default_factory=dict)
 
 
+@dataclass(slots=True)
+class PublicURLRequest:
+    """公共读对象 URL 请求。"""
+
+    object_name: str
+
+
+@dataclass(slots=True)
+class PublicURLResult:
+    """公共读对象 URL 结果。"""
+
+    object_name: str
+    url: str
+    cdn_url: str | None = None
+
+
 class StorageService(Protocol):
     """统一存储能力协议。
 
@@ -174,6 +190,9 @@ class StorageService(Protocol):
 
     def generate_signed_url(self, request: SignedURLRequest) -> SignedURLResult:
         """生成私有对象预签名 URL。"""
+
+    def get_public_url(self, request: PublicURLRequest) -> PublicURLResult:
+        """获取公共读对象的直接访问 URL（无需签名）。"""
 
     def head_object(self, object_name: str) -> ObjectMetadata:
         """查询对象元信息。"""

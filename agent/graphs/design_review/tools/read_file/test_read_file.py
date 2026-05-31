@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 from pathlib import Path
 from typing import Any
-from llm_model.reasoning_model.minimax import minimax_reasoning_model
+from llm_model.reasoning_model.minimax import MinimaxReasoningModelProvider
 from agent.graphs.design_review.design_review_graph import create_design_review_graph
 from agent.graphs.design_review.tools.read_file import ReadFileTool
 from oss.di import OSSRegistry, OSSConfig
@@ -28,7 +28,7 @@ oss_registry.register_from_config(config)
 
 
 def test_read_file():
-    model_minimax = minimax_reasoning_model().get_model()
+    model_minimax = MinimaxReasoningModelProvider().get_model()
 
     graph = create_design_review_graph(model_minimax)
     human_msg = HumanMessage(content="请读取: test_data\测试文档.md")

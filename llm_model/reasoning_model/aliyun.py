@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 
+from langchain.chat_models import BaseChatModel
 from langchain.chat_models import init_chat_model
 
 load_dotenv()
@@ -15,7 +16,7 @@ else:
 
 
 
-def get_model(model_name:str):
+def get_model(model_name:str) -> BaseChatModel:
     model = init_chat_model(
         model=model_name,
         model_provider="openai",

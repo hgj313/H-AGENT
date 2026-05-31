@@ -27,7 +27,7 @@ if base_url_openai:
 if not base_url_anthropic and not base_url_openai:
     print("base_url 全部未加载成功")
 
-class  minimax_reasoning_model:
+class  MinimaxReasoningModelProvider:
     def __init__(self, model_name:str="MiniMax-M2.7", provider:str="anthropic"):
         self.model_name = model_name
         self.provider = provider

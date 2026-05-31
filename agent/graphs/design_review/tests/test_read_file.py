@@ -1,7 +1,7 @@
 import asyncio
 from langchain.messages import HumanMessage
 from agent.graphs.design_review.design_review_graph import create_design_review_graph
-from llm_model.reasoning_model.minimax import minimax_reasoning_model
+from llm_model.reasoning_model.minimax import MinimaxReasoningModelProvider
 from llm_model.reasoning_model.aliyun import get_model
 
 
@@ -9,7 +9,7 @@ llm_qwen = get_model("qwen-plus")
 
 
 async def test_read_file_graph():
-    llm_minimax = minimax_reasoning_model("MiniMax-M2.7").get_model()
+    llm_minimax = MinimaxReasoningModelProvider("MiniMax-M2.7").get_model()
 
     graph = create_design_review_graph(llm_minimax)
 

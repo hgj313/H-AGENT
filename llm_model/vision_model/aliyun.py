@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 
+from langchain.chat_models import BaseChatModel
 from langchain.chat_models import init_chat_model
 
 load_dotenv()
@@ -13,9 +14,14 @@ if api_key and base_url:
 else:
     print("api_key 或 base_url 未加载成功")
 
-model = init_chat_model(
-    model="kimi-k2.6",
-    model_provider="openai",
-    api_key=api_key,
-    base_url=base_url,
-)
+class VisionModelProvider:
+    def __init__(self):
+        self.model = "kimi-k2.6"
+
+    def get_model(self) -> BaseChatModel:
+        return init_chat_model(
+            model=self.model,
+            model_provider="openai",
+            api_key=api_key,
+            base_url=base_url,
+        )
