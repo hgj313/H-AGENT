@@ -40,10 +40,13 @@ def on_progress(uploaded: int, total: int):
     percent = int(uploaded * 100 / total) if total else 0
     print(f"  上传进度: {uploaded}/{total} bytes ({percent}%)")
 
-# upload_service = UploadService()
+upload_service = UploadService()
 
 # local_photo = r"C:\HGJ-T\H-AGENT\maqima.jpeg"       # 本地文件路径
+text_path = r"C:\HGJ-T\H-AGENT\test_data\测试文档.md"
+
 oss_key = "photos/2025/girlfriends/maqima.jpeg"         # OSS 上存储的路径
+text_key = "texts/2025/tests/测试文档.md"
 
 # logger.info("开始上传照片: %s → oss://%s", local_photo, oss_key)
 
@@ -54,6 +57,16 @@ oss_key = "photos/2025/girlfriends/maqima.jpeg"         # OSS 上存储的路径
 #     metadata={"author": "maqima", "location": "重庆"},  # 自定义元数据
 #     progress_callback=on_progress,             # 可选：实时进度
 # )
+
+# 上传文本文件
+result = upload_service.upload(
+    file_path=text_path,
+    policy=UploadPolicy.AUTO,
+    object_name=text_key,
+    content_type="text/markdown",                # 让浏览器正确识别图片类型
+    metadata={"author": "weilin", "location": "重庆"},  # 自定义元数据
+    progress_callback=on_progress,             # 可选：实时进度
+)
 
 # print(f"✅ 上传成功!")
 # print(result)
@@ -82,20 +95,20 @@ download_service = DownloadService()
 # print(f"   文件大小: {download_result.written_bytes} bytes")
 
 
-# 5. 生成私有文件访问链接（可选）
-url_result = download_service.get_signed_url(
-    object_name=oss_key,
-    expire_seconds=3600,    # 链接有效期 1 小时
-    method="GET",
-)
+# # 5. 生成私有文件访问链接（可选）
+# url_result = download_service.get_signed_url(
+#     object_name=oss_key,
+#     expire_seconds=3600,    # 链接有效期 1 小时
+#     method="GET",
+# )
 
-print(f"🔗 临时访问链接（1小时内有效）:")
-print(f"   {url_result.url}")
-from llm_model.reasoning_model.minimax import minimax_reasoning_model
-from llm_model.vision_model.aliyun import model as vision_model
-reasoning_llm = minimax_reasoning_model().get_model()
+# print(f"🔗 临时访问链接（1小时内有效）:")
+# print(f"   {url_result.url}")
+# from llm_model.reasoning_model.minimax import minimax_reasoning_model
+# from llm_model.vision_model.aliyun import model as vision_model
+# reasoning_llm = minimax_reasoning_model().get_model()
 
-result_photo = vision_model.invoke(f"{url_result.url} 请描述照片中的内容")
+# result_photo = vision_model.invoke(f"{url_result.url} 请描述照片中的内容")
 
-print(result_photo)
-print(result_photo.content)
+# print(result_photo)
+# print(result_photo.content)

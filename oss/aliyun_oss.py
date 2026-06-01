@@ -25,10 +25,12 @@ from .base import (
     DownloadRequest,
     StreamDownloadRequest,
     SignedURLRequest,
+    PublicURLRequest,
     ObjectMetadata,
     UploadResult,
     DownloadResult,
     SignedURLResult,
+    PublicURLResult,
     StorageService,
 )
 
@@ -323,6 +325,19 @@ class AliyunOSSAdapter:
             method=request.method,
             expires_at=presign_result.expiration,
             signed_headers=dict(presign_result.signed_headers) if presign_result.signed_headers else {},
+        )
+
+    def get_public_url(self, request: PublicURLRequest) -> PublicURLResult:
+        """获取公共读对象的直接访问 URL（无需签名）。
+
+        直接拼接域名生成 URL，不经过签名流程。
+        """
+        logger.info("获取公共读URL: object=%s", request.object_name)
+        url = f"https://{self._bucket}.{self._default_endpoint}/{request.object_name}"
+        return PublicURLResult(
+            object_name=request.object_name,
+            url=url,
+            cdn_url=None,
         )
 
     def head_object(self, object_name: str) -> ObjectMetadata:

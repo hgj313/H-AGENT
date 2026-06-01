@@ -3,7 +3,9 @@ from dotenv import load_dotenv
 import time
 from typing import Iterator
 from langchain.chat_models import init_chat_model
+from langchain.chat_models.base import BaseChatModel
 from langchain.messages import HumanMessage, AIMessage, SystemMessage, AIMessageChunk
+
 
 load_dotenv()
 
@@ -25,13 +27,13 @@ if base_url_openai:
 if not base_url_anthropic and not base_url_openai:
     print("base_url 全部未加载成功")
 
-class  minimax_reasoning_model:
+class  MinimaxReasoningModelProvider:
     def __init__(self, model_name:str="MiniMax-M2.7", provider:str="anthropic"):
         self.model_name = model_name
         self.provider = provider
         self.base_url = None
 
-    def get_model(self)->init_chat_model:
+    def get_model(self)->BaseChatModel:
         if self.provider == "openai":
             base_url = base_url_openai
         elif self.provider == "anthropic":
