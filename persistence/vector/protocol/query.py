@@ -8,6 +8,12 @@ from persistence.vector.protocol.engine import BaseSearchEngine
 
 
 class BaseVectorSearcher(ABC):
+    """向量查询器统一接口（列表式）
+
+    设计原则：
+        - 唯一入口 batch_search(query_texts, ...) -> list[list[BusinessQueryResult]]
+        - 单条查询 = list 长度为 1
+    """
     def __init__(
         self,
         embedder: BaseEmbedder,
@@ -22,17 +28,17 @@ class BaseVectorSearcher(ABC):
         self._search_engine = search_engine
 
     @abstractmethod
-    def search(
+    def batch_search(
         self,
-        query_text: str,
+        query_texts: list[str],
         k: int = 4,
         filter_metadata: Optional[dict] = None
-    ) -> list[BusinessQueryResult]:
+    ) -> list[list[BusinessQueryResult]]:
+        """批量自然语言查询（统一入口）"""
         pass
 
-    def _embed_query(self, text: str) -> list[float]:
-        vectors = self._embedder.embed_documents([text])
-        return vectors[0]
+    def _embed_queries(self, texts: list[str]) -> list[list[float]]:
+        return self._embedder.embed_documents(texts)
 
     def _convert_to_results(
         self,

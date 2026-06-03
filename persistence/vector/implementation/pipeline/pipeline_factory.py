@@ -5,8 +5,7 @@ from persistence.vector.implementation.dependency_resolver import DependencyReso
 from persistence.vector.implementation.embedding import EmbedderFactory
 from persistence.vector.implementation.store import VectorStoreFactory
 from persistence.vector.implementation.engine import ChromaSearchEngine
-from persistence.vector.implementation.query.chroma_searcher import ChromaVectorSearcher
-from persistence.vector.implementation.query.similarity_searcher import SimilaritySearcher
+from persistence.vector.implementation.query.list_based_searcher import ListBasedVectorSearcher
 from persistence.vector.implementation.pipeline.sync_pipeline import VectorPipeline
 from persistence.vector.implementation.pipeline.async_pipeline import AsyncVectorPipeline
 from persistence.vector.implementation.transaction import TransactionManagerFactory
@@ -142,23 +141,12 @@ class SyncPipelineFactory:
 
     @classmethod
     def _create_searcher(cls, embedder, storage, search_engine, searcher_type):
-        if searcher_type == "similarity":
-            return SimilaritySearcher(embedder=embedder, storage=storage, search_engine=search_engine)
-        elif searcher_type == "chroma":
-            return ChromaVectorSearcher(embedder=embedder, storage=storage, search_engine=search_engine)
-        elif searcher_type == "milvus":
-            try:
-                from persistence.vector.implementation.query.milvus_searcher import MilvusVectorSearcher
-                return MilvusVectorSearcher(embedder=embedder, storage=storage, search_engine=search_engine)
-            except ImportError:
-                return SimilaritySearcher(embedder=embedder, storage=storage, search_engine=search_engine)
-        elif searcher_type == "qdrant":
-            try:
-                from persistence.vector.implementation.query.qdrant_searcher import QdrantVectorSearcher
-                return QdrantVectorSearcher(embedder=embedder, storage=storage, search_engine=search_engine)
-            except ImportError:
-                return SimilaritySearcher(embedder=embedder, storage=storage, search_engine=search_engine)
-        return SimilaritySearcher(embedder=embedder, storage=storage, search_engine=search_engine)
+        # 统一走 ListBasedVectorSearcher（无论 similarity / chroma / milvus / qdrant）
+        return ListBasedVectorSearcher(
+            embedder=embedder,
+            storage=storage,
+            search_engine=search_engine
+        )
 
 
 class AsyncPipelineFactory:

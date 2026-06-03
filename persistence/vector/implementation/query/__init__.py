@@ -1,5 +1,4 @@
-from persistence.vector.implementation.query.similarity_searcher import SimilaritySearcher
-from persistence.vector.implementation.query.factory import SearchEngineFactory
-from persistence.vector.implementation.query.chroma_searcher import ChromaVectorSearcher
+from persistence.vector.implementation.query.list_based_searcher import ListBasedVectorSearcher
+from persistence.vector.implementation.query.factory import VectorSearcherFactory
 
-__all__ = ["SimilaritySearcher", "SearchEngineFactory", "ChromaVectorSearcher"]
+__all__ = ["ListBasedVectorSearcher", "VectorSearcherFactory"]

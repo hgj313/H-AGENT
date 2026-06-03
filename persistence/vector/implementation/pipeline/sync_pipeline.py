@@ -11,7 +11,7 @@ from persistence.vector.protocol.query import BaseVectorSearcher
 from persistence.vector.protocol.chunker import BaseChunker
 from persistence.vector.protocol.vector_transaction import BaseVectorTransactionManager
 from persistence.vector.implementation.domain.id_generator import VectorIdGenerator
-from persistence.vector.implementation.query.similarity_searcher import SimilaritySearcher
+from persistence.vector.implementation.query.list_based_searcher import ListBasedVectorSearcher
 
 if TYPE_CHECKING:
     from persistence.vector.implementation.domain.business import BusinessQueryResult
@@ -43,7 +43,7 @@ class VectorPipeline(SyncVectorPipelineProtocol):
 
     def create_searcher(self) -> BaseVectorSearcher:
         if self._searcher is None:
-            self._searcher = SimilaritySearcher(
+            self._searcher = ListBasedVectorSearcher(
                 embedder=self.embedder,
                 storage=self.storage
             )
@@ -69,19 +69,10 @@ class VectorPipeline(SyncVectorPipelineProtocol):
         self._stats.total_ingested += len(items)
         return len(items)
 
-    def search(
-        self,
-        query_text: str,
-        k: int = 4,
-        filter_metadata=None
-    ) -> list["BusinessQueryResult"]:
-        searcher = self.searcher
-        return searcher.search(query_text, k, filter_metadata)
-
     def batch_search(
         self,
         query_texts: list[str],
         k: int = 4,
         filter_metadata=None
     ) -> list[list["BusinessQueryResult"]]:
-        return [self.search(text, k, filter_metadata) for text in query_texts]
+        return self.searcher.batch_search(query_texts, k=k, filter_metadata=filter_metadata)

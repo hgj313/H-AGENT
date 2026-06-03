@@ -2,7 +2,7 @@ import os
 from persistence.vector.implementation.chunker import GeneralChunker, MarkdownChunker
 from persistence.vector.implementation.domain import EngineVectorItem, VectorIdGenerator
 from persistence.vector.implementation.store import VectorStoreFactory
-from persistence.vector.implementation.query import ChromaVectorSearcher
+from persistence.vector.implementation.query import ListBasedVectorSearcher
 from persistence.vector.implementation.engine import SearchEngineFactory
 from persistence.vector.implementation.pipeline import PipelineFactory
 from persistence.vector.implementation.embedding import EmbedderFactory
@@ -30,7 +30,7 @@ storage = VectorStoreFactory.create("chroma")
 connection = ChromaVectorStorageConnection(storage)
 manager = ChromaVectorTransactionManager(connection)
 search_engine = SearchEngineFactory.create("chroma", storage=storage)
-searcher = ChromaVectorSearcher(
+searcher = ListBasedVectorSearcher(
     embedder=embedder,
     storage=storage,
     search_engine=search_engine
@@ -50,8 +50,14 @@ pipeline = PipelineFactory.create_sync(
 # print(result)
 
 # 自然语言查询
-query_result = pipeline.search("产品设计标准文档")
-print(query_result)
+query_result = pipeline.batch_search(["狗屎"])
+print("total query count:", len(query_result))
+for q_idx, result in enumerate(query_result):
+    print("="*50)
+    print(f"Q{q_idx + 1}  hits: {len(result)}")
+    for hit in result:
+        print(f"  - id={hit.id}  score={hit.score:.4f}  content[:60]={hit.content[:60]!r}")
+    print()
 
 
 
