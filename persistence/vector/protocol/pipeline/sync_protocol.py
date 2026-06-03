@@ -54,30 +54,23 @@ class SyncVectorPipelineProtocol(BaseVectorPipeline):
     ) -> int:
         if self._chunker is None:
             raise ValueError("Cannot ingest raw documents without a chunker configured")
-        
+
         all_chunks = []
         for content, metadata in documents:
             chunks = self._chunker.chunk(content, metadata)
             all_chunks.extend(chunks)
-        
+
         return self.ingest(all_chunks)
 
     @abstractmethod
-    def search(
-        self,
-        query_text: str,
-        k: int = 4,
-        filter_metadata: Optional[dict] = None
-    ) -> list[BusinessQueryResult]:
-        pass
-
     def batch_search(
         self,
         query_texts: list[str],
         k: int = 4,
         filter_metadata: Optional[dict] = None
     ) -> list[list[BusinessQueryResult]]:
-        return [self.search(text, k, filter_metadata) for text in query_texts]
+        """批量查询（统一入口）"""
+        pass
 
     def delete(self, ids: list[str]) -> int:
         deleted = self._storage.delete_vectors(ids)

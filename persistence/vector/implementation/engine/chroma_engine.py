@@ -1,5 +1,5 @@
 """
-ChromaDB 搜索引擎实现
+ChromaDB 搜索引擎实现（列表式统一接口）
 """
 import logging
 from typing import Optional, Literal
@@ -12,8 +12,8 @@ logger = logging.getLogger(__name__)
 
 
 class ChromaSearchEngine(BaseSearchEngine):
-    """ChromaDB 查询引擎实现"""
-    
+    """ChromaDB 查询引擎实现（统一 batch_search 入口）"""
+
     def __init__(
         self,
         storage: ChromaVectorStorage,
@@ -22,14 +22,14 @@ class ChromaSearchEngine(BaseSearchEngine):
         self._storage = storage
         self._default_k = default_k
         self._collection = storage._collection
-    
+
     @property
     def distance_metric(self) -> Literal["cosine", "l2", "ip"]:
         return self._storage.distance_metric
-    
+
     def refresh(self) -> None:
         self._collection = self._storage._collection
-    
+
     @staticmethod
     def calculate_similarity(distance: float, metric: str) -> float:
         if metric == "cosine":
@@ -39,130 +39,80 @@ class ChromaSearchEngine(BaseSearchEngine):
         elif metric == "ip":
             return max(0, (1.0 + distance) / 2)
         return 1.0 - distance
-    
-    def search(
+
+    def batch_search(
         self,
-        query_vector: list[float],
+        query_vectors: list[list[float]],
         k: int = 4,
-        filter_metadata: Optional[dict] = None
-    ) -> list[tuple[str, list[float]]]:
-        if k <= 0:
-            return []
-        
+        filter_metadata: Optional[dict] = None,
+        include_full: bool = False
+    ) -> list[list[tuple[str, list[float]]]]:
+        """统一批量查询入口（原生 Chroma batch，单次 RTT）
+
+        Args:
+            query_vectors: 多条 query 向量；单条场景传 [vector]
+            k: 每条 query 的 top-k
+            filter_metadata: where filter（所有 query 共享）
+            include_full:
+                False -> 返回 [(id, [sim, dist])]
+                True  -> 返回 [(id, [sim, dist, content, metadata, embedding])]
+
+        Returns:
+            list[list[(vector_id, score_vector)]]，外层 index 对应 query
+        """
+        if not query_vectors or k <= 0:
+            return [[] for _ in range(len(query_vectors))]
+
         where_filter = filter_metadata if filter_metadata else None
-        
+        include_fields = (
+            ["metadatas", "documents", "distances", "embeddings"]
+            if include_full else
+            ["metadatas", "documents", "distances"]
+        )
+
         try:
             results = self._collection.query(
-                query_embeddings=[query_vector],
+                query_embeddings=query_vectors,
                 n_results=k,
                 where=where_filter,
-                include=["metadatas", "documents", "distances", "embeddings"]
+                include=include_fields
             )
-            
-            if not results['ids'] or not results['ids'][0]:
-                return []
-            
-            # ## debug 代码
-            # print(results)
-            # print("="*50)
-            
-            raw_results = []
+
+            ids_batch = results.get('ids', []) or []
+            distances_batch = results.get('distances', []) or []
+            documents_batch = results.get('documents', []) or []
+            metadatas_batch = results.get('metadatas', []) or []
+            embeddings_batch = results.get('embeddings', []) or []
             metric = self.distance_metric
-            for i, vector_id in enumerate(results['ids'][0]):
-                distance = results['distances'][0][i] if 'distances' in results else 1.0
-                similarity_score = self.calculate_similarity(distance, metric)
-                raw_results.append((vector_id, [similarity_score, distance]))
-            
-            return raw_results
-            
+
+            batched: list[list[tuple[str, list[float]]]] = []
+            for q_idx, ids in enumerate(ids_batch):
+                distances = distances_batch[q_idx] if q_idx < len(distances_batch) else []
+                documents = documents_batch[q_idx] if q_idx < len(documents_batch) else []
+                metadatas = metadatas_batch[q_idx] if q_idx < len(metadatas_batch) else []
+                embeddings = embeddings_batch[q_idx] if q_idx < len(embeddings_batch) else []
+
+                per_query: list[tuple[str, list[float]]] = []
+                for i, vector_id in enumerate(ids):
+                    distance = distances[i] if i < len(distances) else 1.0
+                    similarity_score = self.calculate_similarity(distance, metric)
+
+                    if include_full:
+                        score_vector: list[float | str | dict] = [
+                            similarity_score,
+                            distance,
+                            documents[i] if i < len(documents) else "",
+                            metadatas[i] if i < len(metadatas) else {},
+                            embeddings[i] if i < len(embeddings) else None,
+                        ]
+                    else:
+                        score_vector = [similarity_score, distance]
+
+                    per_query.append((vector_id, score_vector))
+                batched.append(per_query)
+
+            return batched
+
         except Exception as e:
-            logger.error(f"ChromaDB query failed: {e}")
-            return []
-    
-    def search_full(
-        self,
-        query_vector: list[float],
-        k: int = 4,
-        filter_metadata: Optional[dict] = None
-    ) -> list[EngineSearchResult]:
-        """返回完整的 ChromaDB 查询结果，包含所有 API 属性"""
-        if k <= 0:
-            return []
-        
-        where_filter = filter_metadata if filter_metadata else None
-        
-        try:
-            results = self._collection.query(
-                query_embeddings=[query_vector],
-                n_results=k,
-                where=where_filter,
-                include=["metadatas", "documents", "distances", "embeddings"]
-            )
-            
-            if not results['ids'] or not results['ids'][0]:
-                return []
-            
-            search_results = []
-            metric = self.distance_metric
-            ids_list = results['ids'][0]
-            distances_list = results.get('distances', [[]])[0]
-            documents_list = results.get('documents', [[]])[0]
-            metadatas_list = results.get('metadatas', [[]])[0]
-            embeddings_list = results.get('embeddings', [[]])[0]
-            
-            for i, vector_id in enumerate(ids_list):
-                distance = distances_list[i] if i < len(distances_list) else 1.0
-                similarity_score = self.calculate_similarity(distance, metric)
-                document = documents_list[i] if i < len(documents_list) else ""
-                metadata = metadatas_list[i] if i < len(metadatas_list) else {}
-                embedding = embeddings_list[i] if i < len(embeddings_list) else None
-                
-                search_results.append(EngineSearchResult(
-                    id=vector_id,
-                    distance=distance,
-                    similarity=similarity_score,
-                    content=document,
-                    metadata=metadata,
-                    embedding=embedding
-                ))
-            
-            return search_results
-            
-        except Exception as e:
-            logger.error(f"ChromaDB query failed: {e}")
-            return []
-    
-    def search_with_scores(
-        self,
-        query_vector: list[float],
-        k: int = 4,
-        filter_metadata: Optional[dict] = None
-    ) -> list[tuple[str, float, float]]:
-        if k <= 0:
-            return []
-        
-        where_filter = filter_metadata if filter_metadata else None
-        
-        try:
-            results = self._collection.query(
-                query_embeddings=[query_vector],
-                n_results=k,
-                where=where_filter,
-                include=["metadatas", "distances"]
-            )
-            
-            if not results['ids'] or not results['ids'][0]:
-                return []
-            
-            raw_results = []
-            metric = self.distance_metric
-            for i, vector_id in enumerate(results['ids'][0]):
-                distance = results['distances'][0][i] if 'distances' in results else 1.0
-                similarity_score = self.calculate_similarity(distance, metric)
-                raw_results.append((vector_id, similarity_score, distance))
-            
-            return raw_results
-            
-        except Exception as e:
-            logger.error(f"ChromaDB query failed: {e}")
-            return []
+            logger.error(f"ChromaDB batch query failed: {e}")
+            return [[] for _ in range(len(query_vectors))]

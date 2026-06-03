@@ -26,7 +26,6 @@ __all__ = [
     "BaseEmbedder",
     "BaseVectorStorage",
     "BaseVectorSearcher",
-    "QueryResult",
     "BaseSearchEngine",
     "BaseVectorPipeline",
     "SyncVectorPipelineProtocol",

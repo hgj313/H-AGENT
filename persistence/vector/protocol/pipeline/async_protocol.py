@@ -54,33 +54,23 @@ class AsyncVectorPipelineProtocol(BaseVectorPipeline):
     ) -> int:
         if self._chunker is None:
             raise ValueError("Cannot ingest raw documents without a chunker configured")
-        
+
         all_chunks = []
         for content, metadata in documents:
             chunks = self._chunker.chunk(content, metadata)
             all_chunks.extend(chunks)
-        
+
         return await self.aingest(all_chunks)
 
     @abstractmethod
-    async def asearch(
-        self,
-        query_text: str,
-        k: int = 4,
-        filter_metadata: Optional[dict] = None
-    ) -> list[BusinessQueryResult]:
-        pass
-
     async def abatch_search(
         self,
         query_texts: list[str],
         k: int = 4,
         filter_metadata: Optional[dict] = None
     ) -> list[list[BusinessQueryResult]]:
-        import asyncio
-        return await asyncio.gather(*[
-            self.asearch(text, k, filter_metadata) for text in query_texts
-        ])
+        """异步批量查询（统一入口）"""
+        pass
 
     async def adelete(self, ids: list[str]) -> int:
         import asyncio
