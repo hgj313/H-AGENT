@@ -239,7 +239,7 @@ class ReadFileTool(BaseTool):
         return self._download_service
 
     def _is_oss_path(self, path: str) -> bool:
-        if path.startswith("oss://") or path.startswith("aliyun://"):
+        if path.startswith("oss://") or path.startswith("aliyun://") or path.startswith("https://"):
             return True
         if re.match(r'^[a-zA-Z0-9_\-/\.]+$', path) and "/" in path:
             if not Path(path).exists():
