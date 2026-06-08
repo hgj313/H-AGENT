@@ -22,6 +22,8 @@ _model = model_provider.get_model()
 
 def _normalize_specs(args: dict) -> dict:
     """处理 specs 字段，将字符串值转换为 SpecItemWithConfidence 对象格式。"""
+    import json
+    
     specs = args.get("specs")
     if not specs or not isinstance(specs, dict):
         return args
@@ -48,6 +50,35 @@ def _normalize_specs(args: dict) -> dict:
             normalized[key] = value
     
     args["specs"] = normalized
+    return args
+
+
+def _normalize_nested_objects(args: dict) -> dict:
+    """处理嵌套对象字段，将字符串转换为字典格式。"""
+    import json
+    
+    # 需要处理的嵌套对象字段
+    nested_fields = ['components', 'visual', 'interaction', 'state', 'layout_nav']
+    
+    for field in nested_fields:
+        if field in args and isinstance(args[field], str):
+            try:
+                parsed = json.loads(args[field])
+                if isinstance(parsed, dict):
+                    args[field] = parsed
+            except (json.JSONDecodeError, TypeError):
+                pass
+    
+    # 处理 permission.operation_permissions 字段（字符串转列表）
+    if 'permission' in args and isinstance(args['permission'], dict):
+        perm = args['permission']
+        if 'operation_permissions' in perm and isinstance(perm['operation_permissions'], str):
+            value = perm['operation_permissions']
+            if value.strip():
+                perm['operation_permissions'] = [value]
+            else:
+                perm['operation_permissions'] = []
+    
     return args
 
 
@@ -138,5 +169,6 @@ def analyze_prototype(
     # 严格 Pydantic 二次校验：bind_tools 已限定结构，此处再确保类型/必填字段
     # 处理模型返回格式不匹配的情况（如 specs 字段返回字符串而非对象）
     target_args = _normalize_specs(target_args)
+    target_args = _normalize_nested_objects(target_args)
     parsed: PrototypeAnalysis = PrototypeAnalysis.model_validate(target_args)
     return parsed.model_dump()

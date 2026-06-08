@@ -125,7 +125,11 @@ class AnalyzePRDNode:
         try:
             # 优先使用文件路径，让工具内部读取文件
             if state.get("prd_file_path"):
-                content = analyze_prd.invoke({"file_path": state["prd_file_path"]})
+                file_path = state["prd_file_path"]
+                # 确保 file_path 是列表格式
+                if isinstance(file_path, str):
+                    file_path = [file_path]
+                content = analyze_prd.invoke({"file_path": file_path})
             else:
                 content = analyze_prd.invoke({"prd_content": prd_text})
         except Exception as e:

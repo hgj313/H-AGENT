@@ -2,10 +2,22 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sys
 import typing
 from typing import Any, Iterable
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('analyze_prd_test.log', encoding='utf-8')
+    ]
+)
+logger = logging.getLogger(__name__)
 
 if sys.platform == "win32":
     os.system("color")
@@ -220,22 +232,97 @@ def dump_json(analysis: PRDAnalysis) -> None:
 # ----------------------------- 入口 -----------------------------
 def main() -> None:
     print(color("▶ 调用 analyze_prd 工具 ...", C.CYAN, C.BOLD))
-    raw = analyze_prd.invoke(
-        input={
-            "prd_content": " 这是一个测试PRD文档",
-            "file_path": "test_data\\吉盛园林里程碑看板需求文档.md",
-        }
-    )
-    print(color("✔ 工具返回类型: ", C.GREEN, C.BOLD), type(raw).__name__)
+    logger.info("开始测试 analyze_prd 工具")
+    
+    test_prd_content = """
+# 吉盛园林里程碑看板需求文档
 
-    if not isinstance(raw, dict):
-        print(color("✘ 工具未返回 dict，请检查 schema 约束。", C.RED, C.BOLD))
-        print(raw)
-        return
+## 一、文档概览
+- 文档名称：吉盛园林里程碑看板 V1.0
+- 目标用户：项目经理、部门负责人、集团管理层
+- 业务背景：实现项目里程碑进度的可视化管理
 
-    analysis = PRDAnalysis.model_validate(raw)
-    pretty_print_prd_analysis(analysis)
-    dump_json(analysis)
+## 二、页面规范
+
+### 2.1 列表页
+- 每页条数：10条
+- 默认排序：按创建时间倒序
+- 列表操作：编辑、删除、查看详情
+
+### 2.2 表单页
+- 单行字段数：2个
+- 标签对齐：右对齐
+- 验证方式：即时验证
+
+## 三、样式规范
+
+### 3.1 字体
+- 标题字体：24px，加粗
+- 正文字体：14px
+- 辅助文字：12px，颜色 #999999
+
+### 3.2 颜色
+- 主色调：#1890FF
+- 成功色：#52C41A
+- 警告色：#FAAD14
+- 错误色：#FF4D4F
+
+### 3.3 间距
+- 页面边距：24px
+- 组件间距：16px
+- 卡片内边距：20px
+
+## 四、按钮规范
+- 主按钮高度：32px
+- 次按钮高度：32px
+- 按钮圆角：4px
+
+## 五、表格规范
+- 表头背景：#FAFAFA
+- 行高：54px
+- 分页位置：右下角
+"""
+    
+    try:
+        raw = analyze_prd.invoke(
+            input={
+                "prd_content": "",
+                "file_path": ["test_data\\吉盛园林里程碑看板需求文档.md"],
+            }
+        )
+        print(color("✔ 工具返回类型: ", C.GREEN, C.BOLD), type(raw).__name__)
+        logger.info(f"工具返回成功，类型: {type(raw).__name__}")
+
+        if not isinstance(raw, dict):
+            print(color("✘ 工具未返回 dict，请检查 schema 约束。", C.RED, C.BOLD))
+            logger.error(f"工具未返回 dict，实际类型: {type(raw).__name__}")
+            print(raw)
+            return
+
+        # 检查 specs 字段
+        specs = raw.get('specs', {})
+        logger.info(f"specs 字段条目数: {len(specs)}")
+        if specs:
+            logger.info(f"specs 字段内容示例: {list(specs.keys())[:3]}")
+        else:
+            logger.warning("specs 字段为空！")
+
+        analysis = PRDAnalysis.model_validate(raw)
+        pretty_print_prd_analysis(analysis)
+        dump_json(analysis)
+        
+        # 输出 specs 字段的详细信息
+        if analysis.specs:
+            print(color("\n── 规格值详情 ──", C.YELLOW, C.BOLD))
+            for key, spec in analysis.specs.items():
+                print(f"  {color(key, C.CYAN)}: {color(spec.value, C.GREEN)} ({spec.context})")
+        else:
+            print(color("\n⚠ specs 字段为空", C.YELLOW, C.BOLD))
+            
+    except Exception as e:
+        print(color(f"✘ 测试失败: {e}", C.RED, C.BOLD))
+        logger.exception("测试执行异常")
+        raise
 
 
 if __name__ == "__main__":

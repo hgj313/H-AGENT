@@ -444,7 +444,9 @@ class PermissionSpec(BaseModel):
     menu_permissions: List[str] = Field(
         default_factory=list, description="菜单权限点"
     )
-    operation_permissions: str = Field(default="", description="操作权限粒度")
+    operation_permissions: List[str] = Field(
+        default_factory=list, description="操作权限粒度"
+    )
     data_permissions: List[str] = Field(
         default_factory=list, description="数据权限维度"
     )
