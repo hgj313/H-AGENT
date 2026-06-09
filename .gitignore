@@ -36,3 +36,13 @@ persistence/data/chroma_db/
 test_data/
 persistence/vector/implementation/embedding/models/
 DOCS/
+
+examples/
+frontend/
+*.log
+
+# Database
+db/
+
+# Agent documentation
+AGENTS.md
