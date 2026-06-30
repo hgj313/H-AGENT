@@ -173,9 +173,7 @@ def analyze_prd(prd_content: str = "", file_path: list[str] = []) -> dict:
         ),
     ]
 
-    # 注意: strict=True 会导致 dict[str, SpecItem] 类型的 specs 字段无法正确生成
-    # 因为 strict mode 会设置 additionalProperties: false，阻止动态 key 的字典
-    # 因此使用 strict=False 允许大模型灵活输出
+
     bound_model = reasoning_model.bind_tools(
         [PRDAnalysis],
         tool_choice="required",
@@ -215,6 +213,10 @@ def analyze_prd(prd_content: str = "", file_path: list[str] = []) -> dict:
             if isinstance(args, dict):
                 target_args = args
                 logger.info(f"找到目标 tool_call: {name}")
+                # 诊断日志：打完整 args（截断到 2000 字符），确认模型是真返回空 vs 没填
+                logger.info(
+                    f"LLM 完整 tool_call args: {json.dumps(args, ensure_ascii=False)[:2000]}"
+                )
                 break
     
     if target_args is None:

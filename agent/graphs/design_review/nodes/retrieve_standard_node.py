@@ -69,6 +69,36 @@ class RetrieveStandardNode:
         2) standard_rules.specs 非空（至少有 1 条规格）
         3) standard_rules.analysis 不含 error 字段
         """
+
+
+# ── 全量静态标准加载（唯一兜底）──────────────────────────────────
+def _load_full_static_standard() -> dict[str, Any]:
+    """加载全量静态标准 JSON（产品设计标准文档规范提取.json）作为 ground-truth。
+
+    失败时抛 RuntimeError（节点会捕获并写入 node_errors，不会吞掉）。
+    """
+    import json
+    from pathlib import Path
+    json_path = Path(__file__).parent.parent / "tools" / "retrive_standard" / "产品设计标准文档规范提取.json"
+    if not json_path.is_file():
+        raise RuntimeError(f"静态标准 JSON 不存在: {json_path}")
+    with json_path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        raise RuntimeError(f"静态标准 JSON 顶层不是 dict: {type(data).__name__}")
+    return data
+
+
+class RetrieveStandardNode:
+    @staticmethod
+    def _is_trusted(state: DRState) -> bool:
+        """判定 state 中是否已有可信的标准产物。
+
+        满足以下全部条件才视为可信：
+        1) standard_rules.is_ready == True
+        2) standard_rules.specs 非空（至少有 1 条规格）
+        3) standard_rules.analysis 不含 error 字段
+        """
         std = state.get("standard_rules") or {}
         if not std:
             return False
@@ -96,6 +126,11 @@ class RetrieveStandardNode:
         elif isinstance(raw_queries, str) and raw_queries.strip():
             queries = [raw_queries]
 
+        # 兜底：未显式给 queries → 加载全量静态标准 JSON
+        # 这是设计审查的"硬底座"：永远有 ground-truth 可用，不再被静默吞掉
+        if not queries:
+            queries = ["__FULL_STATIC__"]  # 哨兵：标记走全量加载分支
+
         std["meta"] = {
             **(std.get("meta") or {}),
             "node": _NODE_NAME,
@@ -118,6 +153,35 @@ class RetrieveStandardNode:
             }
 
         std["raw_content"] = queries
+
+        # ── 哨兵分支：queries == ["__FULL_STATIC__"] → 跳过 LLM 工具，直接读全量静态 JSON ──
+        if queries == ["__FULL_STATIC__"]:
+            try:
+                std["analysis"] = _load_full_static_standard()
+                std["specs"] = _extract_specs(std["analysis"]) if isinstance(std["analysis"], dict) else {}
+                std["is_ready"] = bool(std["specs"])
+                std["meta"]["finished_at"] = datetime.utcnow().isoformat() + "Z"
+                std["meta"]["source"] = "static_full_load"
+                std["meta"]["static_spec_count"] = len(std["specs"])
+                return {
+                    "current_node": _NODE_NAME,
+                    "standard_rules": std,
+                    "standard_done": bool(std["is_ready"]),
+                    "llm_calls": 0,
+                }
+            except Exception as e:
+                std["is_ready"] = False
+                std["analysis"] = {"error": f"静态标准加载失败: {e}"}
+                node_err = {_NODE_NAME: f"静态标准加载失败: {e}"}
+                assert isinstance(node_err, dict), f"node_errors 类型非法: {type(node_err)}"
+                return {
+                    "current_node": _NODE_NAME,
+                    "standard_rules": std,
+                    "standard_done": False,
+                    "error": f"static_load_error: {e}",
+                    "node_errors": node_err,
+                    "llm_calls": 0,
+                }
 
         try:
             if retrive_standard is None:

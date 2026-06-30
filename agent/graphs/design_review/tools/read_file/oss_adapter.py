@@ -1,16 +1,18 @@
 """OSS FileID 适配器。
 
-基于 OSS 存储服务的文件标识管理，支持：
+基于项目 oss.base.StorageService Protocol 的文件标识管理，支持：
 - 文件上传与注册
 - 基于 object_name 的 FileID 管理
 - 预签名 URL 生成（支持多模态模型访问）
 - 内容去重（SHA256 哈希）
 - LRU 缓存（最近使用的文件元信息）
 
-设计原则：
+设计原则（v2 — 与项目 oss 模块统一）：
+- 存储后端：通过 oss.di.OSSRegistry 注入的 StorageService Protocol
 - object_name 即 FileID，无需额外生成
 - 预签名 URL 支持设置过期时间，确保安全
 - 缓存已访问文件的信息，减少 OSS 请求
+- 兜底：Registry 未初始化时使用内嵌 _FallbackLocalAdapter（仅 dev/test）
 """
 
 from __future__ import annotations
@@ -21,32 +23,152 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator, Optional
 
 try:
     from oss.base import (
         StorageService,
         UploadRequest,
-        ObjectMetadata,
+        UploadResult,
         SignedURLRequest,
         SignedURLResult,
-        UploadResult,
+        ObjectMetadata,
+        DownloadRequest,
+        DownloadResult,
+        StreamDownloadRequest,
+        PublicURLRequest,
+        PublicURLResult,
     )
-    from infrastructure.upload import UploadService
-    from infrastructure.download import DownloadService
-    OSS_AVAILABLE = True
+    from oss.di import OSSRegistry
+    OSS_BASE_AVAILABLE = True
 except ImportError:
-    OSS_AVAILABLE = False
+    OSS_BASE_AVAILABLE = False
     StorageService = None
     UploadRequest = None
-    ObjectMetadata = None
+    UploadResult = None
     SignedURLRequest = None
     SignedURLResult = None
-    UploadResult = None
-    UploadService = None
-    DownloadService = None
+    ObjectMetadata = None
+    DownloadRequest = None
+    DownloadResult = None
+    StreamDownloadRequest = None
+    PublicURLRequest = None
+    PublicURLResult = None
+    OSSRegistry = None
+
+# 兼容旧导入名（外部可能仍引用）
+OSS_AVAILABLE = OSS_BASE_AVAILABLE
 
 logger = logging.getLogger(__name__)
+
+
+# ── 兜底 Local 适配器（Registry 未初始化时）───────────────
+class _FallbackLocalAdapter:
+    """极简 Local 适配器，仅实现 read_file 用到的子集。
+
+    适用：dev / test 时 OSSRegistry 尚未注册任何 adapter 的场景。
+    生产应通过 api/main.py lifespan 显式注册 AliyunOSSAdapter。
+    """
+
+    backend_name: str = "local"
+
+    def __init__(self, root: Path | None = None):
+        from pathlib import Path
+        self.root = Path(root or Path("uploads") / "read_file_fallback")
+        self.root.mkdir(parents=True, exist_ok=True)
+
+    def _resolve(self, object_name: str) -> Path:
+        return self.root / object_name.replace("/", "_").replace(":", "_")
+
+    def upload_file(self, request: UploadRequest) -> UploadResult:
+        target = self._resolve(request.object_name)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(request.file_path, "rb") as src, open(target, "wb") as dst:
+            dst.write(src.read())
+        return UploadResult(object_name=request.object_name, etag=None, version_id=None)
+
+    def generate_signed_url(self, request: SignedURLRequest) -> SignedURLResult:
+        return SignedURLResult(
+            object_name=request.object_name,
+            url=f"/api/v1/files/{request.object_name.split('/')[-1]}",
+            method=request.method,
+            expires_at=datetime.now(),
+            signed_headers={},
+        )
+
+    def head_object(self, object_name: str) -> ObjectMetadata:
+        path = self._resolve(object_name)
+        if not path.exists():
+            raise FileNotFoundError(object_name)
+        return ObjectMetadata(
+            object_name=object_name,
+            content_length=path.stat().st_size,
+            content_type=None,
+            etag=None,
+            last_modified=None,
+            metadata={},
+        )
+
+    def download_file(self, request: DownloadRequest) -> DownloadResult:
+        src = self._resolve(request.object_name)
+        with open(src, "rb") as fsrc, open(request.target_path, "wb") as fdst:
+            fdst.write(fsrc.read())
+        return DownloadResult(
+            object_name=request.object_name,
+            target_path=str(request.target_path),
+            written_bytes=Path(request.target_path).stat().st_size,
+        )
+
+    def stream_download(self, request: StreamDownloadRequest) -> Iterator[bytes]:
+        with open(self._resolve(request.object_name), "rb") as f:
+            while chunk := f.read(request.chunk_size):
+                yield chunk
+
+    def get_public_url(self, request: PublicURLRequest) -> PublicURLResult:
+        return PublicURLResult(object_name=request.object_name, url="", cdn_url=None)
+
+    # multipart / resumable / upload_stream 在 read_file 不使用
+    def multipart_upload(self, request): return self.upload_file(request)  # type: ignore
+    def resumable_upload(self, request): return self.upload_file(request)  # type: ignore
+    def upload_stream(self, request):  # type: ignore
+        target = self._resolve(request.object_name)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with open(target, "wb") as dst:
+            while chunk := request.reader.read(64 * 1024):
+                dst.write(chunk)
+        return UploadResult(object_name=request.object_name, etag=None, version_id=None)
+
+
+def _resolve_storage_adapter(explicit: Optional["StorageService"] = None) -> "StorageService":
+    """解析用于 read_file 的 StorageService。
+
+    优先级：
+      1. 显式传入
+      2. oss.di.OSSRegistry 已注册的 adapter
+      3. provide_oss_client() 从 env 自动加载
+      4. _FallbackLocalAdapter（仅 dev/test 兜底）
+    """
+    if explicit is not None:
+        return explicit
+    if not OSS_BASE_AVAILABLE:
+        raise RuntimeError("oss.base 模块不可用，无法访问 StorageService")
+    # 1) Registry 已注册
+    try:
+        return OSSRegistry.get_instance().get_adapter()
+    except RuntimeError:
+        pass
+    # 2) env 自动加载
+    try:
+        from oss.di import provide_oss_client
+        provide_oss_client()
+        return OSSRegistry.get_instance().get_adapter()
+    except RuntimeError:
+        pass
+    # 3) 兜底
+    logger.warning(
+        "OSSRegistry 未注册且 env 缺失，使用 _FallbackLocalAdapter（仅 dev/test）"
+    )
+    return _FallbackLocalAdapter()  # type: ignore[return-value]
 
 
 @dataclass
@@ -121,32 +243,36 @@ class OSSFileIDAdapter:
         url_expiry_seconds: int = 3600,
         cache_size: int = 1000,
         enable_dedup: bool = True,
+        *,
+        storage_adapter: "StorageService | None" = None,
     ) -> None:
         self._bucket_prefix = bucket_prefix.rstrip('/')
         self._url_expiry = url_expiry_seconds
         self._enable_dedup = enable_dedup
         self._cache = LRUCache(max_size=cache_size)
-        self._upload_service: UploadService | None = None
-        self._download_service: DownloadService | None = None
+        # v2：通过 oss.base.StorageService Protocol 走 OSSRegistry，
+        # 不再依赖 infrastructure.upload.UploadService / infrastructure.download.DownloadService
+        self._storage_adapter: "StorageService" = _resolve_storage_adapter(storage_adapter)
         self._logger = logging.getLogger(self.__class__.__name__)
+        self._logger.info(
+            "OSSFileIDAdapter 初始化：storage=%s",
+            type(self._storage_adapter).__name__,
+        )
 
     @property
-    def upload_service(self) -> UploadService | None:
-        if not OSS_AVAILABLE:
-            self._logger.warning("OSS 模块不可用")
-            return None
-        if self._upload_service is None:
-            self._upload_service = UploadService()
-        return self._upload_service
+    def storage_adapter(self) -> "StorageService":
+        """暴露底层 StorageService（用于测试 / 高级用法）。"""
+        return self._storage_adapter
 
     @property
-    def download_service(self) -> DownloadService | None:
-        if not OSS_AVAILABLE:
-            self._logger.warning("OSS 模块不可用")
-            return None
-        if self._download_service is None:
-            self._download_service = DownloadService()
-        return self._download_service
+    def upload_service(self):
+        """兼容旧调用：返回 self.storage_adapter（duck-type 兼容）。"""
+        return self._storage_adapter
+
+    @property
+    def download_service(self):
+        """兼容旧调用：返回 self.storage_adapter。"""
+        return self._storage_adapter
 
     def compute_content_hash(self, content: bytes) -> str:
         return hashlib.sha256(content).hexdigest()
@@ -189,7 +315,8 @@ class OSSFileIDAdapter:
                 self._logger.info(f"文件已存在，跳过上传: {object_name}")
                 return existing
 
-        result = self.upload_service.upload_file(
+        # v2：直接走 oss.base.StorageService Protocol
+        result = self._storage_adapter.upload_file(
             UploadRequest(
                 object_name=object_name,
                 file_path=str(path),
@@ -254,18 +381,15 @@ class OSSFileIDAdapter:
             return cached.cached_url
 
         expiry = expire_seconds or self._url_expiry
-        request = SignedURLRequest(
-            object_name=object_name,
-            expire_seconds=expiry,
+        # v2：直接走 oss.base.StorageService Protocol.generate_signed_url
+        result = self._storage_adapter.generate_signed_url(
+            SignedURLRequest(
+                object_name=object_name,
+                expire_seconds=expiry,
+            )
         )
 
-        service = self.download_service
-        if service is None:
-            raise RuntimeError("下载服务不可用")
-
-        result = service.get_signed_url(object_name, expire_seconds=expiry)
-
-        expires_at = datetime.fromtimestamp(time.time() + expiry)
+        expires_at = result.expires_at or datetime.fromtimestamp(time.time() + expiry)
 
         if cached:
             cached.cached_url = result.url if hasattr(result, 'url') else result

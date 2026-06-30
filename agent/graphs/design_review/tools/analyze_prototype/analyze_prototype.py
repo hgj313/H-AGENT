@@ -94,7 +94,7 @@ def analyze_prototype(
 
     参数：
         image_urls: 图片 URL 列表，支持 https:// 或 oss:// 开头。
-                    必须显式传入，工具内部不再从 state 中自动抽取。
+                    必须显式传入。
 
     返回：
         视觉模型对每张图的 JSON 分析结果（中文描述），按 PrototypeAnalysis schema 约束。
