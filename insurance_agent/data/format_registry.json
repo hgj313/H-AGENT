@@ -1,0 +1,58 @@
+{
+  "利宝保险": {
+    "company_name": "利宝保险",
+    "list_title_pattern": "清单",
+    "list_page_marker": "清单",
+    "field_mappings": [
+      {
+        "standard_field": "name",
+        "company_field": "雇员姓名",
+        "field_type": "text",
+        "date_format": ""
+      },
+      {
+        "standard_field": "id_number",
+        "company_field": "证件号",
+        "field_type": "text",
+        "date_format": ""
+      },
+      {
+        "standard_field": "company",
+        "company_field": "用工单位",
+        "field_type": "text",
+        "date_format": ""
+      },
+      {
+        "standard_field": "job_title",
+        "company_field": "工种描述",
+        "field_type": "text",
+        "date_format": ""
+      }
+    ],
+    "table_type": "inline",
+    "has_per_person_dates": true,
+    "overall_date_pattern": "自\\d{4}年\\d{2}月\\d{2}日.*至\\d{4}年\\d{2}月\\d{2}日",
+    "date_fields_in_table": [],
+    "notes": "Auto-detected from 批单_重庆选鹏建筑工程有限公司_7116013100260058791001(2).pdf",
+    "confidence": 0.7
+  },
+  "中国太平洋财产保险": {
+    "company_name": "中国太平洋财产保险",
+    "list_title_pattern": "雇员清单",
+    "list_page_marker": "雇员清单",
+    "field_mappings": [
+      {
+        "standard_field": "occupation_class",
+        "company_field": "职业",
+        "field_type": "text",
+        "date_format": ""
+      }
+    ],
+    "table_type": "table",
+    "has_per_person_dates": false,
+    "overall_date_pattern": "自\\d{4}年\\d{2}月\\d{2}日.*至\\d{4}年\\d{2}月\\d{2}日",
+    "date_fields_in_table": [],
+    "notes": "Auto-detected from 保单_成都兴久隆钢结构工程有限公司_ASHH07037126FN004WAV(2).pdf",
+    "confidence": 0.7
+  }
+}
