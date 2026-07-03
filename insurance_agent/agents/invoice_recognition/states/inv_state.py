@@ -38,6 +38,7 @@ class InvoiceRecognitionState(TypedDict):
     # --- 业务字段 ---
     file_path: str
     pdf_document: Optional[dict]      # 序列化的 PDFDocument
+    page_images: list[str]            # 扫描件页面图片 base64（供 OCR 使用）
     insurance_company: str
     is_scanned: bool
     list_pages: list[int]
@@ -70,6 +71,7 @@ def create_invoice_recognition_state(
         # 业务字段
         "file_path": file_path,
         "pdf_document": None,
+        "page_images": [],
         "insurance_company": "",
         "is_scanned": False,
         "list_pages": [],

@@ -4,6 +4,7 @@
 - 接收 file_path
 - 通过注入的 PDFParser 解析 PDF
 - 识别保险公司
+- 扫描件时，预转换页面图片为 base64 存入 state（供 OCR 节点使用）
 - 存入 state.pdf_document
 """
 
@@ -16,6 +17,7 @@ class PolicyParserNode:
     """PDF 解析节点
 
     DI：通过构造器注入 PDFParserProtocol 实现。
+    扫描件时，自动调用 parser.get_page_images() 预转换图片。
     """
 
     def __init__(self, pdf_parser: PDFParserProtocol):
@@ -39,7 +41,7 @@ class PolicyParserNode:
                 "final_response": f'{{"error": "PDF 解析失败: {e}"}}',
             }
 
-        return {
+        result = {
             "status": "executing",
             "pdf_document": asdict(pdf_doc),
             "insurance_company": pdf_doc.insurance_company,
@@ -54,6 +56,17 @@ class PolicyParserNode:
                 },
             },
         }
+
+        # 扫描件：预转换页面图片为 base64（供 OCR 节点使用）
+        if pdf_doc.is_scanned and hasattr(self._pdf_parser, "get_page_images"):
+            try:
+                page_images = self._pdf_parser.get_page_images(pdf_doc)
+                result["page_images"] = page_images
+                result["tool_results"]["policy_parser"]["page_images_count"] = len(page_images)
+            except Exception as e:
+                result["tool_results"]["policy_parser"]["page_images_error"] = str(e)
+
+        return result
 
 
 def policy_parser_node(state: InvoiceRecognitionState) -> dict:

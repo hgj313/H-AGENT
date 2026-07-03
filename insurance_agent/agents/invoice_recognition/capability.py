@@ -18,13 +18,22 @@ from insurance_agent.agents.invoice_recognition.nodes import (
     ValidatorNode,
     OutputNode,
 )
+from insurance_agent.extractors import OCRExtractor
 
 
 class InvoiceRecognitionCapability:
     """保险单识别能力
 
     使用方式：
+        # 文字层 PDF（不需要 LLM）
         capability = InvoiceRecognitionCapability(pdf_parser=PyMuPDFParser())
+
+        # 扫描件 PDF（需要注入 LLM 客户端）
+        llm = ...  # ChatOpenAI 或项目底座 LLM
+        capability = InvoiceRecognitionCapability(
+            pdf_parser=PyMuPDFParser(),
+            llm_client=llm,
+        )
         builder = capability.get_graph_builder()
         graph = builder.compile()
         result = graph.invoke(create_invoice_recognition_state(
@@ -32,11 +41,18 @@ class InvoiceRecognitionCapability:
         ))
     """
 
-    def __init__(self, pdf_parser: PDFParserProtocol):
+    def __init__(self, pdf_parser: PDFParserProtocol, llm_client=None):
         self._pdf_parser = pdf_parser
+        self._llm_client = llm_client
+
+        # OCR 提取器（仅当提供了 llm_client 时才创建）
+        ocr_extractor = OCRExtractor(llm_client=llm_client) if llm_client else None
+
         self._policy_parser = PolicyParserNode(pdf_parser=pdf_parser)
         self._metadata_extractor = MetadataExtractorNode()
-        self._personnel_extractor = PersonnelExtractorNode()
+        self._personnel_extractor = PersonnelExtractorNode(
+            ocr_extractor=ocr_extractor,
+        )
         self._validator = ValidatorNode()
         self._output = OutputNode()
 

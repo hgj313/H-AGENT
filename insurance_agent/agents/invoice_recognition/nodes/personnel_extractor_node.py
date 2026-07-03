@@ -4,13 +4,14 @@
 - 根据 format_hint 选择对应 Extractor
 - 从 list_pages 提取 InsuredPerson
 - 缺日期时用整体保险期间兜底
+- format_hint == "ocr" 时走 OCRExtractor（Phase 3）
 
-DI：所有 Extractor 通过构造器注入。OCR 走视觉模型（Phase 3）。
+DI：所有 Extractor 通过构造器注入。
 """
 
 from typing import Optional
 from insurance_agent.domain import PDFDocument, InsuredPerson, ExtractionResult
-from insurance_agent.extractors import BaseExtractor, TableExtractor, InlineExtractor
+from insurance_agent.extractors import BaseExtractor, TableExtractor, InlineExtractor, OCRExtractor
 from insurance_agent.agents.invoice_recognition.states.inv_state import InvoiceRecognitionState
 
 
@@ -24,11 +25,11 @@ class PersonnelExtractorNode:
         self,
         table_extractor: Optional[BaseExtractor] = None,
         inline_extractor: Optional[BaseExtractor] = None,
-        # ocr_extractor: Optional[BaseExtractor] = None,  # TODO Phase 3
+        ocr_extractor: Optional[BaseExtractor] = None,
     ):
         self._table = table_extractor or TableExtractor()
         self._inline = inline_extractor or InlineExtractor()
-        # self._ocr = ocr_extractor  # TODO Phase 3
+        self._ocr = ocr_extractor  # OCR 需要 LLM，默认不注入
 
     def __call__(self, state: InvoiceRecognitionState) -> dict:
         pdf_doc_dict = state.get("pdf_document")
@@ -47,21 +48,34 @@ class PersonnelExtractorNode:
         persons: list[InsuredPerson] = []
 
         if format_hint == "ocr":
-            # TODO Phase 3: 扫描件走视觉模型
-            return {
-                "status": "error",
-                "error": "scanned_pdf_ocr_not_implemented",
-                "final_response": '{"error": "扫描件 OCR 待 Phase 3 接入视觉模型"}',
-            }
+            # Phase 3: 扫描件走视觉模型 OCR
+            if not self._ocr:
+                return {
+                    "status": "error",
+                    "error": "ocr_extractor_not_injected",
+                    "final_response": '{"error": "OCR 提取器未注入 LLM 客户端"}',
+                }
+            page_images = state.get("page_images", [])
+            try:
+                persons = self._ocr.extract(
+                    policy_holder=policy_holder,
+                    insurance_company=insurance_company,
+                    page_images=page_images,
+                )
+            except Exception as e:
+                # 失败透传：直接抛异常，不兜底
+                raise RuntimeError(f"OCR 提取失败: {e}") from e
 
-        for page_num in list_pages:
-            page = pdf_doc.pages[page_num - 1]
-            text = page.text
+        else:
+            # 文字层：table 或 inline 格式
+            for page_num in list_pages:
+                page = pdf_doc.pages[page_num - 1]
+                text = page.text
 
-            if format_hint == "inline":
-                persons.extend(self._inline.extract(text, policy_holder, insurance_company))
-            else:  # table
-                persons.extend(self._table.extract(text, policy_holder, insurance_company))
+                if format_hint == "inline":
+                    persons.extend(self._inline.extract(text, policy_holder, insurance_company))
+                else:  # table（默认）
+                    persons.extend(self._table.extract(text, policy_holder, insurance_company))
 
         # 用整体保险期间兜底缺日期的人员
         overall_start = state.get("working_memory", {}).get("overall_start_date", "")

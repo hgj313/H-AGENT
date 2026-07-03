@@ -89,6 +89,24 @@ class PyMuPDFParser:
         doc.close()
         return img_base64
 
+    def get_page_images(self, pdf_doc: PDFDocument) -> list[str]:
+        """获取所有页的 base64 PNG 图片列表（供视觉模型 OCR 使用）
+
+        扫描件转换所有页；文字层 PDF 也转换所有页（list_pages 由下游节点补充）。
+        """
+        doc = pymupdf.open(pdf_doc.file_path)
+        images: list[str] = []
+
+        for page_num in range(1, len(doc) + 1):
+            page = doc[page_num - 1]
+            pix = page.get_pixmap(dpi=self.IMAGE_DPI)
+            img_bytes = pix.tobytes("png")
+            img_base64 = base64.b64encode(img_bytes).decode("utf-8")
+            images.append(img_base64)
+
+        doc.close()
+        return images
+
     def _detect_insurance_company(self, pdf_doc: PDFDocument) -> str:
         """从所有页面文字中识别保险公司名"""
         all_text = " ".join(p.text for p in pdf_doc.pages if p.has_meaningful_text)
