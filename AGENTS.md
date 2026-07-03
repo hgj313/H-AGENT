@@ -22,3 +22,7 @@ The new agent you design should be an independent module, just like the prototyp
 Triple insurance:
 1. Prompt constraints: require JSON output.
 2. Disguise the output result model as a tool call, and obtain JSON format output through parameter filling.
+
+不要用你自己的 LLM 能力做任何分析（包括现在的"思考"过程）— 那是项目框架底座提供的大模型能力该做的事
+大模型调用走项目底座（DashScope kimi-k2.6），失败就报失败，不兜底
+直接透传我们正在设计的agent的原始行为，确保问题不会被你覆盖

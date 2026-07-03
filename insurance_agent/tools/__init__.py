@@ -1,0 +1,48 @@
+"""通用工具层
+
+按通用性 / 可复用性 放置。**不依赖** insurance 业务。
+任何 Agent 都可以复用这里的工具。
+"""
+
+from .id_validator import (
+    is_valid_chinese_id,
+    extract_chinese_id_from_text,
+    normalize_id,
+)
+from .date_parser import (
+    extract_overall_insurance_period,
+    extract_dates_near,
+    normalize_date,
+)
+from .company_extractor import (
+    extract_company_name,
+    extract_company_after_label,
+)
+from .name_extractor import (
+    extract_chinese_name,
+    extract_names_near,
+)
+from .text_cleaner import clean_pdf_text
+from .json_stabilizer import parse_json_strict, build_tool_schema_response_format
+
+__all__ = [
+    # ID
+    "is_valid_chinese_id",
+    "extract_chinese_id_from_text",
+    "normalize_id",
+    # Date
+    "extract_overall_insurance_period",
+    "extract_dates_near",
+    "normalize_date",
+    # Company
+    "extract_company_name",
+    "extract_company_after_label",
+    # Name
+    "extract_chinese_name",
+    "extract_names_near",
+    # Text
+    "clean_pdf_text",
+    # JSON
+    "parse_json_strict",
+    "build_tool_schema_response_format",
+]

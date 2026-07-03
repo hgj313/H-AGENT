@@ -1,0 +1,26 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# 临时脚本
+analyze_pdf_structure.py
+extract_key_pages.py
+extract_pdf_text.py
+pdf_analysis.txt
+pdf_key_pages.txt
+
+# 本地数据（保险公司格式注册表，运行时生成）
+insurance_agent/data/format_registry.json
+
+# 提取结果（运行产物）
+extraction_results.json
+
+# 敏感/外部资料
+inputs/
+test_pdfs/
