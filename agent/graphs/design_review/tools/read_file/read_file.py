@@ -239,7 +239,7 @@ class ReadFileTool(BaseTool):
         return self._download_service
 
     def _is_oss_path(self, path: str) -> bool:
-        if path.startswith("oss://") or path.startswith("aliyun://"):
+        if path.startswith("oss://") or path.startswith("aliyun://") or path.startswith("https://"):
             return True
         if re.match(r'^[a-zA-Z0-9_\-/\.]+$', path) and "/" in path:
             if not Path(path).exists():
@@ -447,7 +447,19 @@ class ReadFileTool(BaseTool):
                 except Exception:
                     pass
 
-    def _ensure_temp_dir(self) -> None:
+    def _read_from_local_url(self, object_name: str, output_format: str | None = None) -> str:
+        """保留桩：API 层（api/v1/endpoints/design_review.py）负责把 local:// URL
+        解析为本地文件路径或字节流，再以 content/bytes 形式传入 agent/domain。
+
+        read_file_tool 仍可通过 mode="local" + 真实文件路径读取本地文件，
+        但**不再**识别 local:// 协议（避免 domain 感知传输层细节）。
+        """
+        raise ReadFileError(
+            f"read_file_tool 不再支持 local:// 协议：{object_name}"
+            "（请在 API 层解析为真实路径后传入）"
+        )
+
+    def _ensure_temp_dir(self) -> Path:
         self._temp_dir.mkdir(parents=True, exist_ok=True)
 
     def get_handler_capabilities(self) -> dict[str, Any]:

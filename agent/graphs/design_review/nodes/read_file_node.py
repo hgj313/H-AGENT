@@ -27,5 +27,5 @@ def read_file_node(state: DRState) -> dict:
 
     return {
         "messages": messages + [ToolMessage(content=result, tool_call_id=tool_call_id)],
-        "llm_calls": state.get("llm_calls", 0),
+        "llm_calls": 0,
     }
