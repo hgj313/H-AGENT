@@ -7,8 +7,8 @@ Returns design information in structured format.
 from langchain_core.tools import tool
 
 try:
-    from llm_model.vision_model.aliyun import VisionModelProvider
-    model_provider = VisionModelProvider()
+    from llm_model.vision_model.aliyun import AliyunVisionModelProvider
+    model_provider = AliyunVisionModelProvider()
     model = model_provider.get_model()
 except ImportError:
     model = None

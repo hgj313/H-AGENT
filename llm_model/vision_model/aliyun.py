@@ -27,7 +27,7 @@ model_name = [
 
 
 
-class VisionModelProvider:
+class AliyunVisionModelProvider:
     def __init__(self):
         self.model = model_name[3]
 

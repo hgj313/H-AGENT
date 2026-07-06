@@ -10,13 +10,13 @@ from typing import Annotated
 
 from langchain_core.tools import tool
 
-from llm_model.vision_model.aliyun import VisionModelProvider
+from llm_model.vision_model.aliyun import AliyunVisionModelProvider
 from agent.graphs.design_review.schemas.prototype_schema import PrototypeAnalysis
 from agent.graphs.design_review.tools.analyze_prototype.prompts import (
     ANALYZE_PROTOTYPE_PROMPT,
 )
 
-model_provider = VisionModelProvider()
+model_provider = AliyunVisionModelProvider()
 _model = model_provider.get_model()
 
 
