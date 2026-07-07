@@ -1,8 +1,17 @@
 """Table Extractor - 表格格式人员清单
 
-适用格式（如太平洋保险雇员清单）：
+适用格式（如太平洋保险雇员清单、中国人寿保单）：
     序号 | 姓名 | 证件类型 | 证件号码 | 岗位名称 | 起期 | 止期
     1    | 李刚 | 身份证  | 512528197612124918 | 钢结构安装工 | 2026-06-24 | 2026-09-24
+
+也支持被保险人名单格式：
+    序号 | 姓名 | 身份证号 | 职业类别 | 承保方案
+    1    | 黄嗣彬 | 450802198506193118 | ... | 01
+
+支持批改类型检测：
+- 文本中出现"增加"/"批增" → 增保
+- 文本中出现"删除"/"减少"/"批减" → 减保
+- 默认 → 增保
 """
 
 import re
@@ -20,12 +29,24 @@ class TableExtractor(BaseExtractor):
     """表格格式提取器
 
     策略：先用身份证号定位"人"的位置，再从上下文提取姓名/日期/公司/工种
+    自动检测增保/减保标记。
     """
 
     # 常见工种模式（用于在上下文里捕获岗位名称）
     _JOB_PATTERN = re.compile(
         r"([\u4e00-\u9fff]{2,10}(?:工|员|师|者|人))"
     )
+
+    # 工种误报黑名单（不是工种的词）
+    _JOB_BLACKLIST = {
+        "保险人", "投保人", "被保险人", "受益人", "经办人", "负责人",
+        "联系人", "代理人", "证人", "签章人", "业务员",
+    }
+
+    # 减保标记
+    _REMOVE_MARKERS = ["删除", "减少", "批减", "减保", "注销"]
+    # 增保标记
+    _ADD_MARKERS = ["增加", "新增", "批增", "增保"]
 
     def extract(
         self,
@@ -37,8 +58,11 @@ class TableExtractor(BaseExtractor):
         if not text:
             return persons
 
+        # 检测批改类型
+        mod_type = self._detect_modification_type(text)
+
         # 只在 "人员清单" 标记之后搜索
-        list_markers = ["人员清单", "雇员清单", "被保险人清单", "员工清单"]
+        list_markers = ["人员清单", "雇员清单", "被保险人清单", "员工清单", "被保险人名单"]
         list_text = text
         for marker in list_markers:
             idx = text.find(marker)
@@ -71,7 +95,7 @@ class TableExtractor(BaseExtractor):
             # 优先用工单位标签
             post_region = list_text[id_pos:id_pos + 400]
             m_company = re.search(
-                r"用工单位[：:\s]*([\u4e00-\u9fff]+(?:有限公司|集团(?:公司)?|股份有限公司|责任公司|公司))",
+                r"(?:实际)?用工单位[：:\s]*([\u4e00-\u9fff]+(?:有限公司|集团(?:公司)?|股份有限公司|责任公司|公司))",
                 post_region
             )
             if m_company:
@@ -85,9 +109,11 @@ class TableExtractor(BaseExtractor):
 
             # 6. 在身份证号附近提取工种
             job_title = ""
-            job_match = self._JOB_PATTERN.search(post_region)
-            if job_match:
-                job_title = job_match.group(1)
+            for job_match in self._JOB_PATTERN.finditer(post_region):
+                candidate = job_match.group(1)
+                if candidate not in self._JOB_BLACKLIST:
+                    job_title = candidate
+                    break
 
             persons.append(InsuredPerson(
                 name=name,
@@ -98,6 +124,18 @@ class TableExtractor(BaseExtractor):
                 end_date=end_date,
                 job_title=job_title,
                 confidence=0.85,
+                modification_type=mod_type,
             ))
 
         return persons
+
+    @classmethod
+    def _detect_modification_type(cls, text: str) -> str:
+        """从文本中检测批改类型"""
+        for marker in cls._REMOVE_MARKERS:
+            if marker in text:
+                return "减保"
+        for marker in cls._ADD_MARKERS:
+            if marker in text:
+                return "增保"
+        return "增保"

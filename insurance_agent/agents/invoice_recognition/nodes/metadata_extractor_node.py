@@ -17,9 +17,9 @@ from insurance_agent.agents.invoice_recognition.states.inv_state import InvoiceR
 
 
 # 人员清单页定位标记
-_LIST_MARKERS = ["人员清单", "雇员清单", "被保险人清单", "员工清单"]
+_LIST_MARKERS = ["人员清单", "雇员清单", "被保险人清单", "员工清单", "被保险人名单"]
 # 行内格式标记
-_INLINE_MARKERS = ["雇员姓名：", "雇员姓名:", "雇员姓名："]
+_INLINE_MARKERS = ["雇员姓名：", "雇员姓名:", "雇员姓名：", "雇员姓名:"]
 
 
 class MetadataExtractorNode:

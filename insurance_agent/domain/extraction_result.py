@@ -37,10 +37,12 @@ class ExtractionResult:
                 "证件类型": person.id_type,
                 "出生日期": person.birth_date,
                 "所属公司": person.company,
+                "批改类型": person.modification_type,
                 "起始时间": person.start_date or self.overall_start_date,
                 "起止时间": person.end_date or self.overall_end_date,
                 "岗位名称": person.job_title,
                 "保险公司": self.insurance_company,
                 "保单号": self.policy_number,
+                "来源文件": self.file_name,
             })
         return rows

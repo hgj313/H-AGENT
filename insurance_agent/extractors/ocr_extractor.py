@@ -28,9 +28,12 @@ _OCR_PROMPT = """请识别图片中的被保人员清单，提取以下字段并
 - company: 所属公司名称（用工单位，不是工种）
 - start_date: 起始时间（YYYY-MM-DD，无法识别则留空）
 - end_date: 终止时间（YYYY-MM-DD，无法识别则留空）
+- modification_type: 批改类型，取值为"增保"或"减保"。
+  判断规则：如果图片中有"增加雇员"/"新增"/"批增"等字样则为"增保"；如果有"删除雇员"/"减少"/"批减"/"注销"等字样则为"减保"。
+  如果无法判断则填"增保"。
 
 只返回JSON数组，不要其他文字。示例：
-[{"name":"张三","id_number":"110101199003078811","birth_date":"1990-03-07","company":"某有限公司","start_date":"2024-01-01","end_date":"2024-12-31"}]
+[{"name":"张三","id_number":"110101199003078811","birth_date":"1990-03-07","company":"某有限公司","start_date":"2024-01-01","end_date":"2024-12-31","modification_type":"增保"}]
 
 没有人员清单则返回 []"""
 
@@ -153,6 +156,7 @@ class OCRExtractor(BaseExtractor):
                 start_date=item.get("start_date", "") or None,
                 end_date=item.get("end_date", "") or None,
                 birth_date=item.get("birth_date", "") or None,
+                modification_type=item.get("modification_type", "") or "增保",
                 confidence=0.8,
             )
             if p.name:  # 只保留有名字的
