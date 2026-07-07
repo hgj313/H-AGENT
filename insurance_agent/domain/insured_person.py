@@ -9,6 +9,7 @@
 - end_date         起止时间 (YYYY-MM-DD)
 - job_title        岗位名称 / 工种
 - occupation_class 职业类别 / 等级
+- birth_date       出生日期 (YYYY-MM-DD，用于补全脱敏身份证号)
 - confidence       提取置信度
 """
 
@@ -26,4 +27,5 @@ class InsuredPerson:
     end_date: str = ""
     job_title: str = ""
     occupation_class: str = ""
+    birth_date: str = ""
     confidence: float = 0.0

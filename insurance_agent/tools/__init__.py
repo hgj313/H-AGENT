@@ -9,6 +9,13 @@ from .id_validator import (
     extract_chinese_id_from_text,
     normalize_id,
 )
+from .id_reconstructor import (
+    is_masked_id,
+    reconstruct_masked_id,
+    reconstruct_persons_ids,
+    calculate_checksum,
+    parse_birth_date,
+)
 from .date_parser import (
     extract_overall_insurance_period,
     extract_dates_near,
@@ -30,6 +37,12 @@ __all__ = [
     "is_valid_chinese_id",
     "extract_chinese_id_from_text",
     "normalize_id",
+    # ID Reconstruction
+    "is_masked_id",
+    "reconstruct_masked_id",
+    "reconstruct_persons_ids",
+    "calculate_checksum",
+    "parse_birth_date",
     # Date
     "extract_overall_insurance_period",
     "extract_dates_near",

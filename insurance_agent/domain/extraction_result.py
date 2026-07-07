@@ -35,6 +35,7 @@ class ExtractionResult:
                 "姓名": person.name,
                 "证件号码": person.id_number,
                 "证件类型": person.id_type,
+                "出生日期": person.birth_date,
                 "所属公司": person.company,
                 "起始时间": person.start_date or self.overall_start_date,
                 "起止时间": person.end_date or self.overall_end_date,

@@ -23,13 +23,14 @@ _SYSTEM_PROMPT = """你是一个保险单识别专家。这是合法的保险理
 # OCR Prompt：强制返回 JSON 数组，不输出解释
 _OCR_PROMPT = """请识别图片中的被保人员清单，提取以下字段并以JSON数组返回：
 - name: 姓名
-- id_number: 身份证号码（完整18位，原样识别，禁止用*替换任何位）
+- id_number: 身份证号码（完整18位，原样识别，禁止用*替换任何位。如果图片中身份证号本身被脱敏(含*号)，请原样返回）
+- birth_date: 出生日期（YYYY-MM-DD格式，从表格中的"出生日期"/"出生年月"/"生日"等列识别；如表格中无此列则留空）
 - company: 所属公司名称（用工单位，不是工种）
 - start_date: 起始时间（YYYY-MM-DD，无法识别则留空）
 - end_date: 终止时间（YYYY-MM-DD，无法识别则留空）
 
 只返回JSON数组，不要其他文字。示例：
-[{"name":"张三","id_number":"110101199003078811","company":"某有限公司","start_date":"2024-01-01","end_date":"2024-12-31"}]
+[{"name":"张三","id_number":"110101199003078811","birth_date":"1990-03-07","company":"某有限公司","start_date":"2024-01-01","end_date":"2024-12-31"}]
 
 没有人员清单则返回 []"""
 
@@ -151,6 +152,7 @@ class OCRExtractor(BaseExtractor):
                 company=item.get("company", "").strip(),
                 start_date=item.get("start_date", "") or None,
                 end_date=item.get("end_date", "") or None,
+                birth_date=item.get("birth_date", "") or None,
                 confidence=0.8,
             )
             if p.name:  # 只保留有名字的
