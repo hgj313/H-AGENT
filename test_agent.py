@@ -1,7 +1,7 @@
 """端到端测试：通过 LangGraph 跑通 Agent 管线
 
 透传 Agent 行为，不做兜底分析。
-扫描件 PDF 走 Phase 3 OCR（需要 DASHSCOPE_API_KEY 环境变量）。
+扫描件 PDF 走 MiniMax-M3 多模态视觉模型 OCR。
 """
 
 import json
@@ -19,24 +19,12 @@ from insurance_agent.agents.invoice_recognition import (
     create_invoice_recognition_state,
     build_invoice_recognition_graph,
 )
-from insurance_agent.infrastructure.llm.factory import LLMConfig, LLMProvider, create_llm
+from insurance_agent.infrastructure.llm.factory import create_minimax_llm_from_env
 
 
 def get_llm_client():
-    """创建 kimi-k2.6 视觉模型客户端（失败抛异常，不兜底）"""
-    api_key = os.getenv("DASHSCOPE_API_KEY")
-    base_url = os.getenv("DASHSCOPE_BASE_URL")
-    if not api_key:
-        print("  [WARN] DASHSCOPE_API_KEY 未配置，扫描件 OCR 将不可用")
-        return None
-
-    config = LLMConfig(
-        provider=LLMProvider.DASHSCOPE,
-        model_name="kimi-k2.6",
-        api_key=api_key,
-        base_url=base_url,
-    )
-    return create_llm(config)
+    """创建 MiniMax-M3 多模态模型客户端（失败抛异常，不兜底）"""
+    return create_minimax_llm_from_env()
 
 
 def run_agent(pdf_path: str, llm_client=None) -> dict:
@@ -59,7 +47,7 @@ if __name__ == "__main__":
     llm_client = None
     try:
         llm_client = get_llm_client()
-        print("[OK] LLM 客户端创建成功（kimi-k2.6）")
+        print("[OK] LLM 客户端创建成功（MiniMax-M3 多模态）")
     except Exception as e:
         print(f"[WARN] LLM 客户端创建失败: {e}")
         print("      文字层 PDF 仍可正常提取，扫描件将跳过 OCR")

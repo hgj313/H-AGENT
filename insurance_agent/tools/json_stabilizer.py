@@ -11,7 +11,7 @@ import re
 from typing import Any
 
 
-def parse_json_strict(raw: str) -> dict:
+def parse_json_strict(raw: str) -> dict | list:
     """多重尝试解析 LLM 返回的 JSON
 
     尝试顺序：
@@ -25,7 +25,7 @@ def parse_json_strict(raw: str) -> dict:
     # Method 1: 直接解析
     try:
         result = json.loads(raw)
-        if isinstance(result, dict):
+        if isinstance(result, (dict, list)):
             return result
     except json.JSONDecodeError:
         pass
@@ -35,17 +35,26 @@ def parse_json_strict(raw: str) -> dict:
     if m:
         try:
             result = json.loads(m.group(1))
-            if isinstance(result, dict):
+            if isinstance(result, (dict, list)):
                 return result
         except json.JSONDecodeError:
             pass
 
-    # Method 3: 最外层 { ... }
+    # Method 3: 最外层 { ... } 或 [ ... ]
     m = re.search(r"\{[\s\S]*\}", raw)
     if m:
         try:
             result = json.loads(m.group(0))
-            if isinstance(result, dict):
+            if isinstance(result, (dict, list)):
+                return result
+        except json.JSONDecodeError:
+            pass
+
+    m = re.search(r"\[[\s\S]*\]", raw)
+    if m:
+        try:
+            result = json.loads(m.group(0))
+            if isinstance(result, (dict, list)):
                 return result
         except json.JSONDecodeError:
             pass
