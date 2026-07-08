@@ -454,6 +454,11 @@
             area.scrollTop = area.scrollHeight;
         }
 
+        function getApiBase() {
+            // 使用当前页面的主机和端口，避免相对路径在不同入口下失败
+            return `${window.location.protocol}//${window.location.host}`;
+        }
+
         async function processFiles() {
             if (selectedFiles.length === 0) return;
 
@@ -474,12 +479,20 @@
 
             addLog('文件上传中...');
 
+            // 上传文件可能较大，给一个较长的超时控制
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 600000); // 10 分钟
+
             try {
-                const resp = await fetch('/api/upload', {
+                const apiBase = getApiBase();
+                addLog(`请求地址: ${apiBase}/api/upload`, 'info');
+                const resp = await fetch(`${apiBase}/api/upload`, {
                     method: 'POST',
                     body: formData,
+                    signal: controller.signal,
                 });
 
+                clearTimeout(timeoutId);
                 addLog('服务器处理完成，解析结果...');
 
                 const data = await resp.json();
@@ -503,7 +516,14 @@
                 addLog('结果展示完成', 'ok');
 
             } catch (err) {
-                addLog(`错误: ${err.message}`, 'error');
+                clearTimeout(timeoutId);
+                if (err.name === 'AbortError') {
+                    addLog('请求超时（>10分钟），请检查 PDF 文件大小', 'error');
+                } else {
+                    addLog(`错误: ${err.message}`, 'error');
+                    addLog(`提示: 当前页 ${window.location.href}`, 'warn');
+                    addLog(`请确保浏览器访问的是 http://localhost:8765 (本机服务)`, 'warn');
+                }
                 alert('处理失败: ' + err.message);
             } finally {
                 btn.disabled = false;
@@ -601,7 +621,9 @@
         }
 
         function downloadFile(format) {
-            window.location.href = `/api/download/${format}`;
+            // 用绝对地址避免相对路径在不同入口失败
+            const apiBase = getApiBase();
+            window.location.href = `${apiBase}/api/download/${format}`;
         }
     </script>
 </body>
