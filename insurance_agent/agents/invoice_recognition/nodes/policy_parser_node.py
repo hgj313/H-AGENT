@@ -3,7 +3,7 @@
 职责：
 - 接收 file_path
 - 通过注入的 PDFParser 解析 PDF
-- 识别保险公司
+- 识别保险公司（文字层 + 图片 OCR 兜底）
 - 扫描件时，预转换页面图片为 base64 存入 state（供 OCR 节点使用）
 - 存入 state.pdf_document
 """
@@ -18,10 +18,16 @@ class PolicyParserNode:
 
     DI：通过构造器注入 PDFParserProtocol 实现。
     扫描件时，自动调用 parser.get_page_images() 预转换图片。
+    保险公司名识别失败时，通过 company_image_detector 从首页图片 OCR 提取。
     """
 
-    def __init__(self, pdf_parser: PDFParserProtocol):
+    def __init__(
+        self,
+        pdf_parser: PDFParserProtocol,
+        company_image_detector=None,
+    ):
         self._pdf_parser = pdf_parser
+        self._company_image_detector = company_image_detector
 
     def __call__(self, state: InvoiceRecognitionState) -> dict:
         file_path = state.get("file_path", "")
@@ -41,10 +47,21 @@ class PolicyParserNode:
                 "final_response": f'{{"error": "PDF 解析失败: {e}"}}',
             }
 
+        insurance_company = pdf_doc.insurance_company
+
+        # 保险公司名识别失败时，通过图片 OCR 兜底
+        if insurance_company == "unknown" and self._company_image_detector:
+            try:
+                insurance_company = self._company_image_detector.detect_from_first_page(pdf_doc)
+                pdf_doc.insurance_company = insurance_company
+            except Exception as e:
+                # OCR 失败不阻断流程，保持 "unknown"
+                pass
+
         result = {
             "status": "executing",
             "pdf_document": asdict(pdf_doc),
-            "insurance_company": pdf_doc.insurance_company,
+            "insurance_company": insurance_company,
             "is_scanned": pdf_doc.is_scanned,
             "tool_results": {
                 **state.get("tool_results", {}),
@@ -52,7 +69,7 @@ class PolicyParserNode:
                     "file_name": pdf_doc.file_name,
                     "total_pages": pdf_doc.total_pages,
                     "is_scanned": pdf_doc.is_scanned,
-                    "insurance_company": pdf_doc.insurance_company,
+                    "insurance_company": insurance_company,
                 },
             },
         }

@@ -2,8 +2,10 @@
 
 支持功能：
 - 批量上传多个 PDF 保单文件
-- 自动识别保险公司
+- 自动识别保险公司（文字层 + 图片 OCR 兜底）
 - 自动识别增保/减保类型
+- 批单关联主保单：通过保单号/公司名查找主保单，补全起止时间
+- 保单文件库：存储上传的保单 PDF，建立索引供批单查找
 - 所有被保人信息汇总到一个 CSV 表格
 - 身份证号脱敏自动补全（用出生日期）
 
@@ -22,6 +24,7 @@ from dotenv import load_dotenv
 load_dotenv("C:/insurance-automation/H-AGENT/.env")
 
 from insurance_agent.infrastructure.parsers import PyMuPDFParser
+from insurance_agent.infrastructure import PolicyLibrary
 from insurance_agent.agents.invoice_recognition import (
     InvoiceRecognitionCapability,
     create_invoice_recognition_state,
@@ -29,6 +32,7 @@ from insurance_agent.agents.invoice_recognition import (
 )
 from insurance_agent.infrastructure.llm.factory import create_minimax_llm_from_env
 from insurance_agent.domain import ExtractionResult, InsuredPerson
+from insurance_agent.tools import parse_policy_filename, is_main_policy, is_endorsement
 
 
 def get_llm_client():
@@ -36,10 +40,20 @@ def get_llm_client():
     return create_minimax_llm_from_env()
 
 
-def run_agent(pdf_path: str, llm_client=None) -> dict:
-    """运行 Agent 识别单份保单"""
+def run_agent(pdf_path: str, llm_client=None, policy_library=None) -> dict:
+    """运行 Agent 识别单份保单
+
+    Args:
+        pdf_path: PDF 文件路径
+        llm_client: LLM 客户端（扫描件 OCR 需要）
+        policy_library: 保单文件库（批单关联主保单需要）
+    """
     pdf_parser = PyMuPDFParser()
-    capability = InvoiceRecognitionCapability(pdf_parser=pdf_parser, llm_client=llm_client)
+    capability = InvoiceRecognitionCapability(
+        pdf_parser=pdf_parser,
+        llm_client=llm_client,
+        policy_library=policy_library,
+    )
     graph = build_invoice_recognition_graph(capability)
 
     initial_state = create_invoice_recognition_state(
@@ -112,7 +126,8 @@ def print_summary(results: list[dict]):
         other_count = len(persons) - add_count - remove_count
 
         insurance_co = r.get("insurance_company", "unknown")
-        print(f"  [{insurance_co}] {fname}")
+        policy_type = parse_policy_filename(fname).policy_type or "?"
+        print(f"  [{insurance_co}] [{policy_type}] {fname}")
         print(f"    人数: {len(persons)} (增保: {add_count}, 减保: {remove_count}, 其他: {other_count})")
 
         total_persons += len(persons)
@@ -124,7 +139,7 @@ def print_summary(results: list[dict]):
 
 
 if __name__ == "__main__":
-    # 尝试创建 LLM 客户端（扫描件 OCR 需要）
+    # 尝试创建 LLM 客户端（扫描件 OCR + 保险公司图片识别需要）
     llm_client = None
     try:
         llm_client = get_llm_client()
@@ -133,35 +148,59 @@ if __name__ == "__main__":
         print(f"[WARN] LLM 客户端创建失败: {e}")
         print("      文字层 PDF 仍可正常提取，扫描件将跳过 OCR")
 
+    # 初始化保单文件库
+    policy_library = PolicyLibrary(base_dir="C:/insurance-automation/policy_library")
+    print(f"[OK] 保单文件库: {policy_library}")
+
     # 批量 PDF 文件列表
     files = [
-        # 旧测试文件
-        "D:/工作资料/2026/6月/AI项目/AI保险/保单/批单_重庆选鹏建筑工程有限公司_7116013100260058791001(2).pdf",
-        "D:/工作资料/2026/6月/AI项目/AI保险/保单/保单_重庆森炜建筑劳务有限公司_8116013100260072423000.pdf",
-        "D:/工作资料/2026/6月/AI项目/AI保险/保单/保单_成都兴久隆钢结构工程有限公司_ASHH07037126FN004WAV(2).pdf",
-        "D:/工作资料/2026/6月/AI项目/AI保险/南京大千装饰工程有限公司保单.pdf",
-        # 新增测试文件
-        "D:/工作资料/2026/6月/AI项目/AI保险/保单/替换9人·批增2人保单·广州粤灿0624.pdf",
-        "D:/工作资料/2026/6月/AI项目/AI保险/保单/保单_深圳市祥胜建设有限公司_668701202644017100008803.pdf",
+        "D:/工作资料/2026/6月/AI项目/AI保险/保单/替换4人保单·粤灿0612.pdf",
+        "D:/工作资料/2026/6月/AI项目/AI保险/保单/替换3人保单·广州粤灿0601.pdf",
+        "D:/工作资料/2026/6月/AI项目/AI保险/保单/保单_兴文县欣雅建筑劳务有限公司_ASHH07037126FN004NXB(1).pdf",
     ]
 
+    # 按保单类型排序：先处理保单（主文件），再处理批单
+    # 这样批单处理时可以查找到已注册的主保单
+    main_files = [f for f in files if is_main_policy(f)]
+    batch_files = [f for f in files if is_endorsement(f)]
+    other_files = [f for f in files if not is_main_policy(f) and not is_endorsement(f)]
+
+    sorted_files = main_files + other_files + batch_files
+
+    if len(main_files) > 0 or len(batch_files) > 0:
+        print(f"[INFO] 文件分类: 保单={len(main_files)}, 批单={len(batch_files)}, 其他={len(other_files)}")
+        print(f"[INFO] 处理顺序: 先保单后批单（确保批单可关联主保单）")
+
     results = []
-    for fpath in files:
+    for fpath in sorted_files:
         print("=" * 70)
-        print(f"文件: {os.path.basename(fpath)}")
+        fname = os.path.basename(fpath)
+        fname_info = parse_policy_filename(fpath)
+        print(f"文件: {fname}  [{fname_info.policy_type or '?'}]")
         print("=" * 70)
 
         try:
-            final_state = run_agent(fpath, llm_client=llm_client)
+            final_state = run_agent(fpath, llm_client=llm_client, policy_library=policy_library)
 
             # 透传 final_response（agent 输出的最终 JSON）
             print(final_state.get("final_response", "{}"))
 
             # 记录结果
             result_dict = final_state.get("extraction_result") or {
-                "file_name": os.path.basename(fpath),
+                "file_name": fname,
                 "error": final_state.get("error"),
             }
+
+            # 补充文件路径和投保人信息（供保单库使用）
+            result_dict["file_path"] = fpath
+            if not result_dict.get("policy_holder"):
+                result_dict["policy_holder"] = fname_info.company
+
+            # 注册到保单文件库
+            if not result_dict.get("error"):
+                record = policy_library.register(result_dict)
+                print(f"[LIB] 已注册到保单库: {record.policy_type} | {record.policy_number} | {record.company}")
+
             results.append(result_dict)
 
         except Exception as e:
@@ -169,7 +208,7 @@ if __name__ == "__main__":
             import traceback
             traceback.print_exc()
             results.append({
-                "file_name": os.path.basename(fpath),
+                "file_name": fname,
                 "error": str(e),
             })
 
@@ -184,6 +223,11 @@ if __name__ == "__main__":
 
     # 打印汇总
     print_summary(results)
+
+    # 打印保单库状态
+    print(f"\n保单库: {policy_library}")
+    for r in policy_library.records:
+        print(f"  [{r.policy_type}] {r.file_name} | {r.policy_number} | {r.company} | {r.insurance_company}")
 
     print(f"\nJSON: {json_path}")
     print(f"CSV:  {csv_path}")

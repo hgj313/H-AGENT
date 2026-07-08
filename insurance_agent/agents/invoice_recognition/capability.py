@@ -41,19 +41,37 @@ class InvoiceRecognitionCapability:
         ))
     """
 
-    def __init__(self, pdf_parser: PDFParserProtocol, llm_client=None):
+    def __init__(
+        self,
+        pdf_parser: PDFParserProtocol,
+        llm_client=None,
+        policy_library=None,
+    ):
         self._pdf_parser = pdf_parser
         self._llm_client = llm_client
+        self._policy_library = policy_library
+
+        # 保险公司图片识别器（当文字层找不到时用 LLM OCR）
+        company_image_detector = None
+        if llm_client:
+            from insurance_agent.infrastructure.company_image_detector import CompanyImageDetector
+            company_image_detector = CompanyImageDetector(
+                llm_client=llm_client,
+                pdf_parser=pdf_parser,
+            )
 
         # OCR 提取器（仅当提供了 llm_client 时才创建）
         ocr_extractor = OCRExtractor(llm_client=llm_client) if llm_client else None
 
-        self._policy_parser = PolicyParserNode(pdf_parser=pdf_parser)
+        self._policy_parser = PolicyParserNode(
+            pdf_parser=pdf_parser,
+            company_image_detector=company_image_detector,
+        )
         self._metadata_extractor = MetadataExtractorNode()
         self._personnel_extractor = PersonnelExtractorNode(
             ocr_extractor=ocr_extractor,
         )
-        self._validator = ValidatorNode()
+        self._validator = ValidatorNode(policy_library=policy_library)
         self._output = OutputNode()
 
     @property

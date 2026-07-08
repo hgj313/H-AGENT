@@ -31,6 +31,13 @@ from .name_extractor import (
 )
 from .text_cleaner import clean_pdf_text
 from .json_stabilizer import parse_json_strict, build_tool_schema_response_format
+from .filename_parser import (
+    parse_policy_filename,
+    is_main_policy,
+    is_endorsement,
+    extract_company_from_filename,
+    FilenameInfo,
+)
 
 __all__ = [
     # ID
@@ -58,4 +65,10 @@ __all__ = [
     # JSON
     "parse_json_strict",
     "build_tool_schema_response_format",
+    # Filename
+    "parse_policy_filename",
+    "is_main_policy",
+    "is_endorsement",
+    "extract_company_from_filename",
+    "FilenameInfo",
 ]
