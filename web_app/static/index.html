@@ -1,0 +1,608 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>保险单识别系统</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Microsoft YaHei', 'Segoe UI', sans-serif;
+            background: #f0f2f5;
+            min-height: 100vh;
+            color: #333;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px 40px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        }
+
+        .header h1 { font-size: 24px; font-weight: 600; }
+        .header p { font-size: 13px; opacity: 0.85; margin-top: 4px; }
+
+        .container {
+            max-width: 1200px;
+            margin: 24px auto;
+            padding: 0 24px;
+        }
+
+        /* Upload Area */
+        .upload-card {
+            background: white;
+            border-radius: 12px;
+            padding: 32px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+            margin-bottom: 24px;
+        }
+
+        .upload-zone {
+            border: 2px dashed #d0d5dd;
+            border-radius: 8px;
+            padding: 48px 24px;
+            text-align: center;
+            cursor: pointer;
+            transition: all 0.3s;
+            background: #fafbfc;
+        }
+
+        .upload-zone:hover, .upload-zone.dragover {
+            border-color: #667eea;
+            background: #f0f4ff;
+        }
+
+        .upload-icon {
+            font-size: 48px;
+            color: #667eea;
+            margin-bottom: 12px;
+        }
+
+        .upload-zone p {
+            font-size: 15px;
+            color: #667;
+            margin-bottom: 8px;
+        }
+
+        .upload-zone .hint {
+            font-size: 12px;
+            color: #999;
+        }
+
+        .file-list {
+            margin-top: 16px;
+        }
+
+        .file-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: #f8f9fa;
+            border-radius: 6px;
+            padding: 8px 16px;
+            margin-bottom: 6px;
+            font-size: 13px;
+        }
+
+        .file-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .file-item .size { color: #999; margin-left: 12px; }
+        .file-item .remove { color: #e53e3e; cursor: pointer; margin-left: 12px; font-size: 16px; }
+
+        .btn-group {
+            display: flex;
+            gap: 12px;
+            margin-top: 20px;
+            justify-content: center;
+        }
+
+        .btn {
+            padding: 10px 28px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover { opacity: 0.9; transform: translateY(-1px); }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+        .btn-secondary {
+            background: #e2e8f0;
+            color: #4a5568;
+        }
+        .btn-secondary:hover { background: #cbd5e0; }
+
+        .btn-download {
+            background: #48bb78;
+            color: white;
+        }
+        .btn-download:hover { opacity: 0.9; }
+        .btn-download:disabled { background: #a0aec0; cursor: not-allowed; }
+
+        /* Progress */
+        .progress-card {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+            margin-bottom: 24px;
+            display: none;
+        }
+
+        .progress-card.active { display: block; }
+
+        .spinner {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #e2e8f0;
+            border-top-color: #667eea;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .progress-text {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 14px;
+            color: #555;
+        }
+
+        .log-area {
+            margin-top: 16px;
+            background: #1a1a2e;
+            color: #a8b2d1;
+            border-radius: 8px;
+            padding: 16px;
+            font-family: 'Consolas', monospace;
+            font-size: 12px;
+            max-height: 200px;
+            overflow-y: auto;
+            line-height: 1.6;
+        }
+
+        .log-line { margin-bottom: 2px; }
+        .log-info { color: #8be9fd; }
+        .log-ok { color: #50fa7b; }
+        .log-warn { color: #ffb86c; }
+        .log-error { color: #ff5555; }
+
+        /* Summary */
+        .summary-card {
+            background: white;
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+            margin-bottom: 24px;
+            display: none;
+        }
+
+        .summary-card.active { display: block; }
+
+        .summary-stats {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+
+        .stat-box {
+            text-align: center;
+            padding: 16px;
+            border-radius: 8px;
+            background: #f8f9fa;
+        }
+
+        .stat-box .num {
+            font-size: 28px;
+            font-weight: 700;
+            color: #667eea;
+        }
+
+        .stat-box .label {
+            font-size: 12px;
+            color: #888;
+            margin-top: 4px;
+        }
+
+        .stat-box.add .num { color: #e53e3e; }
+        .stat-box.remove .num { color: #3182ce; }
+
+        .download-bar {
+            display: flex;
+            gap: 12px;
+            padding-top: 16px;
+            border-top: 1px solid #eee;
+        }
+
+        /* Results Table */
+        .results-card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+            overflow: hidden;
+            display: none;
+        }
+
+        .results-card.active { display: block; }
+
+        .results-card .card-header {
+            padding: 16px 24px;
+            border-bottom: 1px solid #eee;
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .file-section {
+            margin-bottom: 8px;
+        }
+
+        .file-header {
+            background: #f0f4ff;
+            padding: 10px 24px;
+            font-size: 13px;
+            font-weight: 600;
+            color: #4a5568;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .file-header .badge {
+            background: #667eea;
+            color: white;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+        }
+
+        .file-header .badge.add { background: #fc8181; }
+        .file-header .badge.remove { background: #63b3ed; }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        th {
+            background: #4472C4;
+            color: white;
+            padding: 10px 12px;
+            text-align: left;
+            font-weight: 500;
+            position: sticky;
+            top: 0;
+        }
+
+        td {
+            padding: 8px 12px;
+            border-bottom: 1px solid #f0f0f0;
+        }
+
+        tr:nth-child(even) { background: #fafbfc; }
+        tr:hover { background: #f0f4ff; }
+
+        td.add { color: #e53e3e; font-weight: 500; }
+        td.remove { color: #3182ce; font-weight: 500; }
+
+        .error-row {
+            background: #fff5f5 !important;
+            color: #e53e3e;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .summary-stats { grid-template-columns: repeat(2, 1fr); }
+            .container { padding: 0 12px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>保险单识别系统</h1>
+        <p>上传 PDF 保单/批单文件，自动提取被保人员信息，导出表格</p>
+    </div>
+
+    <div class="container">
+        <!-- Upload -->
+        <div class="upload-card">
+            <div class="upload-zone" id="dropZone" onclick="document.getElementById('fileInput').click()">
+                <div class="upload-icon">📄</div>
+                <p>点击或拖拽 PDF 文件到此处上传</p>
+                <p class="hint">支持多个 PDF 文件 | 保单和批单可混合上传（系统自动先处理保单后处理批单）</p>
+            </div>
+            <input type="file" id="fileInput" multiple accept=".pdf" style="display:none">
+            <div class="file-list" id="fileList"></div>
+            <div class="btn-group">
+                <button class="btn btn-primary" id="btnProcess" onclick="processFiles()" disabled>
+                    开始识别
+                </button>
+                <button class="btn btn-secondary" onclick="clearFiles()">清空</button>
+            </div>
+        </div>
+
+        <!-- Progress -->
+        <div class="progress-card" id="progressCard">
+            <div class="progress-text">
+                <span class="spinner"></span>
+                <span id="progressText">正在处理中，请稍候...</span>
+            </div>
+            <div class="log-area" id="logArea"></div>
+        </div>
+
+        <!-- Summary -->
+        <div class="summary-card" id="summaryCard">
+            <div class="summary-stats">
+                <div class="stat-box">
+                    <div class="num" id="statFiles">0</div>
+                    <div class="label">处理文件</div>
+                </div>
+                <div class="stat-box">
+                    <div class="num" id="statPersons">0</div>
+                    <div class="label">被保人员</div>
+                </div>
+                <div class="stat-box add">
+                    <div class="num" id="statAdd">0</div>
+                    <div class="label">增保</div>
+                </div>
+                <div class="stat-box remove">
+                    <div class="num" id="statRemove">0</div>
+                    <div class="label">减保</div>
+                </div>
+            </div>
+            <div class="download-bar">
+                <button class="btn btn-download" onclick="downloadFile('xlsx')">
+                    📊 下载 Excel 表格
+                </button>
+                <button class="btn btn-download" onclick="downloadFile('csv')">
+                    📋 下载 CSV 表格
+                </button>
+            </div>
+        </div>
+
+        <!-- Results -->
+        <div class="results-card" id="resultsCard">
+            <div class="card-header">提取结果详情</div>
+            <div id="resultsBody"></div>
+        </div>
+    </div>
+
+    <script>
+        let selectedFiles = [];
+
+        // File input change
+        document.getElementById('fileInput').addEventListener('change', function(e) {
+            addFiles(e.target.files);
+        });
+
+        // Drag & drop
+        const dropZone = document.getElementById('dropZone');
+        dropZone.addEventListener('dragover', function(e) {
+            e.preventDefault();
+            dropZone.classList.add('dragover');
+        });
+        dropZone.addEventListener('dragleave', function() {
+            dropZone.classList.remove('dragover');
+        });
+        dropZone.addEventListener('drop', function(e) {
+            e.preventDefault();
+            dropZone.classList.remove('dragover');
+            addFiles(e.dataTransfer.files);
+        });
+
+        function addFiles(fileList) {
+            for (let f of fileList) {
+                if (f.name.toLowerCase().endsWith('.pdf')) {
+                    // 避免重复
+                    if (!selectedFiles.find(x => x.name === f.name && x.size === f.size)) {
+                        selectedFiles.push(f);
+                    }
+                }
+            }
+            renderFileList();
+        }
+
+        function renderFileList() {
+            const list = document.getElementById('fileList');
+            list.innerHTML = '';
+            selectedFiles.forEach((f, idx) => {
+                const div = document.createElement('div');
+                div.className = 'file-item';
+                div.innerHTML = `
+                    <span class="name">📄 ${f.name}</span>
+                    <span class="size">${(f.size / 1024).toFixed(0)} KB</span>
+                    <span class="remove" onclick="removeFile(${idx})">✕</span>
+                `;
+                list.appendChild(div);
+            });
+            document.getElementById('btnProcess').disabled = selectedFiles.length === 0;
+        }
+
+        function removeFile(idx) {
+            selectedFiles.splice(idx, 1);
+            renderFileList();
+        }
+
+        function clearFiles() {
+            selectedFiles = [];
+            renderFileList();
+            document.getElementById('progressCard').classList.remove('active');
+            document.getElementById('summaryCard').classList.remove('active');
+            document.getElementById('resultsCard').classList.remove('active');
+        }
+
+        function addLog(msg, type = 'info') {
+            const area = document.getElementById('logArea');
+            const line = document.createElement('div');
+            line.className = `log-line log-${type}`;
+            const time = new Date().toLocaleTimeString('zh-CN');
+            line.textContent = `[${time}] ${msg}`;
+            area.appendChild(line);
+            area.scrollTop = area.scrollHeight;
+        }
+
+        async function processFiles() {
+            if (selectedFiles.length === 0) return;
+
+            const btn = document.getElementById('btnProcess');
+            btn.disabled = true;
+            btn.textContent = '处理中...';
+
+            // Show progress
+            const progressCard = document.getElementById('progressCard');
+            const logArea = document.getElementById('logArea');
+            progressCard.classList.add('active');
+            logArea.innerHTML = '';
+
+            addLog(`开始上传 ${selectedFiles.length} 个文件...`);
+
+            const formData = new FormData();
+            selectedFiles.forEach(f => formData.append('files', f));
+
+            addLog('文件上传中...');
+
+            try {
+                const resp = await fetch('/api/upload', {
+                    method: 'POST',
+                    body: formData,
+                });
+
+                addLog('服务器处理完成，解析结果...');
+
+                const data = await resp.json();
+
+                if (!resp.ok || !data.success) {
+                    throw new Error(data.detail || '处理失败');
+                }
+
+                addLog(`处理完成: ${data.total_files} 个文件, ${data.total_persons} 人`, 'ok');
+
+                // Show summary
+                document.getElementById('statFiles').textContent = data.total_files;
+                document.getElementById('statPersons').textContent = data.total_persons;
+                document.getElementById('statAdd').textContent = data.total_add;
+                document.getElementById('statRemove').textContent = data.total_remove;
+                document.getElementById('summaryCard').classList.add('active');
+
+                // Render results table
+                renderResults(data.results);
+
+                addLog('结果展示完成', 'ok');
+
+            } catch (err) {
+                addLog(`错误: ${err.message}`, 'error');
+                alert('处理失败: ' + err.message);
+            } finally {
+                btn.disabled = false;
+                btn.textContent = '开始识别';
+            }
+        }
+
+        function renderResults(results) {
+            const card = document.getElementById('resultsCard');
+            const body = document.getElementById('resultsBody');
+            body.innerHTML = '';
+            card.classList.add('active');
+
+            results.forEach(r => {
+                const section = document.createElement('div');
+                section.className = 'file-section';
+
+                if (r.error) {
+                    section.innerHTML = `
+                        <div class="file-header">
+                            <span>❌ ${r.file_name}</span>
+                            <span class="badge" style="background:#fc8181">错误</span>
+                        </div>
+                        <table>
+                            <tr class="error-row"><td colspan="12">${r.error}</td></tr>
+                        </table>
+                    `;
+                    body.appendChild(section);
+                    return;
+                }
+
+                const persons = r.persons || [];
+                let addCount = r.add_count || 0;
+                let removeCount = r.remove_count || 0;
+
+                let badges = `<span class="badge">${persons.length}人</span>`;
+                if (addCount > 0) badges += `<span class="badge add">增${addCount}</span>`;
+                if (removeCount > 0) badges += `<span class="badge remove">减${removeCount}</span>`;
+
+                let tableRows = '';
+                if (persons.length === 0) {
+                    tableRows = '<tr><td colspan="12" style="text-align:center;color:#999;padding:20px;">未提取到人员信息</td></tr>';
+                } else {
+                    persons.forEach((p, idx) => {
+                        const modClass = p.modification_type === '增保' ? 'add' : (p.modification_type === '减保' ? 'remove' : '');
+                        const startDate = p.start_date || r.overall_start_date || '';
+                        const endDate = p.end_date || r.overall_end_date || '';
+                        tableRows += `
+                            <tr>
+                                <td>${idx + 1}</td>
+                                <td>${p.name || ''}</td>
+                                <td>${p.id_number || ''}</td>
+                                <td>${p.birth_date || ''}</td>
+                                <td>${p.company || ''}</td>
+                                <td class="${modClass}">${p.modification_type || ''}</td>
+                                <td>${startDate}</td>
+                                <td>${endDate}</td>
+                                <td>${p.job_title || ''}</td>
+                                <td>${r.insurance_company || ''}</td>
+                                <td>${r.policy_number || ''}</td>
+                                <td>${r.file_name || ''}</td>
+                            </tr>
+                        `;
+                    });
+                }
+
+                section.innerHTML = `
+                    <div class="file-header">
+                        <span>${r.file_name}</span>
+                        <span style="color:#888;font-size:12px;">${r.insurance_company || ''} | ${r.policy_number || ''}</span>
+                        ${badges}
+                    </div>
+                    <table>
+                        <thead>
+                            <tr>
+                                <th style="width:40px">序号</th>
+                                <th>姓名</th>
+                                <th>证件号码</th>
+                                <th>出生日期</th>
+                                <th>所属公司</th>
+                                <th style="width:60px">批改</th>
+                                <th>起始时间</th>
+                                <th>起止时间</th>
+                                <th>岗位名称</th>
+                                <th>保险公司</th>
+                                <th>保单号</th>
+                                <th>来源文件</th>
+                            </tr>
+                        </thead>
+                        <tbody>${tableRows}</tbody>
+                    </table>
+                `;
+                body.appendChild(section);
+            });
+        }
+
+        function downloadFile(format) {
+            window.location.href = `/api/download/${format}`;
+        }
+    </script>
+</body>
+</html>
