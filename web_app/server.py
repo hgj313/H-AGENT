@@ -60,6 +60,33 @@ def get_llm():
     return _llm_client
 
 
+def _fix_filename(filename: str) -> str:
+    """修复中文文件名编码问题
+
+    浏览器/ multipart 上传的中文文件名可能被 Python multipart 库
+    以 Latin-1 解码（实际是 GBK 或 UTF-8 字节），导致乱码。
+    尝试重新编码还原正确中文。
+    """
+    if not filename:
+        return filename
+    # 已经是合法中文则直接返回
+    if any('\u4e00' <= c <= '\u9fff' for c in filename):
+        return filename
+    # 尝试 latin-1 → gbk（Windows 浏览器常见）
+    try:
+        fixed = filename.encode('latin-1').decode('gbk')
+        return fixed
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        pass
+    # 尝试 latin-1 → utf-8
+    try:
+        fixed = filename.encode('latin-1').decode('utf-8')
+        return fixed
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        pass
+    return filename
+
+
 def run_agent(pdf_path: str, llm_client=None, policy_library=None) -> dict:
     """运行 Agent 识别单份保单（与 test_agent.py 逻辑一致）"""
     pdf_parser = PyMuPDFParser()
@@ -159,9 +186,11 @@ async def upload_files(files: list[UploadFile] = File(...)):
     tmp_dir = tempfile.mkdtemp(prefix="insurance_upload_")
 
     for f in files:
-        if not f.filename.lower().endswith(".pdf"):
+        raw_name = f.filename or ""
+        filename = _fix_filename(raw_name)
+        if not filename.lower().endswith(".pdf"):
             continue
-        save_path = os.path.join(tmp_dir, f.filename)
+        save_path = os.path.join(tmp_dir, filename)
         with open(save_path, "wb") as out:
             content = await f.read()
             out.write(content)
