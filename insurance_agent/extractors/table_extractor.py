@@ -62,13 +62,19 @@ class TableExtractor(BaseExtractor):
         mod_type = self._detect_modification_type(text)
 
         # 只在 "人员清单" 标记之后搜索
-        list_markers = ["人员清单", "雇员清单", "被保险人清单", "员工清单", "被保险人名单"]
+        list_markers = ["人员清单", "雇员清单", "雇员人名清单", "人名清单", "被保险人清单", "员工清单", "被保险人名单"]
         list_text = text
         for marker in list_markers:
             idx = text.find(marker)
             if idx >= 0:
                 list_text = text[idx:]
                 break
+
+        # 预处理：合并 PDF 表格中跨行断开的内容
+        # 1. 合并跨行身份证号: "4527251967\n0226048X" → "45272519670226048X"
+        list_text = re.sub(r'(\d)\n(\d|[Xx])', r'\1\2', list_text)
+        # 2. 合并跨行公司名: "广州市粤灿建设工程有限\n公司" → "广州市粤灿建设工程有限公司"
+        list_text = re.sub(r'([\u4e00-\u9fff])\n(公司|集团|股份|责任)', r'\1\2', list_text)
 
         # 1. 定位所有合法身份证号
         valid_ids = extract_chinese_id_from_text(list_text)
@@ -85,8 +91,20 @@ class TableExtractor(BaseExtractor):
             name_candidates = extract_names_near(list_text, id_pos, window=200)
             name = name_candidates[-1] if name_candidates else ""
 
-            # 4. 在身份证号附近提取日期
-            dates = extract_dates_near(list_text, id_pos, window=400)
+            # 3.5 从身份证号中提取出生日期（第7-14位 YYYYMMDD）
+            birth_date = ""
+            if len(id_number) >= 14:
+                birth_year = id_number[6:10]
+                birth_month = id_number[10:12]
+                birth_day = id_number[12:14]
+                birth_date = f"{birth_year}-{birth_month}-{birth_day}"
+
+            # 4. 在身份证号附近提取日期（排除出生日期和其他人员的出生日期）
+            # 出生日期通常年份 < 2010，保险起止日期通常在 2020 年代
+            dates = [
+                d for d in extract_dates_near(list_text, id_pos, window=400)
+                if d != birth_date and int(d[:4]) >= 2010
+            ]
             start_date = dates[0] if len(dates) >= 1 else ""
             end_date = dates[1] if len(dates) >= 2 else ""
 
@@ -123,6 +141,7 @@ class TableExtractor(BaseExtractor):
                 start_date=start_date,
                 end_date=end_date,
                 job_title=job_title,
+                birth_date=birth_date,
                 confidence=0.85,
                 modification_type=mod_type,
             ))

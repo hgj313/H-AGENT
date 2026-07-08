@@ -17,7 +17,7 @@ from insurance_agent.agents.invoice_recognition.states.inv_state import InvoiceR
 
 
 # 人员清单页定位标记
-_LIST_MARKERS = ["人员清单", "雇员清单", "被保险人清单", "员工清单", "被保险人名单"]
+_LIST_MARKERS = ["人员清单", "雇员清单", "雇员人名清单", "人名清单", "被保险人清单", "员工清单", "被保险人名单"]
 # 行内格式标记
 _INLINE_MARKERS = ["雇员姓名：", "雇员姓名:", "雇员姓名：", "雇员姓名:"]
 
@@ -104,19 +104,42 @@ class MetadataExtractorNode:
     @staticmethod
     def _find_list_pages(pdf_doc: PDFDocument) -> list[int]:
         result = []
+        list_page_nums = []
         for page in pdf_doc.pages:
             if not page.has_meaningful_text:
                 continue
             for marker in _LIST_MARKERS:
                 if marker in page.text:
-                    result.append(page.page_number)
+                    list_page_nums.append(page.page_number)
                     break
             else:
                 for marker in _INLINE_MARKERS:
                     if marker in page.text:
-                        result.append(page.page_number)
+                        list_page_nums.append(page.page_number)
                         break
-        return result
+
+        # 扩展：包含清单页后续页面（跨页人员清单）
+        # 如果后续页面包含身份证号片段（6+连续数字）或"方案"标记，也纳入
+        import re as _re
+        for lpn in list_page_nums:
+            if lpn not in result:
+                result.append(lpn)
+            # 检查后续页面
+            for page in pdf_doc.pages:
+                if page.page_number <= lpn:
+                    continue
+                if page.page_number in result:
+                    continue
+                if not page.has_meaningful_text:
+                    continue
+                # 包含 6+ 连续数字 或 "方案" 标记 → 可能是清单续页
+                if _re.search(r'\d{6,}', page.text) or '方案' in page.text:
+                    # 但排除条款页（通常以 "-" 开头或包含 "条款" "第.*条"）
+                    if '条款' not in page.text and '第一条' not in page.text:
+                        result.append(page.page_number)
+                else:
+                    break  # 遇到非清单页就停止
+        return sorted(result)
 
 
 def metadata_extractor_node(state: InvoiceRecognitionState) -> dict:

@@ -1,0 +1,389 @@
+{
+  "records": [
+    {
+      "file_name": "保单_兴文县欣雅建筑劳务有限公司_ASHH07037126FN004NXB(1).pdf",
+      "file_path": "D:/工作资料/2026/6月/AI项目/AI保险/保单/保单_兴文县欣雅建筑劳务有限公司_ASHH07037126FN004NXB(1).pdf",
+      "stored_path": "C:/insurance-automation/policy_library\\保单_兴文县欣雅建筑劳务有限公司_ASHH07037126FN004NXB(1).pdf",
+      "policy_type": "保单",
+      "policy_number": "ASHH07037126FN004NXB",
+      "company": "兴文县欣雅建筑劳务有限公司",
+      "insurance_company": "中国太平洋财产保险",
+      "start_date": "2026-06-16",
+      "end_date": "2026-07-16",
+      "persons_count": 4,
+      "persons": [
+        {
+          "name": "胡学银",
+          "id_number": "511528199603110635",
+          "modification_type": "增保"
+        },
+        {
+          "name": "夏聚华",
+          "id_number": "511528199509260653",
+          "modification_type": "增保"
+        },
+        {
+          "name": "袁昌彬",
+          "id_number": "511025199905015119",
+          "modification_type": "增保"
+        },
+        {
+          "name": "高凡",
+          "id_number": "511528199205231810",
+          "modification_type": "增保"
+        }
+      ]
+    },
+    {
+      "file_name": "替换4人保单·粤灿0612.pdf",
+      "file_path": "D:/工作资料/2026/6月/AI项目/AI保险/保单/替换4人保单·粤灿0612.pdf",
+      "stored_path": "C:/insurance-automation/policy_library\\替换4人保单·粤灿0612.pdf",
+      "policy_type": "批单",
+      "policy_number": "X44061701260000083506",
+      "company": "粤灿",
+      "insurance_company": "华农财产保险股份有限公司",
+      "start_date": "2026-03-20",
+      "end_date": "2026-09-19",
+      "persons_count": 8,
+      "persons": [
+        {
+          "name": "沈海妹",
+          "id_number": "432831196508042269",
+          "modification_type": "增保"
+        },
+        {
+          "name": "马喜英",
+          "id_number": "43052419691226366X",
+          "modification_type": "增保"
+        },
+        {
+          "name": "胡晚红",
+          "id_number": "432622197309274021",
+          "modification_type": "增保"
+        },
+        {
+          "name": "徐火先",
+          "id_number": "421023197104156612",
+          "modification_type": "减保"
+        },
+        {
+          "name": "蔡家友",
+          "id_number": "360421197301120418",
+          "modification_type": "减保"
+        },
+        {
+          "name": "首安荣",
+          "id_number": "452428196906232010",
+          "modification_type": "减保"
+        },
+        {
+          "name": "柏余妹",
+          "id_number": "452725196507080483",
+          "modification_type": "减保"
+        },
+        {
+          "name": "周菊生",
+          "id_number": "432831196310242214",
+          "modification_type": "增保"
+        }
+      ]
+    },
+    {
+      "file_name": "替换3人保单·广州粤灿0601.pdf",
+      "file_path": "D:/工作资料/2026/6月/AI项目/AI保险/保单/替换3人保单·广州粤灿0601.pdf",
+      "stored_path": "C:/insurance-automation/policy_library\\替换3人保单·广州粤灿0601.pdf",
+      "policy_type": "批单",
+      "policy_number": "X44061701260000083506",
+      "company": "广州粤灿",
+      "insurance_company": "华农财产保险",
+      "start_date": "2026-03-20",
+      "end_date": "2026-09-19",
+      "persons_count": 4,
+      "persons": [
+        {
+          "name": "陈世勇",
+          "id_number": "360421197807052635",
+          "modification_type": "增保"
+        },
+        {
+          "name": "何可开",
+          "id_number": "45272519641224051X",
+          "modification_type": "增保"
+        },
+        {
+          "name": "闫智敏",
+          "id_number": "450329200111111416",
+          "modification_type": "减保"
+        },
+        {
+          "name": "马童旺",
+          "id_number": "36042120040226241X",
+          "modification_type": "减保"
+        }
+      ]
+    },
+    {
+      "file_name": "电子保单+广州市粤灿建设工程有限公司+X44061701260000083506.pdf",
+      "file_path": "D:/工作资料/2026/6月/AI项目/AI保险/保单/电子保单+广州市粤灿建设工程有限公司+X44061701260000083506.pdf",
+      "stored_path": "C:/insurance-automation/policy_library\\电子保单+广州市粤灿建设工程有限公司+X44061701260000083506.pdf",
+      "policy_type": "保单",
+      "policy_number": "X44061701260000083506",
+      "company": "广州市粤灿建设工程有限公司",
+      "insurance_company": "华农财产保险股份有限公司",
+      "start_date": "2026-03-20",
+      "end_date": "2026-09-19",
+      "persons_count": 44,
+      "persons": [
+        {
+          "name": "罗秀英",
+          "id_number": "45272519670226048X",
+          "modification_type": "增保"
+        },
+        {
+          "name": "申跃和",
+          "id_number": "452428196603062018",
+          "modification_type": "增保"
+        },
+        {
+          "name": "吴桂英",
+          "id_number": "432925197112266322",
+          "modification_type": "增保"
+        },
+        {
+          "name": "徐朝阳",
+          "id_number": "362132197001045932",
+          "modification_type": "增保"
+        },
+        {
+          "name": "王雄姣",
+          "id_number": "432925197306236324",
+          "modification_type": "增保"
+        },
+        {
+          "name": "岑利菊",
+          "id_number": "452725197410030628",
+          "modification_type": "增保"
+        },
+        {
+          "name": "罗玉群",
+          "id_number": "452725196804160447",
+          "modification_type": "增保"
+        },
+        {
+          "name": "柏秀梅",
+          "id_number": "452725196705110620",
+          "modification_type": "增保"
+        },
+        {
+          "name": "岑仕爱",
+          "id_number": "451221196706090584",
+          "modification_type": "增保"
+        },
+        {
+          "name": "卢绍芬",
+          "id_number": "452725196708040541",
+          "modification_type": "增保"
+        },
+        {
+          "name": "龙达杰",
+          "id_number": "452725196808210472",
+          "modification_type": "增保"
+        },
+        {
+          "name": "何运生",
+          "id_number": "432925196809106316",
+          "modification_type": "增保"
+        },
+        {
+          "name": "何仕花",
+          "id_number": "432925196808186326",
+          "modification_type": "增保"
+        },
+        {
+          "name": "何贱安",
+          "id_number": "432925196906126319",
+          "modification_type": "增保"
+        },
+        {
+          "name": "黄艳飞",
+          "id_number": "452725196911010428",
+          "modification_type": "增保"
+        },
+        {
+          "name": "龙凤兰",
+          "id_number": "452725196711200446",
+          "modification_type": "增保"
+        },
+        {
+          "name": "黎秀凤",
+          "id_number": "452725197005290426",
+          "modification_type": "增保"
+        },
+        {
+          "name": "柏余妹",
+          "id_number": "452725196507080483",
+          "modification_type": "增保"
+        },
+        {
+          "name": "龙艳英",
+          "id_number": "45272519670515050X",
+          "modification_type": "增保"
+        },
+        {
+          "name": "首安荣",
+          "id_number": "452428196906232010",
+          "modification_type": "增保"
+        },
+        {
+          "name": "龙向风",
+          "id_number": "433027196602191829",
+          "modification_type": "增保"
+        },
+        {
+          "name": "陈世勇",
+          "id_number": "360421197807052635",
+          "modification_type": "增保"
+        },
+        {
+          "name": "徐教胜",
+          "id_number": "360421197702072410",
+          "modification_type": "增保"
+        },
+        {
+          "name": "唐少昆",
+          "id_number": "452428196808242039",
+          "modification_type": "增保"
+        },
+        {
+          "name": "何文金",
+          "id_number": "432925196711196317",
+          "modification_type": "增保"
+        },
+        {
+          "name": "魏运环",
+          "id_number": "360421198308262018",
+          "modification_type": "增保"
+        },
+        {
+          "name": "雷淼花",
+          "id_number": "360421196803182446",
+          "modification_type": "增保"
+        },
+        {
+          "name": "蒙方桂",
+          "id_number": "450222198412302929",
+          "modification_type": "增保"
+        },
+        {
+          "name": "莫义祯",
+          "id_number": "522726196309286418",
+          "modification_type": "增保"
+        },
+        {
+          "name": "韦廷芬",
+          "id_number": "522726196310096427",
+          "modification_type": "增保"
+        },
+        {
+          "name": "何可开",
+          "id_number": "45272519641224051X",
+          "modification_type": "增保"
+        },
+        {
+          "name": "文世忠",
+          "id_number": "452324196006190934",
+          "modification_type": "增保"
+        },
+        {
+          "name": "宋顺林",
+          "id_number": "452324196309020633",
+          "modification_type": "增保"
+        },
+        {
+          "name": "吕光锦",
+          "id_number": "452324196412200616",
+          "modification_type": "增保"
+        },
+        {
+          "name": "游先进",
+          "id_number": "432622196301211195",
+          "modification_type": "增保"
+        },
+        {
+          "name": "龙克香",
+          "id_number": "433027196410291622",
+          "modification_type": "增保"
+        },
+        {
+          "name": "王金标",
+          "id_number": "360421196112102419",
+          "modification_type": "增保"
+        },
+        {
+          "name": "李国权",
+          "id_number": "360421198906090236",
+          "modification_type": "增保"
+        },
+        {
+          "name": "刘超",
+          "id_number": "362204199012046518",
+          "modification_type": "增保"
+        },
+        {
+          "name": "闫智敏",
+          "id_number": "450329200111111416",
+          "modification_type": "增保"
+        },
+        {
+          "name": "杨婷",
+          "id_number": "431228198705271826",
+          "modification_type": "增保"
+        },
+        {
+          "name": "马童旺",
+          "id_number": "36042120040226241X",
+          "modification_type": "增保"
+        },
+        {
+          "name": "王书灿",
+          "id_number": "360421199006242438",
+          "modification_type": "增保"
+        },
+        {
+          "name": "徐涛涛",
+          "id_number": "360421200111062418",
+          "modification_type": "增保"
+        }
+      ]
+    },
+    {
+      "file_name": "保单_重庆森得尔劳务有限公司_8116013100260068880000(2).pdf",
+      "file_path": "D:/工作资料/2026/6月/AI项目/AI保险/保单/保单_重庆森得尔劳务有限公司_8116013100260068880000(2).pdf",
+      "stored_path": "C:/insurance-automation/policy_library\\保单_重庆森得尔劳务有限公司_8116013100260068880000(2).pdf",
+      "policy_type": "保单",
+      "policy_number": "8116013100260068880000",
+      "company": "重庆森得尔劳务有限公司",
+      "insurance_company": "利宝保险",
+      "start_date": "2026-06-09",
+      "end_date": "2026-07-08",
+      "persons_count": 3,
+      "persons": [
+        {
+          "name": "林家贵",
+          "id_number": "513031196806113173",
+          "modification_type": "增保"
+        },
+        {
+          "name": "林家友",
+          "id_number": "513031197509113171",
+          "modification_type": "增保"
+        },
+        {
+          "name": "汪从辉",
+          "id_number": "513031197508183151",
+          "modification_type": "增保"
+        }
+      ]
+    }
+  ]
+}
