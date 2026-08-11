@@ -11,7 +11,7 @@ DI：所有 Extractor 通过构造器注入。
 
 from typing import Optional
 from insurance_agent.domain import PDFDocument, InsuredPerson, ExtractionResult
-from insurance_agent.extractors import BaseExtractor, TableExtractor, InlineExtractor, OCRExtractor
+from insurance_agent.extractors import BaseExtractor, TableExtractor, InlineExtractor, IndividualExtractor, OCRExtractor
 from insurance_agent.agents.invoice_recognition.states.inv_state import InvoiceRecognitionState
 
 
@@ -25,10 +25,12 @@ class PersonnelExtractorNode:
         self,
         table_extractor: Optional[BaseExtractor] = None,
         inline_extractor: Optional[BaseExtractor] = None,
+        individual_extractor: Optional[BaseExtractor] = None,
         ocr_extractor: Optional[BaseExtractor] = None,
     ):
         self._table = table_extractor or TableExtractor()
         self._inline = inline_extractor or InlineExtractor()
+        self._individual = individual_extractor or IndividualExtractor()
         self._ocr = ocr_extractor  # OCR 需要 LLM，默认不注入
 
     def __call__(self, state: InvoiceRecognitionState) -> dict:
@@ -47,7 +49,13 @@ class PersonnelExtractorNode:
 
         persons: list[InsuredPerson] = []
 
-        if format_hint == "ocr":
+        if format_hint == "no_list":
+            # 不记名投保（灵工版等）：只有总投保员工人数，无法逐人提取
+            # 走 OCR 会浪费时间和 LLM 费用，且扫描件上无清单也无意义
+            # 直接返回空，由前端展示"总投保 N 人，不记名"
+            persons = []
+
+        elif format_hint == "ocr":
             # Phase 3: 扫描件走视觉模型 OCR
             if not self._ocr:
                 return {
@@ -67,13 +75,15 @@ class PersonnelExtractorNode:
                 raise RuntimeError(f"OCR 提取失败: {e}") from e
 
         else:
-            # 文字层：table 或 inline 格式
+            # 文字层：table / inline / individual 格式
             for page_num in list_pages:
                 page = pdf_doc.pages[page_num - 1]
                 text = page.text
 
                 if format_hint == "inline":
                     persons.extend(self._inline.extract(text, policy_holder, insurance_company))
+                elif format_hint == "individual":
+                    persons.extend(self._individual.extract(text, policy_holder, insurance_company))
                 else:  # table（默认）
                     persons.extend(self._table.extract(text, policy_holder, insurance_company))
 

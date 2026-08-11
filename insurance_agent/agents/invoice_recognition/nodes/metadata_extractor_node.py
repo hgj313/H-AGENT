@@ -17,9 +17,19 @@ from insurance_agent.agents.invoice_recognition.states.inv_state import InvoiceR
 
 
 # 人员清单页定位标记
-_LIST_MARKERS = ["人员清单", "雇员清单", "雇员人名清单", "人名清单", "被保险人清单", "员工清单", "被保险人名单"]
+_LIST_MARKERS = [
+    "人员清单", "雇员清单", "雇员人名清单", "人名清单",
+    "被保险人清单", "员工清单", "被保险人名单",
+    # 批单中的雇员变动清单
+    "雇员变动清单", "人员变动清单", "变动清单", "批改清单",
+    "新增被保险人清单", "减少被保险人清单", "被保险人变动",
+]
 # 行内格式标记
 _INLINE_MARKERS = ["雇员姓名：", "雇员姓名:", "雇员姓名：", "雇员姓名:"]
+# 个人保单格式标记（被保险人信息以键值对形式内嵌）
+_INDIVIDUAL_MARKERS = ["被保险人信息", "被保人信息"]
+# 不记名投保保单特征（灵工版等 — 只投总人数，不逐人记名 → 无清单）
+_UNLISTED_MARKERS = ["是否记名投保", "总投保员工人数", "不记名投保", "灵工版", "灵工雇主"]
 
 
 class MetadataExtractorNode:
@@ -55,12 +65,24 @@ class MetadataExtractorNode:
         list_pages = self._find_list_pages(pdf_doc)
 
         # 5. 决策 format_hint
-        if state.get("is_scanned"):
+        # 5.1 文件名识别：投保单
+        fname = state.get("file_path", "")
+        if "投保单" in fname:
+            format_hint = "no_list"  # 投保单 = 投保申请书 + 条款，无人员清单
+        elif state.get("is_scanned"):
             format_hint = "ocr"
         elif any(marker in all_text for marker in _INLINE_MARKERS):
             format_hint = "inline"
         elif list_pages:
             format_hint = "table"
+        elif self._is_individual_policy(all_text):
+            format_hint = "individual"
+            # 个人保单：定位含"被保险人信息"的页面
+            if not list_pages:
+                list_pages = self._find_individual_pages(pdf_doc)
+        elif self._is_unlisted_policy(all_text):
+            # 不记名投保（如灵工版）：只有总人数，没有人员清单
+            format_hint = "no_list"
         else:
             format_hint = "ocr"  # 兜底走 OCR
 
@@ -139,6 +161,46 @@ class MetadataExtractorNode:
                         result.append(page.page_number)
                 else:
                     break  # 遇到非清单页就停止
+        return sorted(result)
+
+    @staticmethod
+    def _is_unlisted_policy(text: str) -> bool:
+        """检测是否为不记名投保保单（只有总人数，没有逐人清单）
+
+        特征：包含"是否记名投保"且"是否记名投保"后跟"否"，或"不记名投保"显式标记。
+        例：众安灵工版雇主责任险 — 总投保员工人数 14，是否记名投保 否（默认）。
+        """
+        # 显式标"不记名投保"
+        if "不记名投保" in text:
+            return True
+        # 灵工版 + 总投保员工人数（灵工版默认不记名）
+        if "灵工" in text and "总投保员工人数" in text:
+            return True
+        return False
+
+    @staticmethod
+    def _is_individual_policy(text: str) -> bool:
+        """检测是否为个人保单（被保险人信息以键值对形式内嵌）
+
+        特征：包含"被保险人信息" + "中文姓名" + "证件号码" 且
+        不包含人员清单/表格标记（否则走 table/inline 路径）。
+        """
+        has_insured_section = any(m in text for m in _INDIVIDUAL_MARKERS)
+        has_name_label = "中文姓名" in text or "被保险人姓名" in text
+        has_id_label = "证件号码" in text or "身份证号" in text
+        return has_insured_section and has_name_label and has_id_label
+
+    @staticmethod
+    def _find_individual_pages(pdf_doc: PDFDocument) -> list[int]:
+        """定位包含"被保险人信息"的页面"""
+        result = []
+        for page in pdf_doc.pages:
+            if not page.has_meaningful_text:
+                continue
+            for marker in _INDIVIDUAL_MARKERS:
+                if marker in page.text:
+                    result.append(page.page_number)
+                    break
         return sorted(result)
 
 

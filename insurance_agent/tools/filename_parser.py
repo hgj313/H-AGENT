@@ -91,6 +91,9 @@ def parse_policy_filename(file_path: str) -> FilenameInfo:
         info.policy_type = "批单"
     elif "保单" in name_no_ext:
         info.policy_type = "保单"
+    elif "投保单" in name_no_ext:
+        # 投保单不是保单，没有人员清单（仅是投保申请书+条款）
+        info.policy_type = "投保单"
 
     # 尝试从文件名中提取公司名
     company_match = re.search(

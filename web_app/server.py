@@ -50,6 +50,7 @@ app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__
 _llm_client = None
 _policy_library = PolicyLibrary(base_dir="C:/insurance-automation/policy_library")
 _latest_results: list[dict] = []  # 最近一次提取结果
+_graph_cache = None  # 单例 graph，复用避免每次重建
 
 # 公司系统会话管理器（25分钟自动续期 JSESSIONID）
 _session_manager = SessionManager(
@@ -68,6 +69,20 @@ def get_llm():
         except Exception as e:
             print(f"[WARN] LLM 客户端创建失败: {e}")
     return _llm_client
+
+
+def get_invoice_graph():
+    """获取单例 invoice recognition graph（避免每次请求重建）"""
+    global _graph_cache
+    if _graph_cache is None:
+        llm = get_llm()
+        capability = InvoiceRecognitionCapability(
+            pdf_parser=PyMuPDFParser(),
+            llm_client=llm,
+            policy_library=_policy_library,
+        )
+        _graph_cache = build_invoice_recognition_graph(capability)
+    return _graph_cache
 
 
 def _fix_filename(filename: str) -> str:
@@ -98,14 +113,11 @@ def _fix_filename(filename: str) -> str:
 
 
 def run_agent(pdf_path: str, llm_client=None, policy_library=None) -> dict:
-    """运行 Agent 识别单份保单（与 test_agent.py 逻辑一致）"""
-    pdf_parser = PyMuPDFParser()
-    capability = InvoiceRecognitionCapability(
-        pdf_parser=pdf_parser,
-        llm_client=llm_client,
-        policy_library=policy_library,
-    )
-    graph = build_invoice_recognition_graph(capability)
+    """运行 Agent 识别单份保单（与 test_agent.py 逻辑一致）
+
+    使用单例 graph，避免每次请求重建 LangGraph。
+    """
+    graph = get_invoice_graph()
     initial_state = create_invoice_recognition_state(
         user_goal=f"提取 {pdf_path} 中的被保人员清单",
         file_path=pdf_path,
@@ -114,39 +126,66 @@ def run_agent(pdf_path: str, llm_client=None, policy_library=None) -> dict:
     return final_state
 
 
-def process_files(file_paths: list[str]) -> list[dict]:
-    """批量处理 PDF 文件（先保单后批单）"""
-    llm = get_llm()
+def _process_single_pdf(fpath: str) -> dict:
+    """处理单个 PDF 文件（用于并发）"""
+    fname = os.path.basename(fpath)
+    try:
+        final_state = run_agent(fpath)
+        result_dict = final_state.get("extraction_result") or {
+            "file_name": fname,
+            "error": final_state.get("error"),
+        }
+        result_dict["file_path"] = fpath
 
+        fname_info = parse_policy_filename(fname)
+        if not result_dict.get("policy_holder"):
+            result_dict["policy_holder"] = fname_info.company
+
+        # 注册到保单文件库
+        if not result_dict.get("error"):
+            try:
+                _policy_library.register(result_dict)
+            except Exception:
+                pass
+
+        return result_dict
+    except Exception as e:
+        return {"file_name": fname, "error": str(e)}
+
+
+def process_files(file_paths: list[str]) -> list[dict]:
+    """批量并发处理 PDF 文件
+
+    - 先保单后批单（保证批单能关联到主保单）
+    - 保单间并发处理（提升吞吐量）
+    - 单个 PDF 失败不影响其他
+    """
     # 按保单类型排序
     main_files = [f for f in file_paths if is_main_policy(f)]
     batch_files = [f for f in file_paths if is_endorsement(f)]
     other_files = [f for f in file_paths if not is_main_policy(f) and not is_endorsement(f)]
-    sorted_files = main_files + other_files + batch_files
 
-    results = []
-    for fpath in sorted_files:
-        fname = os.path.basename(fpath)
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    # 保单先并发处理（保单数量通常占多数）
+    results: list[dict] = []
+
+    def _run_safe(fpath: str) -> dict:
         try:
-            final_state = run_agent(fpath, llm_client=llm, policy_library=_policy_library)
-            result_dict = final_state.get("extraction_result") or {
-                "file_name": fname,
-                "error": final_state.get("error"),
-            }
-            result_dict["file_path"] = fpath
-
-            fname_info = parse_policy_filename(fname)
-            if not result_dict.get("policy_holder"):
-                result_dict["policy_holder"] = fname_info.company
-
-            # 注册到保单文件库
-            if not result_dict.get("error"):
-                _policy_library.register(result_dict)
-
-            results.append(result_dict)
+            return _process_single_pdf(fpath)
         except Exception as e:
-            traceback.print_exc()
-            results.append({"file_name": fname, "error": str(e)})
+            return {"file_name": os.path.basename(fpath), "error": str(e)}
+
+    # 主保单并发（max_workers=4 避免压垮 LLM）
+    if main_files or other_files:
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = {executor.submit(_run_safe, f): f for f in main_files + other_files}
+            for fut in as_completed(futures):
+                results.append(fut.result())
+
+    # 批单后处理（此时主保单已在保单库中，批单可关联）
+    for fpath in batch_files:
+        results.append(_run_safe(fpath))
 
     return results
 
@@ -433,6 +472,38 @@ async def sync_excel():
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"同步失败: {e}")
+
+
+@app.post("/api/upload-erp")
+async def upload_to_erp():
+    """将当前 Excel 模板上传到公司 ERP 系统
+
+    使用 SessionManager 维护的会话（25分钟自动续期），
+    POST multipart/form-data 到 /api/labor/warehousing/importExcel
+    """
+    if not os.path.exists(EXCEL_TEMPLATE_PATH):
+        raise HTTPException(status_code=404, detail=f"Excel 模板不存在: {EXCEL_TEMPLATE_PATH}")
+
+    if not _session_manager.is_active():
+        # 尝试重新登录
+        _session_manager.start()
+        if not _session_manager.is_active():
+            raise HTTPException(status_code=503, detail="公司系统登录失败，无法上传")
+
+    try:
+        from insurance_agent.tools.erp_uploader import upload_excel_to_erp_with_session_manager
+        result = upload_excel_to_erp_with_session_manager(
+            session_manager=_session_manager,
+            excel_path=EXCEL_TEMPLATE_PATH,
+        )
+        return JSONResponse({
+            "success": result["success"],
+            "message": result.get("message", ""),
+            "excel_path": EXCEL_TEMPLATE_PATH,
+        })
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"上传 ERP 失败: {e}")
 
 
 # ==================== 全链路 Pipeline ====================
