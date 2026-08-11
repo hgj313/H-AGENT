@@ -12,6 +12,10 @@
 | 华农财产保险-保单 | 表格（保险方案/序号/姓名/证件号码/出生日期/职业工种/等级/用工单位/工作地点） | ❌只有整体保险期限 | ✅实际用工单位名称 | ❌纯增保 |
 | 粤灿批单(华农财产保险) | inline(证件号码:标签) | ✅批改生效日期 | ✅实际用工单位 | ✅增加/删除 |
 | 中国人寿财产保险 | table(序号/姓名/身份证号/职业类别) | ❌只有整体保险期限 | ❌需从投保人获取 | ❌纯增保 |
+| 人保财险"关爱保"个人保单 | individual(被保险人信息键值对) | ❌只有整体保险期限 | ❌个人保单无用工单位 | ❌纯增保 |
+| 众安在线财产保险-灵工版 | **no_list**(不记名/总人数) | ❌ | ❌ | ❌纯总投保 |
+| 黄河财产保险-批单 | table(雇员变动清单) | ✅批改生效日期 | ✅实际用工单位 | ✅增加/删除 |
+| 平安财产保险-**投保单** | **no_list**(仅条款文档) | ❌ | ❌ | — |
 
 ## 技术方案
 - PDF解析: pymupdf 文字层提取 + 图片转换备选（扫描件用视觉模型OCR）
@@ -27,7 +31,7 @@
 domain/         纯领域模型（不依赖 infrastructure）
 tools/          通用工具（任意 Agent 复用）
 infrastructure/ 外部系统对接（PDF/格式注册表/LLM）
-extractors/     提取策略（table/inline/ocr）
+extractors/     提取策略（table/inline/individual/ocr）
 agents/         业务能力（按 capability 组织，含 states/nodes/tools）
 ```
 
@@ -63,9 +67,25 @@ START → upload → extract → sync_excel → upload_erp → END
 - 文件名"+"分隔符: filename_parser 支持 `+` 分隔和"电子保单"前缀
 - 跨行身份证号: table_extractor 用 `re.sub(r'(\d)\n(\d|[Xx])', r'\1\2')` 合并
 - 跨行公司名: table_extractor 用 `re.sub(r'([\u4e00-\u9fff])\n(公司|集团|股份|责任)', r'\1\2')` 合并
+- 个人保单无法提取: 新增 IndividualExtractor + format_hint="individual" + _is_individual_policy()检测
+- 中文时间未解析: date_parser 正则字符类加 `\u4e00-\u9fff` 支持"零时""二十四时"
 - 出生日期误用为起止时间: 从身份证号提取birth_date + 过滤年份<2010的日期
 - 清单跨页: metadata_extractor 扩展_find_list_pages包含续页(含6+连续数字或"方案"标记)
 - "人名清单"标记: 添加到 _LIST_MARKERS (粤灿保单用"雇员人名清单")
+- **2026-08-11 性能问题诊断**：智能体"处理中"卡住根因
+  - `process_files()` 串行处理多个PDF → 改为 ThreadPoolExecutor(4 worker) 并发
+  - `run_agent()` 每次请求重建 LangGraph → 改为单例 `_graph_cache`
+  - 测试: 11PDF 串行 23.35s → 并发 2.02s → 端到端HTTP 4.91s
+- **2026-08-11 format_hint="no_list"**：处理无清单保单
+  - 众安灵工版雇主责任险（总投保14/64/78人，不记名）
+  - 平安财产保险投保单（仅20页条款）
+  - 文件名以"投保单"开头 → 直接 no_list
+  - 文本含"灵工"+"总投保员工人数" → 不记名 → no_list
+  - **不再走 OCR fallback**（避免5-15s/页浪费）
+- **2026-08-11 _LIST_MARKERS 扩展**：批单"雇员变动清单"/"批改清单"/"变动清单"
+  - 修复"替换1人·杨正朝"批单（n=0 → n=2: 杨正朝删除+周保发新增）
+- **2026-08-11 _COMPANY_PATTERNS 扩展**：众安/华农/黄河/珠峰/国泰/亚太/紫金/永安
+  - 之前这几个公司全部显示 unknown
 
 ## 身份证号脱敏补全
 - PDF 本身可能对身份证号脱敏（如 342225********6613）
@@ -75,7 +95,8 @@ START → upload → extract → sync_excel → upload_erp → END
 - OCR prompt 同时提取 birth_date 字段
 
 ## 已提交代码 (insurance-ai分支)
-- insurance_agent/  (Phase 2 + Phase 3 OCR + 脱敏补全 + 批量增减保 + 图片OCR + 保单库 + 粤灿主保单)
+- insurance_agent/  (Phase 2 + Phase 3 OCR + 脱敏补全 + 批量增减保 + 图片OCR + 保单库 + 粤灿主保单 + 个人保单 + 灵工版/投保单 + 性能优化)
+- ea0745c  perf(insurance_agent): 处理提速 + 新增PDF格式支持 (本次提交)
 - 45837b9  feat(insurance_agent): 粤灿主保单支持 + 跨行身份证合并 + 日期解析增强
 - 826b202  feat(insurance_agent): 保险公司图片OCR + 保单文件库 + 批单关联主保单
 - 1f80b77  feat(insurance_agent): 批量处理 + 增减保识别 + 统一CSV输出
@@ -85,7 +106,7 @@ START → upload → extract → sync_excel → upload_erp → END
 - 846c5aa  refactor(insurance_agent): 分层重构 + Agent 框架搭建 (Phase 2)
 - 82f9c61  Phase 1: 保险单识别Agent核心模块 + H-AGENT框架基础
 
-## 验证结果（11 真实 PDF）— 全部通过
+## 验证结果 — 第一批 11 真实 PDF（115人）
 | 文件 | 格式 | 人数 | 增保 | 减保 | 状态 |
 |------|------|------|------|------|------|
 | 批单_重庆选鹏 | inline | 2 | 2 | 0 | ✅ |
@@ -99,7 +120,23 @@ START → upload → extract → sync_excel → upload_erp → END
 | 兴文县欣雅保单 | table | 4 | 4 | 0 | ✅ |
 | 粤灿主保单 | table | 44 | 44 | 0 | ✅ (44/45, 跨页断ID漏1人) |
 | 重庆森得尔保单 | table | 3 | 3 | 0 | ✅ |
-| **合计** | | **115** | **102** | **13** | |
+| **小计** | | **115** | **102** | **13** | |
+
+## 验证结果 — 第二批 11 真实PDF（性能+新格式）— 全通过 4.91s
+| 文件 | 格式 | 公司 | 人数 | 增保 | 减保 | 耗时 | 状态 |
+|------|------|------|------|------|------|------|------|
+| 安徽一方小院·保单0923 | no_list | 众安在线财产保险 | (14灵工) | — | — | 0.03s | ⚠️灵工不记名 |
+| 粤灿10.29-11.27 | no_list | 众安在线财产保险 | (64灵工) | — | — | 0.04s | ⚠️灵工不记名 |
+| 粤灿0928 | no_list | 众安在线财产保险 | (78灵工) | — | — | 0.06s | ⚠️灵工不记名 |
+| 曾建平卢荣明·利宝保单 | table | 利宝保险 | 20 | 20 | 0 | 0.27s | ✅ |
+| 陈治平·利宝保单 | table | 利宝保险 | 6 | 6 | 0 | 0.25s | ✅ |
+| 电子保单+粤灿(华农) | table | 华农财产保险 | 44 | 44 | 0 | 0.23s | ✅ |
+| 杭州班王保单 | table | 黄河财产保险 | 120 | 120 | 0 | 0.29s | ✅ |
+| 批增保单·粤灿1212 | table | 众安在线财产保险 | 4 | 4 | 0 | 0.06s | ✅ |
+| 批增叶德良·利宝批单 | inline | 利宝保险 | 1 | 1 | 0 | 0.02s | ✅ |
+| 替换1人·杨正朝 | table | 黄河财产保险 | 2 | 1 | 1 | 0.01s | ✅ |
+| 投保单·重庆物生源 | no_list | 中国平安财产保险 | (0) | — | — | 1.72s | ⚠️仅投保单 |
+| **合计** | | | **197** | **195** | **2** | **4.91s** | |
 
 输出: extraction_results.json + extraction_results.csv (统一表格)
 
