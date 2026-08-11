@@ -29,6 +29,7 @@ load_dotenv("C:/insurance-automation/H-AGENT/.env")
 
 from insurance_agent.infrastructure.parsers import PyMuPDFParser
 from insurance_agent.infrastructure import PolicyLibrary
+from insurance_agent.infrastructure.session_manager import SessionManager
 from insurance_agent.infrastructure.llm.factory import create_minimax_llm_from_env
 from insurance_agent.agents.invoice_recognition import (
     InvoiceRecognitionCapability,
@@ -37,6 +38,8 @@ from insurance_agent.agents.invoice_recognition import (
 )
 from insurance_agent.domain import ExtractionResult, InsuredPerson
 from insurance_agent.tools import parse_policy_filename, is_main_policy, is_endorsement
+from insurance_agent.tools.excel_sync import sync_excel_with_extraction
+from insurance_agent.agents.policy_pipeline import create_pipeline, create_pipeline_state
 
 app = FastAPI(title="保险单识别系统", version="1.0.0")
 
@@ -47,6 +50,13 @@ app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__
 _llm_client = None
 _policy_library = PolicyLibrary(base_dir="C:/insurance-automation/policy_library")
 _latest_results: list[dict] = []  # 最近一次提取结果
+
+# 公司系统会话管理器（25分钟自动续期 JSESSIONID）
+_session_manager = SessionManager(
+    base_url="http://47.108.166.14:8081",
+    username="chenxueqin",
+    password="1234",
+)
 
 
 def get_llm():
@@ -366,6 +376,177 @@ async def get_policy_library():
 async def index():
     """返回前端页面"""
     return FileResponse(os.path.join(os.path.dirname(__file__), "static", "index.html"))
+
+
+# ==================== 公司系统对接 ====================
+
+# Excel 模板路径
+EXCEL_TEMPLATE_PATH = "C:/insurance-automation/最新保险数据下载模板.xlsx"
+
+
+@app.on_event("startup")
+async def startup_event():
+    """服务启动时启动会话续期"""
+    _session_manager.start()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """服务停止时清理会话"""
+    _session_manager.stop()
+
+
+@app.get("/api/session/status")
+async def session_status():
+    """检查公司系统会话状态"""
+    return {
+        "active": _session_manager.is_active(),
+        "base_url": _session_manager._base_url,
+    }
+
+
+@app.post("/api/sync-excel")
+async def sync_excel():
+    """将最近一次提取的增减保结果同步到 Excel 模板
+
+    - 减保人员: 从 Excel 中删除
+    - 增保人员: 不存在则新增，已存在则跳过
+    - 不改变 Excel 字段结构，只填有数据的字段
+    """
+    if not _latest_results:
+        raise HTTPException(status_code=404, detail="无提取结果，请先上传保单文件")
+
+    if not os.path.exists(EXCEL_TEMPLATE_PATH):
+        raise HTTPException(status_code=404, detail=f"Excel 模板不存在: {EXCEL_TEMPLATE_PATH}")
+
+    try:
+        stats = sync_excel_with_extraction(
+            excel_path=EXCEL_TEMPLATE_PATH,
+            extraction_results=_latest_results,
+        )
+        return JSONResponse({
+            "success": True,
+            "message": "同步完成",
+            "stats": stats,
+            "excel_path": EXCEL_TEMPLATE_PATH,
+        })
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"同步失败: {e}")
+
+
+# ==================== 全链路 Pipeline ====================
+
+@app.post("/api/pipeline")
+async def run_pipeline(files: list[UploadFile] = File(...)):
+    """全链路流水线: 上传保单 → 提取信息 → 同步Excel → 上传ERP
+
+    入口: 上传 PDF 保单文件
+    流程:
+        1. Upload: 保存文件到 uploads 目录
+        2. Extract: 调用 invoice recognition graph 提取被保人员
+        3. SyncExcel: 增减保人员同步到 Excel 模板（自动备份）
+        4. UploadERP: 上传 Excel 到公司 ERP 系统
+
+    Returns:
+        全链路执行结果，包含各阶段统计信息
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="未上传文件")
+
+    # 保存上传文件到临时目录
+    saved_paths = []
+    tmp_dir = tempfile.mkdtemp(prefix="pipeline_upload_")
+    for f in files:
+        raw_name = f.filename or ""
+        filename = _fix_filename(raw_name)
+        if not filename.lower().endswith(".pdf"):
+            continue
+        save_path = os.path.join(tmp_dir, filename)
+        with open(save_path, "wb") as out:
+            content = await f.read()
+            out.write(content)
+        saved_paths.append(save_path)
+
+    if not saved_paths:
+        raise HTTPException(status_code=400, detail="未找到 PDF 文件")
+
+    # 创建并运行 pipeline graph
+    llm = get_llm()
+    capability, graph = create_pipeline(
+        pdf_parser=PyMuPDFParser(),
+        llm_client=llm,
+        policy_library=_policy_library,
+        session_manager=_session_manager,
+        excel_path=EXCEL_TEMPLATE_PATH,
+        upload_dir="C:/insurance-automation/uploads",
+        erp_base_url="http://47.108.166.14:8081",
+    )
+
+    initial_state = create_pipeline_state(
+        uploaded_files=saved_paths,
+        excel_path=EXCEL_TEMPLATE_PATH,
+        erp_base_url="http://47.108.166.14:8081",
+    )
+
+    try:
+        final_state = graph.invoke(initial_state)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"流水线执行失败: {e}")
+
+    # 更新最近提取结果（供下载接口使用）
+    global _latest_results
+    _latest_results = final_state.get("extraction_results", [])
+
+    # 构建返回
+    extraction_results = final_state.get("extraction_results", [])
+    extraction_errors = final_state.get("extraction_errors", [])
+    sync_stats = final_state.get("sync_stats")
+    erp_result = final_state.get("erp_upload_result")
+
+    # 汇总提取结果
+    summary = []
+    total_persons = 0
+    total_add = 0
+    total_remove = 0
+    for r in extraction_results:
+        persons = r.get("insured_persons", [])
+        add_count = sum(1 for p in persons if p.get("modification_type") == "增保")
+        remove_count = sum(1 for p in persons if p.get("modification_type") == "减保")
+        total_persons += len(persons)
+        total_add += add_count
+        total_remove += remove_count
+        summary.append({
+            "file_name": r.get("file_name", ""),
+            "insurance_company": r.get("insurance_company", ""),
+            "policy_number": r.get("policy_number", ""),
+            "persons_count": len(persons),
+            "add_count": add_count,
+            "remove_count": remove_count,
+        })
+
+    return JSONResponse({
+        "success": final_state.get("status") == "done",
+        "status": final_state.get("status"),
+        "error": final_state.get("error"),
+        "stages": {
+            "upload": {
+                "files_count": len(saved_paths),
+                "files": [os.path.basename(f) for f in saved_paths],
+            },
+            "extract": {
+                "results_count": len(extraction_results),
+                "errors": extraction_errors,
+                "total_persons": total_persons,
+                "total_add": total_add,
+                "total_remove": total_remove,
+                "summary": summary,
+            },
+            "sync_excel": sync_stats,
+            "upload_erp": erp_result,
+        },
+    })
 
 
 if __name__ == "__main__":

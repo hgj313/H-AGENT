@@ -8,6 +8,7 @@ from .parsers import PyMuPDFParser, PDFParserProtocol
 from .format_registry import JSONFormatRegistry, FormatRegistryProtocol
 from .llm import LLMFactory, LLMConfig, LLMProvider, get_llm_factory
 from .policy_library import PolicyLibrary, PolicyRecord
+from .session_manager import SessionManager
 
 __all__ = [
     "PyMuPDFParser",
@@ -20,4 +21,5 @@ __all__ = [
     "get_llm_factory",
     "PolicyLibrary",
     "PolicyRecord",
+    "SessionManager",
 ]

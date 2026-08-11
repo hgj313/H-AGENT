@@ -38,6 +38,14 @@ from .filename_parser import (
     extract_company_from_filename,
     FilenameInfo,
 )
+from .excel_sync import (
+    sync_excel_with_extraction,
+    sync_excel_from_json,
+)
+from .erp_uploader import (
+    upload_excel_to_erp,
+    upload_excel_to_erp_with_session_manager,
+)
 
 __all__ = [
     # ID
@@ -71,4 +79,10 @@ __all__ = [
     "is_endorsement",
     "extract_company_from_filename",
     "FilenameInfo",
+    # Excel Sync
+    "sync_excel_with_extraction",
+    "sync_excel_from_json",
+    # ERP Upload
+    "upload_excel_to_erp",
+    "upload_excel_to_erp_with_session_manager",
 ]
