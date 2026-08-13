@@ -153,3 +153,25 @@ START → upload → extract → sync_excel → upload_erp → END
 - 南京大千保单 metadata 未提取到（保险公司/保单号/保险期限均为空）
 - 粤灿主保单第20人(首妹英)身份证号跨页断裂未提取到(4524281967在第5页, 0210202X在第6页)
 - git push SSH连接偶发被重置（网络问题）
+
+## 保险到期提醒 — 内置化
+- `insurance_agent/tools/insurance_reminder.py`: 核心逻辑，支持可配置化（JSON配置文件 .reminder_config.json）
+- `api/v1/endpoints/reminder.py`: API端点 (GET/PUT config, POST check, POST test-email, GET history)
+- `api/v1/schemas/reminder.py`: Pydantic 模型
+- 前端: index.html "保险到期提醒"标签页，配置面板 + 检查 + 测试邮件
+- 自动化任务 automation-1786440209651 每日8点执行
+- check_days 支持 [1, 3, 7] 多日检查
+- 收件人支持多个（前端添加按钮，逗号分隔存储为 recipient_emails 列表）
+
+## 今日打卡数据 + 保险覆盖检查（2026-08-13）
+- 数据接口: `GET https://www.gseerp.com/api/labor/warehousing/findCompleteLaborCalculation/page`
+- **签名算法**（逆向官网 umi.js）:
+  - X-Timestamp=毫秒时间戳, X-Nonce=8字节hex, X-Sign=HMAC-SHA256(ts+nonce+data, key) hex
+  - SECRET_KEY = `c1744f81678da7aa5fca887c18df464ba54dada867bc0b3600ee73958d727377`
+  - GET 请求 data 为空；登录 /api/doLogin 不需签名
+- 生产环境: `https://www.gseerp.com`（测试环境 `http://47.108.166.14:8081` 已废弃）
+- 数据库: `data/app.db`（SQLite），两张表 punch_records + insurance_personnel
+- PDF 文件空间: `data/policy_pdfs/`
+- 新增模块: database.py / erp_client.py / scheduler.py / coverage_check.py / daily_check_service.py
+- 前端「今日打卡数据」标签页 + 定时任务配置界面
+- 定时调度: scheduler.py 每天配置时间触发 run_daily_check（同步→对比→邮件提醒）
