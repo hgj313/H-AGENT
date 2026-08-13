@@ -11,7 +11,7 @@ import os
 import sys
 import tempfile
 import traceback
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import quote
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
@@ -31,6 +31,9 @@ from insurance_agent.infrastructure.parsers import PyMuPDFParser
 from insurance_agent.infrastructure import PolicyLibrary
 from insurance_agent.infrastructure.session_manager import SessionManager
 from insurance_agent.infrastructure.llm.factory import create_minimax_llm_from_env
+from insurance_agent.infrastructure import database as db
+from insurance_agent.infrastructure.erp_client import ERPClient
+from insurance_agent.infrastructure import scheduler as scheduler_mod
 from insurance_agent.agents.invoice_recognition import (
     InvoiceRecognitionCapability,
     create_invoice_recognition_state,
@@ -39,6 +42,12 @@ from insurance_agent.agents.invoice_recognition import (
 from insurance_agent.domain import ExtractionResult, InsuredPerson
 from insurance_agent.tools import parse_policy_filename, is_main_policy, is_endorsement
 from insurance_agent.tools.excel_sync import sync_excel_with_extraction
+from insurance_agent.tools.insurance_reminder import (
+    run_reminder_check, load_persons_from_json, find_expiring_tomorrow,
+    load_config, save_config, get_config_for_response, send_reminder_email,
+)
+from insurance_agent.tools import coverage_check
+from insurance_agent.tools.daily_check_service import run_daily_check
 from insurance_agent.agents.policy_pipeline import create_pipeline, create_pipeline_state
 
 app = FastAPI(title="保险单识别系统", version="1.0.0")
@@ -53,8 +62,9 @@ _latest_results: list[dict] = []  # 最近一次提取结果
 _graph_cache = None  # 单例 graph，复用避免每次重建
 
 # 公司系统会话管理器（25分钟自动续期 JSESSIONID）
+# 生产环境使用 www.gseerp.com
 _session_manager = SessionManager(
-    base_url="http://47.108.166.14:8081",
+    base_url="https://www.gseerp.com",
     username="chenxueqin",
     password="1234",
 )
@@ -148,9 +158,65 @@ def _process_single_pdf(fpath: str) -> dict:
             except Exception:
                 pass
 
+        # 保存 PDF 到独立文件空间 + 人员写入数据库
+        try:
+            _persist_policy_result(result_dict, fpath)
+        except Exception:
+            pass
+
         return result_dict
     except Exception as e:
         return {"file_name": fname, "error": str(e)}
+
+
+def _persist_policy_result(result_dict: dict, fpath: str):
+    """保存保单 PDF 到文件空间，人员写入数据库
+
+    1. PDF 文件复制到 data/policy_pdfs/
+    2. 提取的人员写入 insurance_personnel 表
+    """
+    if result_dict.get("error"):
+        return
+
+    # 1. 保存 PDF 到独立文件空间
+    try:
+        import shutil
+        db.ensure_dirs()
+        dest = os.path.join(db.PDF_STORAGE_DIR, os.path.basename(fpath))
+        if not os.path.exists(dest):
+            shutil.copy2(fpath, dest)
+    except Exception:
+        pass
+
+    # 2. 人员写入数据库
+    persons = result_dict.get("insured_persons", [])
+    if not persons:
+        return
+
+    policy_number = result_dict.get("policy_number", "")
+    insurance_company = result_dict.get("insurance_company", "")
+    source_file = result_dict.get("file_name", "")
+    overall_start = result_dict.get("overall_start_date", "")
+    overall_end = result_dict.get("overall_end_date", "")
+
+    person_rows = []
+    for p in persons:
+        person_rows.append({
+            "name": p.get("name", ""),
+            "id_number": p.get("id_number", ""),
+            "id_type": p.get("id_type", "身份证"),
+            "company": p.get("company", ""),
+            "start_date": p.get("start_date", "") or overall_start,
+            "end_date": p.get("end_date", "") or overall_end,
+            "job_title": p.get("job_title", ""),
+            "birth_date": p.get("birth_date", ""),
+            "insurance_company": insurance_company,
+            "policy_number": policy_number,
+            "file_name": source_file,
+            "modification_type": p.get("modification_type", "增保"),
+        })
+    if person_rows:
+        db.upsert_insurance_personnel(person_rows)
 
 
 def process_files(file_paths: list[str]) -> list[dict]:
@@ -417,6 +483,184 @@ async def index():
     return FileResponse(os.path.join(os.path.dirname(__file__), "static", "index.html"))
 
 
+# ==================== 保险到期提醒 ====================
+
+class ReminderConfigSchema(BaseModel):
+    """提醒配置请求体"""
+    sender_email: str = ""
+    sender_auth: str = ""
+    recipient_emails: list[str] = []
+    enabled: bool = True
+    check_days: list[int] = [1, 3, 7]
+
+
+@app.get("/api/reminder/config")
+async def get_reminder_config():
+    """获取提醒配置（授权码脱敏）"""
+    config = load_config()
+    return JSONResponse(get_config_for_response(config))
+
+
+@app.put("/api/reminder/config")
+async def update_reminder_config(body: ReminderConfigSchema):
+    """更新提醒配置"""
+    config = load_config()
+    email = config.setdefault("email", {})
+    if body.sender_email:
+        email["sender_email"] = body.sender_email
+    if body.sender_auth and body.sender_auth != "****":
+        email["sender_auth"] = body.sender_auth
+    if body.recipient_emails:
+        email["recipient_emails"] = body.recipient_emails
+    email["enabled"] = body.enabled
+    config["check_days"] = body.check_days
+    if save_config(config):
+        return JSONResponse({"success": True, "message": "配置已保存"})
+    raise HTTPException(status_code=500, detail="保存配置失败")
+
+
+@app.post("/api/reminder/check")
+async def check_reminder():
+    """手动触发保险到期提醒检查"""
+    try:
+        result = run_reminder_check()
+        return JSONResponse(result)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"提醒检查失败: {e}")
+
+
+@app.get("/api/reminder/history")
+async def get_reminder_history():
+    """获取最近一次检查记录"""
+    config = load_config()
+    last_result = config.get("last_result")
+    if not last_result:
+        return JSONResponse({})
+    return JSONResponse(last_result)
+
+
+@app.post("/api/reminder/test-email")
+async def test_reminder_email():
+    """发送测试邮件，验证邮箱配置是否正确"""
+    config = load_config()
+    email_cfg = config.get("email", {})
+    if not email_cfg.get("enabled", True):
+        raise HTTPException(status_code=400, detail="邮件通知已禁用")
+    from insurance_agent.domain import InsuredPerson
+    today = datetime.now().strftime("%Y-%m-%d")
+    test_person = {
+        "name": "测试用户", "id_number": "110101199001011234", "id_type": "身份证",
+        "birth_date": "1990-01-01", "company": "测试公司", "modification_type": "增保",
+        "start_date": today, "end_date": today, "job_title": "测试岗位",
+        "insurance_company": "测试保险公司", "policy_number": "TEST20240001", "file_name": "测试文件.pdf",
+    }
+    result = send_reminder_email([test_person], today, email_cfg)
+    return JSONResponse(result)
+
+
+@app.get("/api/reminder/expiring")
+async def list_expiring():
+    """查看即将到期的人员（不发送邮件）"""
+    persons = load_persons_from_json()
+    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    expiring = find_expiring_tomorrow(persons)
+    return JSONResponse({
+        "check_date": datetime.now().strftime("%Y-%m-%d"),
+        "target_date": tomorrow,
+        "total_in_system": len(persons),
+        "expiring_count": len(expiring),
+        "expiring_persons": expiring,
+    })
+
+
+# ==================== 今日打卡数据 + 保险覆盖检查 ====================
+
+@app.get("/api/punch/records")
+async def get_punch_records(punch_date: str = None):
+    """查询打卡数据
+
+    Args:
+        punch_date: 打卡日期（默认今天）
+    """
+    if punch_date is None:
+        punch_date = datetime.now().strftime("%Y-%m-%d")
+    records = db.get_punch_records(punch_date, limit=10000)
+    return JSONResponse({
+        "success": True,
+        "punch_date": punch_date,
+        "total": len(records),
+        "records": records,
+    })
+
+
+@app.post("/api/punch/sync")
+async def sync_punch():
+    """手动同步今日打卡数据"""
+    punch_date = datetime.now().strftime("%Y-%m-%d")
+    try:
+        result = coverage_check.sync_punch_data(_session_manager, punch_date)
+        return JSONResponse(result)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"同步失败: {e}")
+
+
+@app.post("/api/punch/check")
+async def check_coverage():
+    """检查打卡人员保险覆盖情况"""
+    punch_date = datetime.now().strftime("%Y-%m-%d")
+    try:
+        result = coverage_check.check_insurance_coverage(punch_date)
+        return JSONResponse(result)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"检查失败: {e}")
+
+
+@app.post("/api/daily-check")
+async def daily_check():
+    """手动执行每日检查（同步打卡 → 覆盖对比 → 邮件提醒）"""
+    try:
+        result = run_daily_check(session_manager=_session_manager)
+        return JSONResponse(result)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"每日检查失败: {e}")
+
+
+# ==================== 定时任务配置 ====================
+
+class SchedulerConfigSchema(BaseModel):
+    enabled: bool = True
+    sync_time: str = "08:00"
+    alert_enabled: bool = True
+
+
+@app.get("/api/scheduler/config")
+async def get_scheduler_config():
+    """获取定时任务配置"""
+    return JSONResponse(scheduler_mod.load_scheduler_config())
+
+
+@app.put("/api/scheduler/config")
+async def update_scheduler_config(body: SchedulerConfigSchema):
+    """更新定时任务配置"""
+    config = scheduler_mod.load_scheduler_config()
+    config["enabled"] = body.enabled
+    config["sync_time"] = body.sync_time
+    config["alert_enabled"] = body.alert_enabled
+    if scheduler_mod.save_scheduler_config(config):
+        return JSONResponse({"success": True, "message": "配置已保存", "config": config})
+    raise HTTPException(status_code=500, detail="保存配置失败")
+
+
+@app.get("/api/db/stats")
+async def get_db_stats():
+    """获取数据库统计信息"""
+    return JSONResponse(db.db_stats())
+
+
 # ==================== 公司系统对接 ====================
 
 # Excel 模板路径
@@ -425,14 +669,23 @@ EXCEL_TEMPLATE_PATH = "C:/insurance-automation/最新保险数据下载模板.xl
 
 @app.on_event("startup")
 async def startup_event():
-    """服务启动时启动会话续期"""
+    """服务启动时启动会话续期 + 定时任务调度器"""
     _session_manager.start()
+
+    # 启动每日打卡检查调度器
+    def daily_task():
+        return run_daily_check(session_manager=_session_manager)
+
+    scheduler_mod.create_scheduler(daily_task)
+    scheduler_mod.get_scheduler().start()
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """服务停止时清理会话"""
+    """服务停止时清理会话和调度器"""
     _session_manager.stop()
+    if scheduler_mod.get_scheduler():
+        scheduler_mod.get_scheduler().stop()
 
 
 @app.get("/api/session/status")
