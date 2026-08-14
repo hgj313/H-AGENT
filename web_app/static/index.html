@@ -551,9 +551,8 @@
         <!-- Tab Navigation -->
         <div class="tab-nav">
             <button class="tab-btn active" onclick="switchTab('policy')">📄 保单识别</button>
-            <button class="tab-btn" onclick="switchTab('reminder')">🔔 保险到期提醒</button>
             <button class="tab-btn" onclick="switchTab('punch')">✅ 今日打卡数据</button>
-            <button class="tab-btn" onclick="switchTab('personnel')">👥 保单人员数据</button>
+            <button class="tab-btn" onclick="switchTab('reminder')">⚙️ 信息提醒配置</button>
         </div>
 
         <!-- Tab: 保单识别 -->
@@ -619,9 +618,56 @@
             <div class="card-header">提取结果详情</div>
             <div id="resultsBody"></div>
         </div>
+
+        <!-- 保单人员数据 -->
+        <div class="upload-card">
+            <h3 style="font-size:16px;margin-bottom:12px;color:#4a5568;">📋 保单人员数据（共 <span id="personnelCount">0</span> 人）</h3>
+            <div class="btn-group" style="justify-content:flex-start;margin-bottom:12px;">
+                <button class="btn btn-primary" id="btnRefreshPersonnel" onclick="loadPersonnel()">🔄 刷新数据</button>
+                <button class="btn btn-secondary" onclick="document.getElementById('personnelFileInput').click()">📤 上传 Excel 替换数据</button>
+                <button class="btn btn-primary" onclick="downloadPersonnel()" style="background:#48bb78;">⬇️ 下载 Excel 表格</button>
+            </div>
+            <input type="file" id="personnelFileInput" accept=".xlsx,.xls" style="display:none;">
+            <div id="personnelStatus" style="margin-top:8px;text-align:center;font-size:14px;"></div>
+
+            <div class="filter-bar">
+                <input type="text" id="personnelSearch" placeholder="🔍 搜索姓名/证件号码/所属公司/保险公司/保单号..." oninput="renderPersonnelTable()">
+                <select id="personnelFilterCompany" onchange="renderPersonnelTable()">
+                    <option value="">全部保险公司</option>
+                </select>
+                <select id="personnelFilterStatus" onchange="renderPersonnelTable()">
+                    <option value="">全部状态</option>
+                    <option value="正常">正常</option>
+                    <option value="失效">失效</option>
+                </select>
+                <span class="filter-count" id="personnelFilterCount"></span>
+            </div>
+            <div style="overflow-x:auto;max-height:600px;overflow-y:auto;">
+                <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                    <thead>
+                        <tr style="background:#f7fafc;position:sticky;top:0;">
+                            <th style="padding:8px;border:1px solid #e2e8f0;">姓名</th>
+                            <th style="padding:8px;border:1px solid #e2e8f0;">证件号码</th>
+                            <th style="padding:8px;border:1px solid #e2e8f0;">证件类型</th>
+                            <th style="padding:8px;border:1px solid #e2e8f0;">出生日期</th>
+                            <th style="padding:8px;border:1px solid #e2e8f0;">所属公司</th>
+                            <th style="padding:8px;border:1px solid #e2e8f0;">状态</th>
+                            <th style="padding:8px;border:1px solid #e2e8f0;">起始时间</th>
+                            <th style="padding:8px;border:1px solid #e2e8f0;">起止时间</th>
+                            <th style="padding:8px;border:1px solid #e2e8f0;">岗位名称</th>
+                            <th style="padding:8px;border:1px solid #e2e8f0;">保险公司</th>
+                            <th style="padding:8px;border:1px solid #e2e8f0;">保单号</th>
+                        </tr>
+                    </thead>
+                    <tbody id="personnelTableBody">
+                        <tr><td colspan="11" style="text-align:center;color:#999;padding:20px;">加载中...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
         </div><!-- end tabPolicy -->
 
-        <!-- Tab: 保险到期提醒 -->
+        <!-- Tab: 信息提醒配置 -->
         <div class="tab-panel" id="tabReminder">
         <!-- Email Config -->
         <div class="upload-card">
@@ -780,59 +826,6 @@
                 <div id="abnormalList" style="max-height:400px;overflow-y:auto;"></div>
             </div>
         </div><!-- end tabPunch -->
-
-        <!-- Tab: 保单人员数据 -->
-        <div class="tab-panel" id="tabPersonnel">
-            <!-- 操作按钮 -->
-            <div class="upload-card">
-                <div class="btn-group">
-                    <button class="btn btn-primary" id="btnRefreshPersonnel" onclick="loadPersonnel()">🔄 刷新数据</button>
-                    <button class="btn btn-secondary" onclick="document.getElementById('personnelFileInput').click()">📤 上传 Excel 替换数据</button>
-                    <button class="btn btn-primary" onclick="downloadPersonnel()" style="background:#48bb78;">⬇️ 下载 Excel 表格</button>
-                </div>
-                <input type="file" id="personnelFileInput" accept=".xlsx,.xls" style="display:none;">
-                <div id="personnelStatus" style="margin-top:12px;text-align:center;font-size:14px;"></div>
-            </div>
-
-            <!-- 数据表 -->
-            <div class="upload-card">
-                <h3 style="font-size:16px;margin-bottom:8px;color:#4a5568;">📋 保单人员数据（共 <span id="personnelCount">0</span> 人）</h3>
-                <div class="filter-bar">
-                    <input type="text" id="personnelSearch" placeholder="🔍 搜索姓名/证件号码/所属公司/保险公司/保单号..." oninput="renderPersonnelTable()">
-                    <select id="personnelFilterCompany" onchange="renderPersonnelTable()">
-                        <option value="">全部保险公司</option>
-                    </select>
-                    <select id="personnelFilterStatus" onchange="renderPersonnelTable()">
-                        <option value="">全部状态</option>
-                        <option value="正常">正常</option>
-                        <option value="失效">失效</option>
-                    </select>
-                    <span class="filter-count" id="personnelFilterCount"></span>
-                </div>
-                <div style="overflow-x:auto;max-height:600px;overflow-y:auto;">
-                    <table style="width:100%;border-collapse:collapse;font-size:12px;">
-                        <thead>
-                            <tr style="background:#f7fafc;position:sticky;top:0;">
-                                <th style="padding:8px;border:1px solid #e2e8f0;">姓名</th>
-                                <th style="padding:8px;border:1px solid #e2e8f0;">证件号码</th>
-                                <th style="padding:8px;border:1px solid #e2e8f0;">证件类型</th>
-                                <th style="padding:8px;border:1px solid #e2e8f0;">出生日期</th>
-                                <th style="padding:8px;border:1px solid #e2e8f0;">所属公司</th>
-                                <th style="padding:8px;border:1px solid #e2e8f0;">状态</th>
-                                <th style="padding:8px;border:1px solid #e2e8f0;">起始时间</th>
-                                <th style="padding:8px;border:1px solid #e2e8f0;">起止时间</th>
-                                <th style="padding:8px;border:1px solid #e2e8f0;">岗位名称</th>
-                                <th style="padding:8px;border:1px solid #e2e8f0;">保险公司</th>
-                                <th style="padding:8px;border:1px solid #e2e8f0;">保单号</th>
-                            </tr>
-                        </thead>
-                        <tbody id="personnelTableBody">
-                            <tr><td colspan="11" style="text-align:center;color:#999;padding:20px;">加载中...</td></tr>
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-        </div><!-- end tabPersonnel -->
 
     </div>
 
@@ -1082,7 +1075,7 @@
             window.location.href = `${apiBase}/api/download/${format}`;
         }
 
-        // ========== 保险到期提醒 ==========
+        // ========== 信息提醒配置 ==========
 
         function switchTab(tab) {
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
@@ -1092,19 +1085,16 @@
             if (tab === 'policy') {
                 btns[0].classList.add('active');
                 document.getElementById('tabPolicy').classList.add('active');
-            } else if (tab === 'reminder') {
-                btns[1].classList.add('active');
-                document.getElementById('tabReminder').classList.add('active');
-                loadReminderConfig();
+                loadPersonnel();
             } else if (tab === 'punch') {
-                btns[2].classList.add('active');
+                btns[1].classList.add('active');
                 document.getElementById('tabPunch').classList.add('active');
                 loadSchedulerConfig();
                 loadPunchRecords();
-            } else if (tab === 'personnel') {
-                btns[3].classList.add('active');
-                document.getElementById('tabPersonnel').classList.add('active');
-                loadPersonnel();
+            } else if (tab === 'reminder') {
+                btns[2].classList.add('active');
+                document.getElementById('tabReminder').classList.add('active');
+                loadReminderConfig();
             }
         }
 
@@ -1609,6 +1599,9 @@
                 e.target.value = '';
             }
         });
+
+        // 页面加载时初始化（默认显示保单识别 tab，加载人员数据）
+        loadPersonnel();
     </script>
 </body>
 </html>
