@@ -527,6 +527,18 @@ async def index():
 
 # ==================== 保险到期提醒 ====================
 
+class SmsConfigSchema(BaseModel):
+    """短信配置请求体"""
+    enabled: bool = False
+    provider: str = "aliyun"
+    access_key_id: str = ""
+    access_key_secret: str = ""
+    sdk_app_id: str = ""
+    sign_name: str = ""
+    template_code: str = ""
+    phone_numbers: list[str] = []
+
+
 class ReminderConfigSchema(BaseModel):
     """提醒配置请求体"""
     sender_email: str = ""
@@ -534,6 +546,7 @@ class ReminderConfigSchema(BaseModel):
     recipient_emails: list[str] = []
     enabled: bool = True
     check_days: list[int] = [1, 3, 7]
+    sms: SmsConfigSchema = SmsConfigSchema()
 
 
 @app.get("/api/reminder/config")
@@ -556,9 +569,41 @@ async def update_reminder_config(body: ReminderConfigSchema):
         email["recipient_emails"] = body.recipient_emails
     email["enabled"] = body.enabled
     config["check_days"] = body.check_days
+
+    # 保存短信配置
+    sms = config.setdefault("sms", {})
+    sms["enabled"] = body.sms.enabled
+    sms["provider"] = body.sms.provider
+    if body.sms.access_key_id:
+        sms["access_key_id"] = body.sms.access_key_id
+    if body.sms.access_key_secret and body.sms.access_key_secret != "****":
+        sms["access_key_secret"] = body.sms.access_key_secret
+    if body.sms.sdk_app_id:
+        sms["sdk_app_id"] = body.sms.sdk_app_id
+    if body.sms.sign_name:
+        sms["sign_name"] = body.sms.sign_name
+    if body.sms.template_code:
+        sms["template_code"] = body.sms.template_code
+    if body.sms.phone_numbers:
+        sms["phone_numbers"] = body.sms.phone_numbers
+
     if save_config(config):
         return JSONResponse({"success": True, "message": "配置已保存"})
     raise HTTPException(status_code=500, detail="保存配置失败")
+
+
+@app.post("/api/reminder/test-sms")
+async def test_reminder_sms():
+    """发送测试短信（短信功能开发中，占位）"""
+    config = load_config()
+    sms = config.get("sms", {})
+    if not sms.get("enabled", False):
+        raise HTTPException(status_code=400, detail="短信通知已禁用")
+    # TODO: 待用户提供服务商凭证后实现短信发送
+    return JSONResponse({
+        "success": False,
+        "message": "短信发送功能开发中，请先提供服务商凭证（AccessKey/SecretKey、签名、模板Code）",
+    })
 
 
 @app.post("/api/reminder/check")
