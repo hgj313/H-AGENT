@@ -680,9 +680,6 @@
         <!-- Actions -->
         <div class="upload-card">
             <div class="btn-group">
-                <button class="btn btn-primary" id="btnReminderCheck" onclick="manualReminderCheck()">
-                    🔍 立即检查到期
-                </button>
                 <button class="btn btn-secondary" id="btnTestEmail" onclick="sendTestEmail()">
                     📧 发送测试邮件
                 </button>
@@ -691,29 +688,6 @@
                 </button>
             </div>
             <div id="reminderStatus" style="margin-top:12px;text-align:center;font-size:14px;"></div>
-        </div>
-
-        <!-- Check Result -->
-        <div class="summary-card" id="reminderResultCard">
-            <div class="summary-stats">
-                <div class="stat-box">
-                    <div class="num" id="reminderTotalInSystem">0</div>
-                    <div class="label">系统在保人数</div>
-                </div>
-                <div class="stat-box add">
-                    <div class="num" id="reminderTotalExpiring">0</div>
-                    <div class="label">即将到期</div>
-                </div>
-                <div class="stat-box">
-                    <div class="num" id="reminderEmailSent">-</div>
-                    <div class="label">邮件状态</div>
-                </div>
-                <div class="stat-box">
-                    <div class="num" id="reminderLastCheck" style="font-size:14px;">-</div>
-                    <div class="label">上次检查</div>
-                </div>
-            </div>
-            <div id="reminderResultDetail" class="result-box" style="display:none;"></div>
         </div>
         </div><!-- end tabReminder -->
 
@@ -1122,7 +1096,6 @@
                 btns[1].classList.add('active');
                 document.getElementById('tabReminder').classList.add('active');
                 loadReminderConfig();
-                loadReminderHistory();
             } else if (tab === 'punch') {
                 btns[2].classList.add('active');
                 document.getElementById('tabPunch').classList.add('active');
@@ -1255,64 +1228,6 @@
             }
         }
 
-        async function manualReminderCheck() {
-            const apiBase = getApiBase();
-            const btn = document.getElementById('btnReminderCheck');
-            const status = document.getElementById('reminderStatus');
-            const resultCard = document.getElementById('reminderResultCard');
-
-            btn.disabled = true;
-            btn.textContent = '检查中...';
-            status.innerHTML = '<span class="spinner"></span> 正在检查到期情况...';
-
-            try {
-                const resp = await fetch(`${apiBase}/api/reminder/check`, {
-                    method: 'POST',
-                });
-                const data = await resp.json();
-
-                document.getElementById('reminderTotalInSystem').textContent = data.total_in_system;
-                document.getElementById('reminderTotalExpiring').textContent = data.total_expiring || 0;
-                document.getElementById('reminderEmailSent').textContent = data.email_sent ? '✅ 已发送' : '— 无需发送';
-                document.getElementById('reminderEmailSent').style.color = data.email_sent ? '#48bb78' : '#999';
-                document.getElementById('reminderLastCheck').textContent = data.check_date;
-                resultCard.classList.add('active');
-
-                // Detail
-                const detail = document.getElementById('reminderResultDetail');
-                detail.style.display = 'block';
-                if (data.results && data.results.length > 0) {
-                    detail.innerHTML = data.results.map(r => {
-                        const tagClass = r.expiring_count > 0 ? 'tag-warn' : 'tag-ok';
-                        const tagText = r.expiring_count > 0 ? `${r.expiring_count}人到期` : '无到期';
-                        const emailTag = r.email_sent ? 'tag-ok' : (r.expiring_count > 0 ? 'tag-error' : '');
-                        return `<div class="line">
-                            <span>📅 <b>${r.target_date}</b> (提前${r.days_ahead}天)</span>
-                            <span>
-                                <span class="tag ${tagClass}">${tagText}</span>
-                                ${emailTag ? `<span class="tag ${emailTag}">${r.email_message}</span>` : ''}
-                            </span>
-                        </div>`;
-                    }).join('');
-                } else {
-                    detail.innerHTML = '<div class="line"><span>暂无检查结果</span></div>';
-                }
-
-                if (!resp.ok) {
-                    status.innerHTML = `<span style="color:#e53e3e;">❌ ${data.detail || '检查失败'}</span>`;
-                } else {
-                    status.innerHTML = `<span style="color:#48bb78;">✅ 检查完成</span>`;
-                }
-
-            } catch (err) {
-                status.innerHTML = `<span style="color:#e53e3e;">❌ 检查失败: ${err.message}</span>`;
-            } finally {
-                btn.disabled = false;
-                btn.textContent = '🔍 立即检查到期';
-                setTimeout(() => { status.innerHTML = ''; }, 5000);
-            }
-        }
-
         async function sendTestEmail() {
             const apiBase = getApiBase();
             const btn = document.getElementById('btnTestEmail');
@@ -1338,42 +1253,6 @@
                 btn.disabled = false;
                 btn.textContent = '📧 发送测试邮件';
                 setTimeout(() => { status.innerHTML = ''; }, 5000);
-            }
-        }
-
-        async function loadReminderHistory() {
-            const apiBase = getApiBase();
-            try {
-                const resp = await fetch(`${apiBase}/api/reminder/history`);
-                if (!resp.ok) return;
-                const data = await resp.json();
-                if (!data.check_date) return;  // 无历史记录
-
-                document.getElementById('reminderTotalInSystem').textContent = data.total_in_system;
-                document.getElementById('reminderTotalExpiring').textContent = data.total_expiring || 0;
-                document.getElementById('reminderEmailSent').textContent = data.email_sent ? '✅ 已发送' : '— 无需发送';
-                document.getElementById('reminderEmailSent').style.color = data.email_sent ? '#48bb78' : '#999';
-                document.getElementById('reminderLastCheck').textContent = data.check_date;
-                document.getElementById('reminderResultCard').classList.add('active');
-
-                const detail = document.getElementById('reminderResultDetail');
-                detail.style.display = 'block';
-                if (data.results && data.results.length > 0) {
-                    detail.innerHTML = data.results.map(r => {
-                        const tagClass = r.expiring_count > 0 ? 'tag-warn' : 'tag-ok';
-                        const tagText = r.expiring_count > 0 ? `${r.expiring_count}人到期` : '无到期';
-                        const emailTag = r.email_sent ? 'tag-ok' : (r.expiring_count > 0 ? 'tag-error' : '');
-                        return `<div class="line">
-                            <span>📅 <b>${r.target_date}</b> (提前${r.days_ahead}天)</span>
-                            <span>
-                                <span class="tag ${tagClass}">${tagText}</span>
-                                ${emailTag ? `<span class="tag ${emailTag}">${r.email_message}</span>` : ''}
-                            </span>
-                        </div>`;
-                    }).join('');
-                }
-            } catch (err) {
-                console.error('加载历史失败:', err);
             }
         }
 
