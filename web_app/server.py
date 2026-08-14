@@ -21,11 +21,14 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from pydantic import BaseModel
 
-# 确保项目根目录在 path 中
-sys.path.insert(0, "C:/insurance-automation")
+# 确保项目根目录在 path 中（本文件位于 web_app/ 下，上级即项目根）
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _BASE_DIR)
 
 from dotenv import load_dotenv
-load_dotenv("C:/insurance-automation/H-AGENT/.env")
+# 加载 .env：本地开发用 H-AGENT/.env，Docker 部署可挂载到项目根 .env
+load_dotenv(os.path.join(_BASE_DIR, "H-AGENT", ".env"))
+load_dotenv(os.path.join(_BASE_DIR, ".env"), override=False)
 
 from insurance_agent.infrastructure.parsers import PyMuPDFParser
 from insurance_agent.infrastructure import PolicyLibrary
@@ -57,7 +60,7 @@ app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__
 
 # 全局状态
 _llm_client = None
-_policy_library = PolicyLibrary(base_dir="C:/insurance-automation/policy_library")
+_policy_library = PolicyLibrary()  # 默认用项目根下的 policy_library 目录
 _latest_results: list[dict] = []  # 最近一次提取结果
 _graph_cache = None  # 单例 graph，复用避免每次重建
 
@@ -927,8 +930,8 @@ async def export_personnel():
 
 # ==================== 公司系统对接 ====================
 
-# Excel 模板路径
-EXCEL_TEMPLATE_PATH = "C:/insurance-automation/最新保险数据下载模板.xlsx"
+# Excel 模板路径（项目根下的模板文件）
+EXCEL_TEMPLATE_PATH = os.path.join(_BASE_DIR, "最新保险数据下载模板.xlsx")
 
 
 @app.on_event("startup")

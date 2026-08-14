@@ -48,9 +48,9 @@ DEFAULT_CONFIG = {
     "data_source": "json",
 }
 
-# 数据源路径
-PROJECT_ROOT = "C:/insurance-automation"
-CONFIG_PATH = os.path.join(PROJECT_ROOT, ".reminder_config.json")
+# 数据源路径（统一路径配置，支持 Docker 部署环境变量覆盖）
+from insurance_agent.infrastructure.paths import PROJECT_ROOT, REMINDER_CONFIG_PATH
+CONFIG_PATH = REMINDER_CONFIG_PATH
 EXCEL_PATH = os.path.join(PROJECT_ROOT, "最新保险数据下载模板.xlsx")
 JSON_PATH = os.path.join(PROJECT_ROOT, "extraction_results.json")
 

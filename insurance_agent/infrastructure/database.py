@@ -19,12 +19,12 @@ import threading
 from datetime import datetime
 from typing import Optional
 
+from insurance_agent.infrastructure.paths import DATA_DIR, PDF_STORAGE_DIR
+
 logger = logging.getLogger(__name__)
 
-# 数据目录
-DATA_DIR = "C:/insurance-automation/data"
+# 数据库文件路径
 DB_PATH = os.path.join(DATA_DIR, "app.db")
-PDF_STORAGE_DIR = os.path.join(DATA_DIR, "policy_pdfs")
 
 _lock = threading.Lock()
 

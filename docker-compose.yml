@@ -1,0 +1,36 @@
+# 保险单识别系统 — Docker Compose 部署
+#
+# 使用方式：
+#   1. 在项目根目录创建 .env 文件（或 export 环境变量），内容：
+#        MINIMAX_API_KEY=sk-xxx
+#        MINIMAX_BASE_URL_ANTHROPIC=https://api.minimaxi.com/anthropic
+#   2. 启动：docker compose up -d --build
+#   3. 停止：docker compose down
+#
+# 数据持久化：两个命名卷 insurance-data（SQLite/打卡/保单PDF）和
+#   insurance-policy（保单文件库），重启容器数据不丢失。
+
+services:
+  insurance-agent:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: insurance-agent
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    environment:
+      # 从宿主机环境变量或同目录 .env 文件读取
+      MINIMAX_API_KEY: ${MINIMAX_API_KEY:-}
+      MINIMAX_BASE_URL_ANTHROPIC: ${MINIMAX_BASE_URL_ANTHROPIC:-https://api.minimaxi.com/anthropic}
+      MINIMAX_BASE_URL_OPENAI: ${MINIMAX_BASE_URL_OPENAI:-https://api.minimaxi.com/v1}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      APP_HOME: /app
+      DATA_DIR: /app/data
+    volumes:
+      - insurance-data:/app/data
+      - insurance-policy:/app/policy_library
+
+volumes:
+  insurance-data:
+  insurance-policy:

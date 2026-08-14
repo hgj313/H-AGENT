@@ -1,0 +1,49 @@
+# 构建上下文忽略文件：避免把本地大文件/敏感信息打进镜像
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 虚拟环境
+.venv/
+venv/
+H-AGENT/.venv/
+H-AGENT/**/*.pyc
+
+# 数据目录（运行时挂载卷，不打包进镜像）
+data/
+policy_library/
+uploads/
+
+# 敏感配置
+.env
+H-AGENT/.env
+.reminder_config.json
+
+# 临时文件/日志
+*.log
+*.db
+*.sqlite3
+temp/
+tmp/
+
+# 测试/构建产物
+.pytest_cache/
+*.egg-info/
+
+# 版本控制
+.git/
+.gitignore
+
+# 其他大文件
+H-AGENT/*.pdf
+H-AGENT/*.png
+H-AGENT/*.jpg
+*.xlsx
+!最新保险数据下载模板.xlsx
+
+# 文档/无关文件
+*.md
+!requirements.txt

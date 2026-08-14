@@ -17,10 +17,11 @@ import threading
 from datetime import datetime, timedelta
 from typing import Optional
 
+from insurance_agent.infrastructure.paths import SCHEDULER_CONFIG_PATH
+
 logger = logging.getLogger(__name__)
 
-DATA_DIR = "C:/insurance-automation/data"
-CONFIG_PATH = os.path.join(DATA_DIR, "scheduler_config.json")
+CONFIG_PATH = SCHEDULER_CONFIG_PATH
 
 DEFAULT_CONFIG = {
     "enabled": True,
