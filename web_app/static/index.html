@@ -517,6 +517,7 @@
             <button class="tab-btn active" onclick="switchTab('policy')">📄 保单识别</button>
             <button class="tab-btn" onclick="switchTab('reminder')">🔔 保险到期提醒</button>
             <button class="tab-btn" onclick="switchTab('punch')">✅ 今日打卡数据</button>
+            <button class="tab-btn" onclick="switchTab('personnel')">👥 保单人员数据</button>
         </div>
 
         <!-- Tab: 保单识别 -->
@@ -763,6 +764,47 @@
                 <div id="abnormalList" style="max-height:400px;overflow-y:auto;"></div>
             </div>
         </div><!-- end tabPunch -->
+
+        <!-- Tab: 保单人员数据 -->
+        <div class="tab-panel" id="tabPersonnel">
+            <!-- 操作按钮 -->
+            <div class="upload-card">
+                <div class="btn-group">
+                    <button class="btn btn-primary" id="btnRefreshPersonnel" onclick="loadPersonnel()">🔄 刷新数据</button>
+                    <button class="btn btn-secondary" onclick="document.getElementById('personnelFileInput').click()">📤 上传 Excel 替换数据</button>
+                    <button class="btn btn-primary" onclick="downloadPersonnel()" style="background:#48bb78;">⬇️ 下载 Excel 表格</button>
+                </div>
+                <input type="file" id="personnelFileInput" accept=".xlsx,.xls" style="display:none;">
+                <div id="personnelStatus" style="margin-top:12px;text-align:center;font-size:14px;"></div>
+            </div>
+
+            <!-- 数据表 -->
+            <div class="upload-card">
+                <h3 style="font-size:16px;margin-bottom:8px;color:#4a5568;">📋 保单人员数据（共 <span id="personnelCount">0</span> 人）</h3>
+                <div style="overflow-x:auto;max-height:600px;overflow-y:auto;">
+                    <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                        <thead>
+                            <tr style="background:#f7fafc;position:sticky;top:0;">
+                                <th style="padding:8px;border:1px solid #e2e8f0;">姓名</th>
+                                <th style="padding:8px;border:1px solid #e2e8f0;">证件号码</th>
+                                <th style="padding:8px;border:1px solid #e2e8f0;">证件类型</th>
+                                <th style="padding:8px;border:1px solid #e2e8f0;">出生日期</th>
+                                <th style="padding:8px;border:1px solid #e2e8f0;">所属公司</th>
+                                <th style="padding:8px;border:1px solid #e2e8f0;">批改类型</th>
+                                <th style="padding:8px;border:1px solid #e2e8f0;">起始时间</th>
+                                <th style="padding:8px;border:1px solid #e2e8f0;">起止时间</th>
+                                <th style="padding:8px;border:1px solid #e2e8f0;">岗位名称</th>
+                                <th style="padding:8px;border:1px solid #e2e8f0;">保险公司</th>
+                                <th style="padding:8px;border:1px solid #e2e8f0;">保单号</th>
+                            </tr>
+                        </thead>
+                        <tbody id="personnelTableBody">
+                            <tr><td colspan="11" style="text-align:center;color:#999;padding:20px;">加载中...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div><!-- end tabPersonnel -->
 
     </div>
 
@@ -1032,6 +1074,10 @@
                 document.getElementById('tabPunch').classList.add('active');
                 loadSchedulerConfig();
                 loadPunchRecords();
+            } else if (tab === 'personnel') {
+                btns[3].classList.add('active');
+                document.getElementById('tabPersonnel').classList.add('active');
+                loadPersonnel();
             }
         }
 
@@ -1481,6 +1527,88 @@
                 setTimeout(() => { status.innerHTML = ''; }, 8000);
             }
         }
+
+        // ========== 保单人员数据 ==========
+
+        async function loadPersonnel() {
+            const apiBase = getApiBase();
+            try {
+                const resp = await fetch(`${apiBase}/api/personnel`);
+                if (!resp.ok) return;
+                const data = await resp.json();
+                document.getElementById('personnelCount').textContent = data.total || 0;
+                renderPersonnelTable(data.records || []);
+            } catch (err) {
+                console.error('加载保单人员数据失败:', err);
+            }
+        }
+
+        function renderPersonnelTable(records) {
+            const tbody = document.getElementById('personnelTableBody');
+            if (!records.length) {
+                tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:#999;padding:20px;">暂无数据，请上传保单 PDF 或 Excel 导入</td></tr>';
+                return;
+            }
+            tbody.innerHTML = records.map(r => `
+                <tr>
+                    <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['姓名'] || ''}</td>
+                    <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['证件号码'] || ''}</td>
+                    <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['证件类型'] || ''}</td>
+                    <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['出生日期'] || ''}</td>
+                    <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['所属公司'] || ''}</td>
+                    <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['批改类型'] || ''}</td>
+                    <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['起始时间'] || ''}</td>
+                    <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['起止时间'] || ''}</td>
+                    <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['岗位名称'] || ''}</td>
+                    <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['保险公司'] || ''}</td>
+                    <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['保单号'] || ''}</td>
+                </tr>
+            `).join('');
+        }
+
+        async function uploadPersonnelExcel(file) {
+            const apiBase = getApiBase();
+            const status = document.getElementById('personnelStatus');
+            status.innerHTML = '<span class="spinner"></span> 正在上传并替换数据...';
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const resp = await fetch(`${apiBase}/api/personnel/upload-excel`, {
+                    method: 'POST',
+                    body: formData,
+                });
+                const data = await resp.json();
+                if (resp.ok && data.success) {
+                    status.innerHTML = `<span style="color:#48bb78;">✅ ${data.message}</span>`;
+                    loadPersonnel();
+                } else {
+                    status.innerHTML = `<span style="color:#e53e3e;">❌ ${data.detail || '上传失败'}</span>`;
+                }
+            } catch (err) {
+                status.innerHTML = `<span style="color:#e53e3e;">❌ 上传失败: ${err.message}</span>`;
+            }
+            setTimeout(() => { status.innerHTML = ''; }, 5000);
+        }
+
+        function downloadPersonnel() {
+            const apiBase = getApiBase();
+            window.location.href = `${apiBase}/api/personnel/export`;
+        }
+
+        // 绑定上传文件事件
+        document.getElementById('personnelFileInput').addEventListener('change', function(e) {
+            if (e.target.files.length) {
+                const file = e.target.files[0];
+                if (!confirm(`确定用「${file.name}」替换全部保单人员数据吗？\n\n此操作会清空现有数据并导入新数据。`)) {
+                    e.target.value = '';
+                    return;
+                }
+                uploadPersonnelExcel(file);
+                e.target.value = '';
+            }
+        });
     </script>
 </body>
 </html>

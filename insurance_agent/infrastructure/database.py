@@ -269,6 +269,19 @@ def get_insurance_personnel() -> list[dict]:
             conn.close()
 
 
+def clear_insurance_personnel() -> int:
+    """清空保单人员数据表（替换数据前）"""
+    with _lock:
+        conn = get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM insurance_personnel")
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            conn.close()
+
+
 def get_active_insurance_by_id() -> dict[str, list[dict]]:
     """获取按身份证号分组的有效保单人员（未过期）
 

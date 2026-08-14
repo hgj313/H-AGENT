@@ -17,7 +17,7 @@ from urllib.parse import quote
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from pydantic import BaseModel
 
@@ -279,6 +279,22 @@ CSV_FIELDS = [
     "所属公司", "批改类型",
     "起始时间", "起止时间",
     "岗位名称", "保险公司", "保单号", "来源文件",
+]
+
+# 保单人员数据字段映射：Excel 列名 → 数据库字段 key
+PERSONNEL_FIELDS = [
+    ("姓名", "name"),
+    ("证件号码", "id_number"),
+    ("证件类型", "id_type"),
+    ("出生日期", "birth_date"),
+    ("所属公司", "company"),
+    ("批改类型", "modification_type"),
+    ("起始时间", "start_date"),
+    ("起止时间", "end_date"),
+    ("岗位名称", "job_title"),
+    ("保险公司", "insurance_company"),
+    ("保单号", "policy_number"),
+    ("来源文件", "source_file"),
 ]
 
 
@@ -659,6 +675,175 @@ async def update_scheduler_config(body: SchedulerConfigSchema):
 async def get_db_stats():
     """获取数据库统计信息"""
     return JSONResponse(db.db_stats())
+
+
+# ==================== 保单人员数据管理 ====================
+
+def _personnel_to_row(p: dict) -> dict:
+    """数据库记录 → 中文表头行"""
+    row = {}
+    for label, key in PERSONNEL_FIELDS:
+        row[label] = p.get(key, "") or ""
+    return row
+
+
+@app.get("/api/personnel")
+async def get_personnel():
+    """查询全部保单人员数据"""
+    persons = db.get_insurance_personnel()
+    rows = [_personnel_to_row(p) for p in persons]
+    return JSONResponse({
+        "success": True,
+        "total": len(rows),
+        "records": rows,
+    })
+
+
+@app.post("/api/personnel/upload-excel")
+async def upload_personnel_excel(file: UploadFile = File(...)):
+    """上传 Excel 模板文件，替换全部保单人员数据
+
+    支持字段（表头需匹配）：
+    姓名/证件号码/证件类型/出生日期/所属公司/批改类型/起始时间/起止时间/岗位名称/保险公司/保单号/来源文件
+    """
+    filename = _fix_filename(file.filename or "")
+    if not filename.lower().endswith((".xlsx", ".xls")):
+        raise HTTPException(status_code=400, detail="请上传 Excel 文件（.xlsx）")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="文件为空")
+
+    try:
+        wb = load_workbook(io.BytesIO(content), data_only=True)
+        ws = wb.active
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Excel 解析失败: {e}")
+
+    # 读取表头，建立 列名→列索引 映射
+    header_row = None
+    header_map = {}  # 中文列名 → 列索引（0-based）
+    for row in ws.iter_rows(min_row=1, max_row=1, values_only=True):
+        header_row = row
+        break
+
+    if not header_row:
+        raise HTTPException(status_code=400, detail="Excel 无表头")
+
+    for idx, cell in enumerate(header_row):
+        if cell is not None:
+            header_map[str(cell).strip()] = idx
+
+    # 校验必需字段
+    if "姓名" not in header_map or "证件号码" not in header_map:
+        raise HTTPException(status_code=400, detail="Excel 需包含「姓名」和「证件号码」列")
+
+    # 解析数据行
+    persons = []
+    for row in ws.iter_rows(min_row=2, values_only=True):
+        if not row or all(c is None or str(c).strip() == "" for c in row):
+            continue
+        def _get(label):
+            idx = header_map.get(label)
+            if idx is None or idx >= len(row):
+                return ""
+            val = row[idx]
+            return "" if val is None else str(val).strip()
+        # 姓名和证件号码必须有
+        name = _get("姓名")
+        id_num = _get("证件号码")
+        if not name and not id_num:
+            continue
+        person = {
+            "name": name,
+            "id_number": id_num,
+            "id_type": _get("证件类型") or "身份证",
+            "birth_date": _get("出生日期"),
+            "company": _get("所属公司"),
+            "modification_type": _get("批改类型") or "增保",
+            "start_date": _get("起始时间"),
+            "end_date": _get("起止时间"),
+            "job_title": _get("岗位名称"),
+            "insurance_company": _get("保险公司"),
+            "policy_number": _get("保单号"),
+            "source_file": _get("来源文件"),
+        }
+        persons.append(person)
+
+    if not persons:
+        raise HTTPException(status_code=400, detail="Excel 中没有有效的人员数据")
+
+    # 替换：清空旧数据，写入新数据
+    removed = db.clear_insurance_personnel()
+    stored = db.upsert_insurance_personnel(persons)
+
+    return JSONResponse({
+        "success": True,
+        "message": f"替换成功：清空 {removed} 条旧数据，导入 {stored} 条新数据",
+        "total": stored,
+        "removed": removed,
+    })
+
+
+@app.get("/api/personnel/export")
+async def export_personnel():
+    """下载保单人员数据为 Excel 表格"""
+    persons = db.get_insurance_personnel()
+    if not persons:
+        raise HTTPException(status_code=404, detail="暂无保单人员数据")
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "保单人员数据"
+
+    # 表头样式
+    header_font = Font(name="微软雅黑", bold=True, color="FFFFFF", size=11)
+    header_fill = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
+    header_align = Alignment(horizontal="center", vertical="center")
+    thin_border = Border(
+        left=Side(style="thin"), right=Side(style="thin"),
+        top=Side(style="thin"), bottom=Side(style="thin"),
+    )
+
+    # 写表头
+    for col_idx, (label, _) in enumerate(PERSONNEL_FIELDS, 1):
+        cell = ws.cell(row=1, column=col_idx, value=label)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_align
+        cell.border = thin_border
+
+    # 写数据
+    data_font = Font(name="微软雅黑", size=10)
+    for row_idx, p in enumerate(persons, 2):
+        for col_idx, (_, key) in enumerate(PERSONNEL_FIELDS, 1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=p.get(key, "") or "")
+            cell.font = data_font
+            cell.border = thin_border
+            cell.alignment = Alignment(vertical="center")
+
+    # 列宽
+    col_widths = {
+        "姓名": 12, "证件号码": 24, "证件类型": 10, "出生日期": 14,
+        "所属公司": 28, "批改类型": 10, "起始时间": 14, "起止时间": 14,
+        "岗位名称": 16, "保险公司": 22, "保单号": 30, "来源文件": 40,
+    }
+    for col_idx, (label, _) in enumerate(PERSONNEL_FIELDS, 1):
+        ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = col_widths.get(label, 15)
+
+    ws.freeze_panes = "A2"
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    filename = f"保单人员数据_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    encoded_filename = quote(filename)
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
+    )
 
 
 # ==================== 公司系统对接 ====================
