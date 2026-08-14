@@ -728,15 +728,11 @@
                     </div>
                     <div class="stat-box">
                         <div class="num" id="punchCovered">0</div>
-                        <div class="label">已有保险</div>
+                        <div class="label">已有正常保单</div>
                     </div>
                     <div class="stat-box add">
                         <div class="num" id="punchUninsured">0</div>
-                        <div class="label">无保险</div>
-                    </div>
-                    <div class="stat-box" style="background:#fff7ed;">
-                        <div class="num" id="punchExpired" style="color:#dd6b20;">0</div>
-                        <div class="label">保险已过期</div>
+                        <div class="label">无正常保单</div>
                     </div>
                 </div>
             </div>
@@ -806,7 +802,7 @@
 
             <!-- 异常人员列表 -->
             <div class="upload-card" id="abnormalCard" style="display:none;">
-                <h3 style="font-size:16px;margin-bottom:16px;color:#e53e3e;">⚠️ 无保险/已过期人员</h3>
+                <h3 style="font-size:16px;margin-bottom:16px;color:#e53e3e;">⚠️ 无正常保单人员</h3>
                 <div id="abnormalList" style="max-height:400px;overflow-y:auto;"></div>
             </div>
         </div><!-- end tabPunch -->
@@ -1545,7 +1541,7 @@
                 if (data.success) {
                     updateCoverageStats(data);
                     renderAbnormal(data);
-                    status.innerHTML = `<span style="color:#48bb78;">✅ 检查完成：无保险 ${data.uninsured} 人，已过期 ${data.expired} 人</span>`;
+                    status.innerHTML = `<span style="color:#48bb78;">✅ 检查完成：无正常保单 ${data.uninsured} 人</span>`;
                 } else {
                     status.innerHTML = `<span style="color:#e53e3e;">❌ 检查失败: ${data.detail || '未知错误'}</span>`;
                 }
@@ -1562,16 +1558,14 @@
             document.getElementById('punchTotal').textContent = data.total_punch || 0;
             document.getElementById('punchCovered').textContent = data.covered || 0;
             document.getElementById('punchUninsured').textContent = data.uninsured || 0;
-            document.getElementById('punchExpired').textContent = data.expired || 0;
         }
 
         function renderAbnormal(data) {
             const uninsured = data.uninsured_list || [];
-            const expired = data.expired_list || [];
             const card = document.getElementById('abnormalCard');
             const list = document.getElementById('abnormalList');
 
-            if (!uninsured.length && !expired.length) {
+            if (!uninsured.length) {
                 card.style.display = 'none';
                 return;
             }
@@ -1579,19 +1573,11 @@
 
             let html = '';
             if (uninsured.length) {
-                html += `<h4 style="color:#e53e3e;margin:8px 0;">🔴 无保险（${uninsured.length}人）</h4>`;
+                html += `<h4 style="color:#e53e3e;margin:8px 0;">🔴 无正常保单（${uninsured.length}人）</h4>`;
                 html += uninsured.slice(0, 100).map(p => `
                     <div class="line">
                         <span>${p.name} | ${p.id_number} | ${p.project_name} | ${p.team_name} | ${p.supplier_name}</span>
-                        <span class="tag tag-error">无保险</span>
-                    </div>`).join('');
-            }
-            if (expired.length) {
-                html += `<h4 style="color:#dd6b20;margin:8px 0;">🟠 保险已过期（${expired.length}人）</h4>`;
-                html += expired.slice(0, 100).map(p => `
-                    <div class="line">
-                        <span>${p.name} | ${p.id_number} | ${p.project_name} | 上次到期:${p.last_end_date}</span>
-                        <span class="tag tag-warn">已过期</span>
+                        <span class="tag tag-error">无正常保单</span>
                     </div>`).join('');
             }
             list.innerHTML = html;

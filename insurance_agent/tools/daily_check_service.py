@@ -17,7 +17,6 @@ logger = logging.getLogger(__name__)
 def build_coverage_email_html(check_result: dict, punch_date: str) -> str:
     """构建保险覆盖检查的提醒邮件 HTML"""
     uninsured = check_result.get("uninsured_list", [])
-    expired = check_result.get("expired_list", [])
 
     def render_person_rows(persons: list[dict]) -> str:
         rows = ""
@@ -31,52 +30,39 @@ def build_coverage_email_html(check_result: dict, punch_date: str) -> str:
                 <td>{p.get('team_name', '')}</td>
                 <td>{p.get('supplier_name', '')}</td>
                 <td>{p.get('category_name', '')}</td>
-                <td>{p.get('last_end_date', '') or '—'}</td>
             </tr>"""
         return rows
 
     uninsured_rows = render_person_rows(uninsured)
-    expired_rows = render_person_rows(expired)
 
     header = """
     <tr>
         <th>#</th><th>姓名</th><th>身份证号</th><th>项目</th>
-        <th>班组</th><th>劳务公司</th><th>劳务分类</th><th>上次保险到期</th>
+        <th>班组</th><th>劳务公司</th><th>劳务分类</th>
     </tr>"""
 
     uninsured_section = ""
     if uninsured:
         uninsured_section = f"""
-        <h3 style="color:#e53e3e;margin:16px 0 8px;">🔴 无保险人员（{len(uninsured)}人）</h3>
+        <h3 style="color:#e53e3e;margin:16px 0 8px;">🔴 无正常保单人员（{len(uninsured)}人）</h3>
         <table style="width:100%;border-collapse:collapse;font-size:12px;">
             <thead>{header}</thead>
             <tbody>{uninsured_rows}</tbody>
-        </table>"""
-
-    expired_section = ""
-    if expired:
-        expired_section = f"""
-        <h3 style="color:#dd6b20;margin:16px 0 8px;">🟠 保险已过期人员（{len(expired)}人）</h3>
-        <table style="width:100%;border-collapse:collapse;font-size:12px;">
-            <thead>{header}</thead>
-            <tbody>{expired_rows}</tbody>
         </table>"""
 
     return f"""
     <html><body style="font-family:'Microsoft YaHei',Arial,sans-serif;background:#f5f5f5;padding:20px">
     <div style="max-width:1100px;margin:0 auto;background:white;border-radius:8px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.1)">
         <div style="background:linear-gradient(135deg,#e53e3e,#c53030);color:white;padding:20px 24px">
-            <h2 style="margin:0">⚠️ 打卡人员保险覆盖提醒</h2>
+            <h2 style="margin:0">⚠️ 打卡人员保险提醒</h2>
             <p style="margin:4px 0 0;opacity:0.9">
                 打卡日期 <b>{punch_date}</b>，
                 共 <b>{check_result.get('total_punch', 0)}</b> 人打卡，
-                无保险 <b>{len(uninsured)}</b> 人，
-                保险已过期 <b>{len(expired)}</b> 人
+                无正常保单 <b>{len(uninsured)}</b> 人，请及时购买保险
             </p>
         </div>
         <div style="padding:16px 24px">
             {uninsured_section}
-            {expired_section}
         </div>
         <div style="background:#fafafa;padding:12px 24px;color:#999;font-size:11px">
             本邮件由保险单识别系统自动发送 &mdash; {datetime.now().strftime('%Y-%m-%d %H:%M')}
@@ -124,38 +110,11 @@ def run_daily_check(session_manager=None, punch_date: str = None) -> dict:
 
     # 3. 触发邮件提醒
     uninsured = coverage.get("uninsured_list", [])
-    expired = coverage.get("expired_list", [])
 
-    if uninsured or expired:
+    if uninsured:
         email_config = load_config().get("email", {})
         if email_config.get("enabled", True):
-            # 构造提醒人员列表（合并无保险+已过期）
-            alert_persons = []
-            for p in uninsured:
-                alert_persons.append({
-                    "name": p.get("name", ""),
-                    "id_number": p.get("id_number", ""),
-                    "project_name": p.get("project_name", ""),
-                    "team_name": p.get("team_name", ""),
-                    "supplier_name": p.get("supplier_name", ""),
-                    "category_name": p.get("category_name", ""),
-                    "last_end_date": "",
-                })
-            for p in expired:
-                alert_persons.append({
-                    "name": p.get("name", ""),
-                    "id_number": p.get("id_number", ""),
-                    "project_name": p.get("project_name", ""),
-                    "team_name": p.get("team_name", ""),
-                    "supplier_name": p.get("supplier_name", ""),
-                    "category_name": p.get("category_name", ""),
-                    "last_end_date": p.get("last_end_date", ""),
-                })
-
-            # 复用 reminder 的邮件发送，但用覆盖检查的 HTML
-            email_result = _send_coverage_email(
-                coverage, punch_date, email_config, uninsured, expired
-            )
+            email_result = _send_coverage_email(coverage, punch_date, email_config, uninsured)
             result["email"] = email_result
         else:
             result["email"] = {"success": False, "message": "邮件通知已禁用"}
@@ -166,7 +125,7 @@ def run_daily_check(session_manager=None, punch_date: str = None) -> dict:
     return result
 
 
-def _send_coverage_email(check_result, punch_date, email_config, uninsured, expired) -> dict:
+def _send_coverage_email(check_result, punch_date, email_config, uninsured) -> dict:
     """发送覆盖检查提醒邮件"""
     import smtplib
     from email.mime.text import MIMEText
@@ -184,8 +143,8 @@ def _send_coverage_email(check_result, punch_date, email_config, uninsured, expi
     smtp_host = email_config.get("smtp_host", "smtp.qq.com")
     smtp_port = email_config.get("smtp_port", 465)
 
-    total_alert = len(uninsured) + len(expired)
-    subject = f"⚠️ 保险覆盖提醒 — {punch_date} 打卡 {total_alert} 人需购买/续保"
+    total_alert = len(uninsured)
+    subject = f"⚠️ 保险购买提醒 — {punch_date} 打卡 {total_alert} 人无正常保单"
 
     msg = MIMEMultipart("alternative")
     msg["From"] = sender
@@ -198,6 +157,6 @@ def _send_coverage_email(check_result, punch_date, email_config, uninsured, expi
         server.login(sender, password)
         server.sendmail(sender, recipients, msg.as_string())
         server.quit()
-        return {"success": True, "message": f"已发送提醒邮件到 {', '.join(recipients)}，{total_alert} 人需处理"}
+        return {"success": True, "message": f"已发送提醒邮件到 {', '.join(recipients)}，{total_alert} 人需购买保险"}
     except Exception as e:
         return {"success": False, "message": f"邮件发送失败: {e}"}

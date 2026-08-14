@@ -60,22 +60,19 @@ def sync_punch_data(session_manager, punch_date: str = None) -> dict:
 
 
 def check_insurance_coverage(punch_date: str = None) -> dict:
-    """检查打卡人员的保险覆盖情况
+    """检查打卡人员是否有正常状态的保单
 
-    对比逻辑：
-    - 取当天打卡记录（按身份证号去重）
-    - 取有效保单人员（未过期，按身份证号分组）
-    - 对每个打卡人员判断：
-        1. 无任何保单记录 → "无保险"
-        2. 有保单记录但全部已过期 → "保险已过期"
-        3. 有有效保单 → 正常
+    简化逻辑：
+    - 取当天打卡人员（按身份证号去重）
+    - 到保单人员数据中查询其是否有「状态为正常」的保单
+    - 有正常保单 → 覆盖正常
+    - 没有正常保单 → 归入待提醒名单（提醒购买保险）
 
     Returns:
         {
             "success", "punch_date",
-            "total_punch", "covered", "uninsured", "expired",
-            "uninsured_list": [...],   # 无保险人员
-            "expired_list": [...],     # 已过期人员
+            "total_punch", "covered", "uninsured",
+            "uninsured_list": [...],   # 无正常状态保单的人员
         }
     """
     if punch_date is None:
@@ -85,17 +82,6 @@ def check_insurance_coverage(punch_date: str = None) -> dict:
     db.refresh_expired_status()
 
     punch_records = db.get_punch_records(punch_date, limit=10000)
-    if not punch_records:
-        return {
-            "success": True,
-            "punch_date": punch_date,
-            "total_punch": 0,
-            "covered": 0,
-            "uninsured": 0,
-            "expired": 0,
-            "uninsured_list": [],
-            "expired_list": [],
-        }
 
     # 按身份证号去重（同一个人可能多条打卡记录）
     seen = {}
@@ -104,52 +90,28 @@ def check_insurance_coverage(punch_date: str = None) -> dict:
         if id_num and id_num not in seen:
             seen[id_num] = r
 
-    # 有效保单（未过期）
+    # 有效保单（状态为正常）
     active_insurance = db.get_active_insurance_by_id()
 
-    # 全部保单（含过期，用于判断"有过保单但已过期"）
-    all_insurance = {}
-    for p in db.get_insurance_personnel():
-        id_num = p.get("id_number", "")
-        if id_num:
-            all_insurance.setdefault(id_num, []).append(p)
-
-    uninsured_list = []  # 无保险
-    expired_list = []    # 保险已过期
-
+    # 无正常状态保单的人员
+    uninsured_list = []
     for id_num, record in seen.items():
-        person_active = active_insurance.get(id_num, [])
-        person_all = all_insurance.get(id_num, [])
-
-        base_info = {
+        if active_insurance.get(id_num):
+            continue  # 有正常状态保单，覆盖正常
+        uninsured_list.append({
             "name": record.get("member_name", ""),
             "id_number": id_num,
             "project_name": record.get("project_name", ""),
             "team_name": record.get("team_name", ""),
             "supplier_name": record.get("supplier_name", ""),
             "category_name": record.get("category_name", ""),
-        }
-
-        if person_active:
-            # 有有效保单 → 正常
-            continue
-        elif person_all:
-            # 有保单但全部已过期
-            latest_end = max((p.get("end_date", "") for p in person_all), default="")
-            base_info["last_end_date"] = latest_end
-            base_info["insurance_company"] = person_all[0].get("insurance_company", "")
-            expired_list.append(base_info)
-        else:
-            # 完全无保单
-            uninsured_list.append(base_info)
+        })
 
     return {
         "success": True,
         "punch_date": punch_date,
         "total_punch": len(seen),
-        "covered": len(seen) - len(uninsured_list) - len(expired_list),
+        "covered": len(seen) - len(uninsured_list),
         "uninsured": len(uninsured_list),
-        "expired": len(expired_list),
         "uninsured_list": uninsured_list,
-        "expired_list": expired_list,
     }
