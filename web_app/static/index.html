@@ -125,6 +125,42 @@
             color: #555;
         }
 
+        /* 搜索筛选栏 */
+        .filter-bar {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            align-items: center;
+            margin-bottom: 12px;
+        }
+        .filter-bar input[type="text"] {
+            flex: 1;
+            min-width: 200px;
+            padding: 8px 12px;
+            border: 1px solid #d0d5dd;
+            border-radius: 6px;
+            font-size: 13px;
+        }
+        .filter-bar input[type="text"]:focus {
+            border-color: #667eea;
+            outline: none;
+            box-shadow: 0 0 0 2px rgba(102,126,234,0.15);
+        }
+        .filter-bar select {
+            padding: 8px 12px;
+            border: 1px solid #d0d5dd;
+            border-radius: 6px;
+            font-size: 13px;
+            background: white;
+            cursor: pointer;
+            max-width: 200px;
+        }
+        .filter-bar .filter-count {
+            font-size: 12px;
+            color: #999;
+            white-space: nowrap;
+        }
+
         .recipient-row {
             display: flex;
             align-items: center;
@@ -739,6 +775,16 @@
             <!-- 打卡数据表 -->
             <div class="upload-card">
                 <h3 style="font-size:16px;margin-bottom:16px;color:#4a5568;">📋 今日打卡明细</h3>
+                <div class="filter-bar">
+                    <input type="text" id="punchSearch" placeholder="🔍 搜索姓名/身份证号/项目/班组/劳务公司..." oninput="renderPunchTable()">
+                    <select id="punchFilterSupplier" onchange="renderPunchTable()">
+                        <option value="">全部劳务公司</option>
+                    </select>
+                    <select id="punchFilterCategory" onchange="renderPunchTable()">
+                        <option value="">全部劳务分类</option>
+                    </select>
+                    <span class="filter-count" id="punchFilterCount"></span>
+                </div>
                 <div style="overflow-x:auto;">
                     <table style="width:100%;border-collapse:collapse;font-size:12px;">
                         <thead>
@@ -781,6 +827,16 @@
             <!-- 数据表 -->
             <div class="upload-card">
                 <h3 style="font-size:16px;margin-bottom:8px;color:#4a5568;">📋 保单人员数据（共 <span id="personnelCount">0</span> 人）</h3>
+                <div class="filter-bar">
+                    <input type="text" id="personnelSearch" placeholder="🔍 搜索姓名/证件号码/所属公司/保险公司/保单号..." oninput="renderPersonnelTable()">
+                    <select id="personnelFilterCompany" onchange="renderPersonnelTable()">
+                        <option value="">全部保险公司</option>
+                    </select>
+                    <select id="personnelFilterType" onchange="renderPersonnelTable()">
+                        <option value="">全部批改类型</option>
+                    </select>
+                    <span class="filter-count" id="personnelFilterCount"></span>
+                </div>
                 <div style="overflow-x:auto;max-height:600px;overflow-y:auto;">
                     <table style="width:100%;border-collapse:collapse;font-size:12px;">
                         <thead>
@@ -1375,26 +1431,67 @@
             setTimeout(() => { status.innerHTML = ''; }, 3000);
         }
 
+        let punchRecordsCache = [];  // 打卡数据缓存（用于搜索筛选）
+
         async function loadPunchRecords() {
             const apiBase = getApiBase();
             try {
                 const resp = await fetch(`${apiBase}/api/punch/records`);
                 if (!resp.ok) return;
                 const data = await resp.json();
-                renderPunchTable(data.records || []);
+                punchRecordsCache = data.records || [];
                 document.getElementById('punchTotal').textContent = data.total || 0;
+                populatePunchFilters();
+                renderPunchTable();
             } catch (err) {
                 console.error('加载打卡数据失败:', err);
             }
         }
 
-        function renderPunchTable(records) {
+        function populatePunchFilters() {
+            // 填充劳务公司、劳务分类下拉
+            const suppliers = [...new Set(punchRecordsCache.map(r => r.supplier_name).filter(Boolean))].sort();
+            const categories = [...new Set(punchRecordsCache.map(r => r.category_name).filter(Boolean))].sort();
+
+            const supSel = document.getElementById('punchFilterSupplier');
+            const curSup = supSel.value;
+            supSel.innerHTML = '<option value="">全部劳务公司</option>' +
+                suppliers.map(s => `<option value="${s}">${s}</option>`).join('');
+            supSel.value = curSup;
+
+            const catSel = document.getElementById('punchFilterCategory');
+            const curCat = catSel.value;
+            catSel.innerHTML = '<option value="">全部劳务分类</option>' +
+                categories.map(c => `<option value="${c}">${c}</option>`).join('');
+            catSel.value = curCat;
+        }
+
+        function renderPunchTable() {
             const tbody = document.getElementById('punchTableBody');
-            if (!records.length) {
-                tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;padding:20px;">暂无数据，请先同步今日打卡</td></tr>';
+            const search = (document.getElementById('punchSearch')?.value || '').trim().toLowerCase();
+            const supFilter = document.getElementById('punchFilterSupplier')?.value || '';
+            const catFilter = document.getElementById('punchFilterCategory')?.value || '';
+
+            // 应用筛选
+            let filtered = punchRecordsCache.filter(r => {
+                if (supFilter && r.supplier_name !== supFilter) return false;
+                if (catFilter && r.category_name !== catFilter) return false;
+                if (search) {
+                    const haystack = [r.member_name, r.identification_number, r.project_name, r.team_name, r.supplier_name, r.category_name]
+                        .filter(Boolean).join(' ').toLowerCase();
+                    if (!haystack.includes(search)) return false;
+                }
+                return true;
+            });
+
+            const countEl = document.getElementById('punchFilterCount');
+            if (countEl) countEl.textContent = `筛选结果 ${filtered.length} / ${punchRecordsCache.length} 条`;
+
+            if (!filtered.length) {
+                tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;padding:20px;">无匹配数据</td></tr>';
                 return;
             }
-            tbody.innerHTML = records.slice(0, 200).map(r => `
+            tbody.innerHTML = filtered.slice(0, 500).map(r => `
                 <tr>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r.member_name || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r.identification_number || ''}</td>
@@ -1530,26 +1627,67 @@
 
         // ========== 保单人员数据 ==========
 
+        let personnelRecordsCache = [];  // 保单人员数据缓存（用于搜索筛选）
+
         async function loadPersonnel() {
             const apiBase = getApiBase();
             try {
                 const resp = await fetch(`${apiBase}/api/personnel`);
                 if (!resp.ok) return;
                 const data = await resp.json();
+                personnelRecordsCache = data.records || [];
                 document.getElementById('personnelCount').textContent = data.total || 0;
-                renderPersonnelTable(data.records || []);
+                populatePersonnelFilters();
+                renderPersonnelTable();
             } catch (err) {
                 console.error('加载保单人员数据失败:', err);
             }
         }
 
-        function renderPersonnelTable(records) {
+        function populatePersonnelFilters() {
+            // 填充保险公司、批改类型下拉
+            const companies = [...new Set(personnelRecordsCache.map(r => r['保险公司']).filter(Boolean))].sort();
+            const types = [...new Set(personnelRecordsCache.map(r => r['批改类型']).filter(Boolean))].sort();
+
+            const compSel = document.getElementById('personnelFilterCompany');
+            const curComp = compSel.value;
+            compSel.innerHTML = '<option value="">全部保险公司</option>' +
+                companies.map(c => `<option value="${c}">${c}</option>`).join('');
+            compSel.value = curComp;
+
+            const typeSel = document.getElementById('personnelFilterType');
+            const curType = typeSel.value;
+            typeSel.innerHTML = '<option value="">全部批改类型</option>' +
+                types.map(t => `<option value="${t}">${t}</option>`).join('');
+            typeSel.value = curType;
+        }
+
+        function renderPersonnelTable() {
             const tbody = document.getElementById('personnelTableBody');
-            if (!records.length) {
-                tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:#999;padding:20px;">暂无数据，请上传保单 PDF 或 Excel 导入</td></tr>';
+            const search = (document.getElementById('personnelSearch')?.value || '').trim().toLowerCase();
+            const compFilter = document.getElementById('personnelFilterCompany')?.value || '';
+            const typeFilter = document.getElementById('personnelFilterType')?.value || '';
+
+            // 应用筛选
+            let filtered = personnelRecordsCache.filter(r => {
+                if (compFilter && r['保险公司'] !== compFilter) return false;
+                if (typeFilter && r['批改类型'] !== typeFilter) return false;
+                if (search) {
+                    const haystack = [r['姓名'], r['证件号码'], r['所属公司'], r['保险公司'], r['保单号'], r['岗位名称']]
+                        .filter(Boolean).join(' ').toLowerCase();
+                    if (!haystack.includes(search)) return false;
+                }
+                return true;
+            });
+
+            const countEl = document.getElementById('personnelFilterCount');
+            if (countEl) countEl.textContent = `筛选结果 ${filtered.length} / ${personnelRecordsCache.length} 条`;
+
+            if (!filtered.length) {
+                tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:#999;padding:20px;">无匹配数据</td></tr>';
                 return;
             }
-            tbody.innerHTML = records.map(r => `
+            tbody.innerHTML = filtered.map(r => `
                 <tr>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['姓名'] || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['证件号码'] || ''}</td>
