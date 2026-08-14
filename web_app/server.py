@@ -188,7 +188,7 @@ def _persist_policy_result(result_dict: dict, fpath: str):
     except Exception:
         pass
 
-    # 2. 人员写入数据库
+    # 2. 人员写入数据库（区分增保/减保）
     persons = result_dict.get("insured_persons", [])
     if not persons:
         return
@@ -199,24 +199,50 @@ def _persist_policy_result(result_dict: dict, fpath: str):
     overall_start = result_dict.get("overall_start_date", "")
     overall_end = result_dict.get("overall_end_date", "")
 
-    person_rows = []
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    add_rows = []      # 增保人员（新增或更新）
+    remove_ids = []    # 减保人员（状态改失效）
+
     for p in persons:
-        person_rows.append({
+        mod_type = p.get("modification_type", "增保")
+        id_num = (p.get("id_number") or "").strip()
+
+        if mod_type == "减保":
+            # 减保：按身份证号标记为失效
+            if id_num:
+                remove_ids.append(id_num)
+            continue
+
+        # 增保：新增或更新
+        end_date = p.get("end_date", "") or overall_end
+        # 状态判断：起止时间未到期 → 正常；已到期 → 失效
+        status = "正常"
+        if end_date and end_date < today:
+            status = "失效"
+
+        add_rows.append({
             "name": p.get("name", ""),
-            "id_number": p.get("id_number", ""),
+            "id_number": id_num,
             "id_type": p.get("id_type", "身份证"),
             "company": p.get("company", ""),
             "start_date": p.get("start_date", "") or overall_start,
-            "end_date": p.get("end_date", "") or overall_end,
+            "end_date": end_date,
             "job_title": p.get("job_title", ""),
             "birth_date": p.get("birth_date", ""),
             "insurance_company": insurance_company,
             "policy_number": policy_number,
             "file_name": source_file,
-            "modification_type": p.get("modification_type", "增保"),
+            "status": status,
         })
-    if person_rows:
-        db.upsert_insurance_personnel(person_rows)
+
+    # 增保：新增或更新
+    if add_rows:
+        db.upsert_insurance_personnel(add_rows)
+
+    # 减保：状态改失效
+    if remove_ids:
+        db.deactivate_insurance(remove_ids)
 
 
 def process_files(file_paths: list[str]) -> list[dict]:
@@ -288,7 +314,7 @@ PERSONNEL_FIELDS = [
     ("证件类型", "id_type"),
     ("出生日期", "birth_date"),
     ("所属公司", "company"),
-    ("批改类型", "modification_type"),
+    ("状态", "status"),
     ("起始时间", "start_date"),
     ("起止时间", "end_date"),
     ("岗位名称", "job_title"),
@@ -690,6 +716,8 @@ def _personnel_to_row(p: dict) -> dict:
 @app.get("/api/personnel")
 async def get_personnel():
     """查询全部保单人员数据"""
+    # 先刷新到期状态：已到起止日期的自动标记为失效
+    db.refresh_expired_status()
     persons = db.get_insurance_personnel()
     rows = [_personnel_to_row(p) for p in persons]
     return JSONResponse({
@@ -754,13 +782,19 @@ async def upload_personnel_excel(file: UploadFile = File(...)):
         id_num = _get("证件号码")
         if not name and not id_num:
             continue
+        # 状态：未指定时根据起止日期判断
+        status = _get("状态")
+        if not status:
+            end_date = _get("起止时间")
+            today = datetime.now().strftime("%Y-%m-%d")
+            status = "失效" if (end_date and end_date < today) else "正常"
         person = {
             "name": name,
             "id_number": id_num,
             "id_type": _get("证件类型") or "身份证",
             "birth_date": _get("出生日期"),
             "company": _get("所属公司"),
-            "modification_type": _get("批改类型") or "增保",
+            "status": status,
             "start_date": _get("起始时间"),
             "end_date": _get("起止时间"),
             "job_title": _get("岗位名称"),

@@ -832,8 +832,10 @@
                     <select id="personnelFilterCompany" onchange="renderPersonnelTable()">
                         <option value="">全部保险公司</option>
                     </select>
-                    <select id="personnelFilterType" onchange="renderPersonnelTable()">
-                        <option value="">全部批改类型</option>
+                    <select id="personnelFilterStatus" onchange="renderPersonnelTable()">
+                        <option value="">全部状态</option>
+                        <option value="正常">正常</option>
+                        <option value="失效">失效</option>
                     </select>
                     <span class="filter-count" id="personnelFilterCount"></span>
                 </div>
@@ -846,7 +848,7 @@
                                 <th style="padding:8px;border:1px solid #e2e8f0;">证件类型</th>
                                 <th style="padding:8px;border:1px solid #e2e8f0;">出生日期</th>
                                 <th style="padding:8px;border:1px solid #e2e8f0;">所属公司</th>
-                                <th style="padding:8px;border:1px solid #e2e8f0;">批改类型</th>
+                                <th style="padding:8px;border:1px solid #e2e8f0;">状态</th>
                                 <th style="padding:8px;border:1px solid #e2e8f0;">起始时间</th>
                                 <th style="padding:8px;border:1px solid #e2e8f0;">起止时间</th>
                                 <th style="padding:8px;border:1px solid #e2e8f0;">岗位名称</th>
@@ -1645,33 +1647,26 @@
         }
 
         function populatePersonnelFilters() {
-            // 填充保险公司、批改类型下拉
+            // 填充保险公司下拉（状态是固定的正常/失效，已在 HTML 中写死）
             const companies = [...new Set(personnelRecordsCache.map(r => r['保险公司']).filter(Boolean))].sort();
-            const types = [...new Set(personnelRecordsCache.map(r => r['批改类型']).filter(Boolean))].sort();
 
             const compSel = document.getElementById('personnelFilterCompany');
             const curComp = compSel.value;
             compSel.innerHTML = '<option value="">全部保险公司</option>' +
                 companies.map(c => `<option value="${c}">${c}</option>`).join('');
             compSel.value = curComp;
-
-            const typeSel = document.getElementById('personnelFilterType');
-            const curType = typeSel.value;
-            typeSel.innerHTML = '<option value="">全部批改类型</option>' +
-                types.map(t => `<option value="${t}">${t}</option>`).join('');
-            typeSel.value = curType;
         }
 
         function renderPersonnelTable() {
             const tbody = document.getElementById('personnelTableBody');
             const search = (document.getElementById('personnelSearch')?.value || '').trim().toLowerCase();
             const compFilter = document.getElementById('personnelFilterCompany')?.value || '';
-            const typeFilter = document.getElementById('personnelFilterType')?.value || '';
+            const statusFilter = document.getElementById('personnelFilterStatus')?.value || '';
 
             // 应用筛选
             let filtered = personnelRecordsCache.filter(r => {
                 if (compFilter && r['保险公司'] !== compFilter) return false;
-                if (typeFilter && r['批改类型'] !== typeFilter) return false;
+                if (statusFilter && r['状态'] !== statusFilter) return false;
                 if (search) {
                     const haystack = [r['姓名'], r['证件号码'], r['所属公司'], r['保险公司'], r['保单号'], r['岗位名称']]
                         .filter(Boolean).join(' ').toLowerCase();
@@ -1687,21 +1682,23 @@
                 tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:#999;padding:20px;">无匹配数据</td></tr>';
                 return;
             }
-            tbody.innerHTML = filtered.map(r => `
+            tbody.innerHTML = filtered.map(r => {
+                const statusColor = r['状态'] === '失效' ? '#e53e3e' : '#48bb78';
+                return `
                 <tr>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['姓名'] || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['证件号码'] || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['证件类型'] || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['出生日期'] || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['所属公司'] || ''}</td>
-                    <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['批改类型'] || ''}</td>
+                    <td style="padding:6px 8px;border:1px solid #e2e8f0;color:${statusColor};font-weight:bold;">${r['状态'] || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['起始时间'] || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['起止时间'] || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['岗位名称'] || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['保险公司'] || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['保单号'] || ''}</td>
                 </tr>
-            `).join('');
+            `;}).join('');
         }
 
         async function uploadPersonnelExcel(file) {

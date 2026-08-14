@@ -81,6 +81,9 @@ def check_insurance_coverage(punch_date: str = None) -> dict:
     if punch_date is None:
         punch_date = datetime.now().strftime("%Y-%m-%d")
 
+    # 先刷新到期状态：已到起止日期的自动标记为失效
+    db.refresh_expired_status()
+
     punch_records = db.get_punch_records(punch_date, limit=10000)
     if not punch_records:
         return {

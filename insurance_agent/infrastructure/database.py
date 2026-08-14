@@ -87,7 +87,7 @@ def init_db() -> None:
                     insurance_company TEXT,            -- 保险公司
                     policy_number TEXT,                -- 保单号
                     source_file TEXT,                  -- 来源PDF文件
-                    modification_type TEXT DEFAULT '增保',  -- 增保/减保
+                    status TEXT DEFAULT '正常',        -- 状态：正常 / 失效
                     created_at TEXT,
                     UNIQUE(id_number, policy_number)
                 )
@@ -99,9 +99,62 @@ def init_db() -> None:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_ins_idnum ON insurance_personnel(id_number)")
 
             conn.commit()
+
+            # 迁移：旧表结构含 modification_type，需要替换为 status
+            _migrate_insurance_personnel(conn)
             logger.info("数据库初始化完成: %s", DB_PATH)
         finally:
             conn.close()
+
+
+def _migrate_insurance_personnel(conn: sqlite3.Connection) -> None:
+    """迁移 insurance_personnel 表：modification_type → status"""
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(insurance_personnel)")
+    columns = [row[1] for row in cursor.fetchall()]
+
+    if "modification_type" in columns and "status" not in columns:
+        logger.info("检测到旧表结构，开始迁移 modification_type → status")
+        cursor.execute("ALTER TABLE insurance_personnel RENAME TO insurance_personnel_old")
+
+        cursor.execute("""
+            CREATE TABLE insurance_personnel (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT,
+                id_number TEXT,
+                id_type TEXT DEFAULT '身份证',
+                company TEXT,
+                start_date TEXT,
+                end_date TEXT,
+                job_title TEXT,
+                birth_date TEXT,
+                insurance_company TEXT,
+                policy_number TEXT,
+                source_file TEXT,
+                status TEXT DEFAULT '正常',
+                created_at TEXT,
+                UNIQUE(id_number, policy_number)
+            )
+        """)
+
+        # 复制数据：减保 → 失效，增保 → 正常
+        cursor.execute("""
+            INSERT INTO insurance_personnel (
+                name, id_number, id_type, company, start_date, end_date,
+                job_title, birth_date, insurance_company, policy_number,
+                source_file, status, created_at
+            )
+            SELECT name, id_number, id_type, company, start_date, end_date,
+                job_title, birth_date, insurance_company, policy_number,
+                source_file,
+                CASE WHEN modification_type = '减保' THEN '失效' ELSE '正常' END,
+                created_at
+            FROM insurance_personnel_old
+        """)
+        cursor.execute("DROP TABLE insurance_personnel_old")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ins_idnum ON insurance_personnel(id_number)")
+        conn.commit()
+        logger.info("迁移完成")
 
 
 # ==================== 打卡数据操作 ====================
@@ -204,10 +257,10 @@ def clear_punch_records(punch_date: str) -> int:
 # ==================== 保单人员数据操作 ====================
 
 def upsert_insurance_personnel(persons: list[dict]) -> int:
-    """批量写入保单人员数据
+    """批量写入保单人员数据（增保：新增或更新）
 
     Args:
-        persons: 人员列表（InsuredPerson dict 或标准字段）
+        persons: 人员列表，每个 dict 需包含 status 字段（"正常"/"失效"）
 
     Returns:
         写入条数
@@ -226,11 +279,12 @@ def upsert_insurance_personnel(persons: list[dict]) -> int:
                 policy_number = (p.get("policy_number") or "").strip()
                 if not id_num:
                     continue
+                status = p.get("status", "正常")
                 cursor.execute("""
                     INSERT INTO insurance_personnel (
                         name, id_number, id_type, company, start_date, end_date,
                         job_title, birth_date, insurance_company, policy_number,
-                        source_file, modification_type, created_at
+                        source_file, status, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(id_number, policy_number) DO UPDATE SET
                         name=excluded.name,
@@ -240,7 +294,7 @@ def upsert_insurance_personnel(persons: list[dict]) -> int:
                         job_title=excluded.job_title,
                         insurance_company=excluded.insurance_company,
                         source_file=excluded.source_file,
-                        modification_type=excluded.modification_type
+                        status=excluded.status
                 """, (
                     p.get("name", ""), id_num,
                     p.get("id_type", "身份证"), p.get("company", ""),
@@ -248,11 +302,60 @@ def upsert_insurance_personnel(persons: list[dict]) -> int:
                     p.get("job_title", ""), p.get("birth_date", ""),
                     p.get("insurance_company", ""), policy_number,
                     p.get("file_name", p.get("source_file", "")),
-                    p.get("modification_type", "增保"), created_at,
+                    status, created_at,
                 ))
                 count += 1
             conn.commit()
             return count
+        finally:
+            conn.close()
+
+
+def deactivate_insurance(id_numbers: list[str]) -> int:
+    """减保：将指定身份证号的人员状态设为失效
+
+    Args:
+        id_numbers: 身份证号列表
+
+    Returns:
+        更新的条数
+    """
+    id_numbers = [str(i).strip() for i in id_numbers if i and str(i).strip()]
+    if not id_numbers:
+        return 0
+
+    with _lock:
+        conn = get_connection()
+        try:
+            cursor = conn.cursor()
+            placeholders = ",".join("?" for _ in id_numbers)
+            cursor.execute(
+                f"UPDATE insurance_personnel SET status = '失效' WHERE id_number IN ({placeholders})",
+                id_numbers,
+            )
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            conn.close()
+
+
+def refresh_expired_status() -> int:
+    """将已到起止日期的人员状态刷新为失效
+
+    Returns:
+        更新的条数
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    with _lock:
+        conn = get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE insurance_personnel SET status = '失效' WHERE end_date != '' AND end_date < ?",
+                (today,),
+            )
+            conn.commit()
+            return cursor.rowcount
         finally:
             conn.close()
 
@@ -283,7 +386,7 @@ def clear_insurance_personnel() -> int:
 
 
 def get_active_insurance_by_id() -> dict[str, list[dict]]:
-    """获取按身份证号分组的有效保单人员（未过期）
+    """获取按身份证号分组的有效保单人员（状态正常且未到期）
 
     Returns:
         {id_number: [person_dict, ...]}
@@ -295,7 +398,7 @@ def get_active_insurance_by_id() -> dict[str, list[dict]]:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT * FROM insurance_personnel
-                WHERE end_date = '' OR end_date >= ?
+                WHERE status = '正常' AND (end_date = '' OR end_date >= ?)
             """, (today,))
             result: dict[str, list[dict]] = {}
             for row in cursor.fetchall():
