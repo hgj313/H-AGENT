@@ -729,148 +729,19 @@ async def sync_excel():
 
 @app.post("/api/upload-erp")
 async def upload_to_erp():
-    """将当前 Excel 模板上传到公司 ERP 系统
-
-    使用 SessionManager 维护的会话（25分钟自动续期），
-    POST multipart/form-data 到 /api/labor/warehousing/importExcel
-    """
-    if not os.path.exists(EXCEL_TEMPLATE_PATH):
-        raise HTTPException(status_code=404, detail=f"Excel 模板不存在: {EXCEL_TEMPLATE_PATH}")
-
-    if not _session_manager.is_active():
-        # 尝试重新登录
-        _session_manager.start()
-        if not _session_manager.is_active():
-            raise HTTPException(status_code=503, detail="公司系统登录失败，无法上传")
-
-    try:
-        from insurance_agent.tools.erp_uploader import upload_excel_to_erp_with_session_manager
-        result = upload_excel_to_erp_with_session_manager(
-            session_manager=_session_manager,
-            excel_path=EXCEL_TEMPLATE_PATH,
-        )
-        return JSONResponse({
-            "success": result["success"],
-            "message": result.get("message", ""),
-            "excel_path": EXCEL_TEMPLATE_PATH,
-        })
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"上传 ERP 失败: {e}")
+    """已禁用：禁止登录系统上传数据到系统数据库"""
+    raise HTTPException(status_code=403, detail="已取消上传 ERP 功能，禁止向系统数据库写入数据")
 
 
 # ==================== 全链路 Pipeline ====================
 
 @app.post("/api/pipeline")
-async def run_pipeline(files: list[UploadFile] = File(...)):
-    """全链路流水线: 上传保单 → 提取信息 → 同步Excel → 上传ERP
+async def run_pipeline():
+    """已禁用：禁止登录系统上传数据到系统数据库
 
-    入口: 上传 PDF 保单文件
-    流程:
-        1. Upload: 保存文件到 uploads 目录
-        2. Extract: 调用 invoice recognition graph 提取被保人员
-        3. SyncExcel: 增减保人员同步到 Excel 模板（自动备份）
-        4. UploadERP: 上传 Excel 到公司 ERP 系统
-
-    Returns:
-        全链路执行结果，包含各阶段统计信息
+    原全链路流水线（上传保单→提取→同步Excel→上传ERP）已取消 ERP 上传环节。
     """
-    if not files:
-        raise HTTPException(status_code=400, detail="未上传文件")
-
-    # 保存上传文件到临时目录
-    saved_paths = []
-    tmp_dir = tempfile.mkdtemp(prefix="pipeline_upload_")
-    for f in files:
-        raw_name = f.filename or ""
-        filename = _fix_filename(raw_name)
-        if not filename.lower().endswith(".pdf"):
-            continue
-        save_path = os.path.join(tmp_dir, filename)
-        with open(save_path, "wb") as out:
-            content = await f.read()
-            out.write(content)
-        saved_paths.append(save_path)
-
-    if not saved_paths:
-        raise HTTPException(status_code=400, detail="未找到 PDF 文件")
-
-    # 创建并运行 pipeline graph
-    llm = get_llm()
-    capability, graph = create_pipeline(
-        pdf_parser=PyMuPDFParser(),
-        llm_client=llm,
-        policy_library=_policy_library,
-        session_manager=_session_manager,
-        excel_path=EXCEL_TEMPLATE_PATH,
-        upload_dir="C:/insurance-automation/uploads",
-        erp_base_url="http://47.108.166.14:8081",
-    )
-
-    initial_state = create_pipeline_state(
-        uploaded_files=saved_paths,
-        excel_path=EXCEL_TEMPLATE_PATH,
-        erp_base_url="http://47.108.166.14:8081",
-    )
-
-    try:
-        final_state = graph.invoke(initial_state)
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"流水线执行失败: {e}")
-
-    # 更新最近提取结果（供下载接口使用）
-    global _latest_results
-    _latest_results = final_state.get("extraction_results", [])
-
-    # 构建返回
-    extraction_results = final_state.get("extraction_results", [])
-    extraction_errors = final_state.get("extraction_errors", [])
-    sync_stats = final_state.get("sync_stats")
-    erp_result = final_state.get("erp_upload_result")
-
-    # 汇总提取结果
-    summary = []
-    total_persons = 0
-    total_add = 0
-    total_remove = 0
-    for r in extraction_results:
-        persons = r.get("insured_persons", [])
-        add_count = sum(1 for p in persons if p.get("modification_type") == "增保")
-        remove_count = sum(1 for p in persons if p.get("modification_type") == "减保")
-        total_persons += len(persons)
-        total_add += add_count
-        total_remove += remove_count
-        summary.append({
-            "file_name": r.get("file_name", ""),
-            "insurance_company": r.get("insurance_company", ""),
-            "policy_number": r.get("policy_number", ""),
-            "persons_count": len(persons),
-            "add_count": add_count,
-            "remove_count": remove_count,
-        })
-
-    return JSONResponse({
-        "success": final_state.get("status") == "done",
-        "status": final_state.get("status"),
-        "error": final_state.get("error"),
-        "stages": {
-            "upload": {
-                "files_count": len(saved_paths),
-                "files": [os.path.basename(f) for f in saved_paths],
-            },
-            "extract": {
-                "results_count": len(extraction_results),
-                "errors": extraction_errors,
-                "total_persons": total_persons,
-                "total_add": total_add,
-                "total_remove": total_remove,
-                "summary": summary,
-            },
-            "sync_excel": sync_stats,
-            "upload_erp": erp_result,
-        },
-    })
+    raise HTTPException(status_code=403, detail="已取消上传 ERP 功能，禁止向系统数据库写入数据")
 
 
 if __name__ == "__main__":

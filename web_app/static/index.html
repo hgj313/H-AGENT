@@ -530,12 +530,6 @@
             </div>
             <input type="file" id="fileInput" multiple accept=".pdf" style="display:none">
             <div class="file-list" id="fileList"></div>
-            <div style="margin-top:16px;display:flex;align-items:center;gap:8px;">
-                <label style="font-size:14px;color:#4a5568;cursor:pointer;display:flex;align-items:center;gap:6px;">
-                    <input type="checkbox" id="autoSyncErp" checked style="width:16px;height:16px;accent-color:#667eea;">
-                    提取后自动同步 Excel 并上传 ERP 系统
-                </label>
-            </div>
             <div class="btn-group">
                 <button class="btn btn-primary" id="btnProcess" onclick="processFiles()" disabled>
                     开始识别
@@ -907,12 +901,6 @@
 
                 addLog('结果展示完成', 'ok');
 
-                // 自动同步 Excel + 上传 ERP
-                const autoSync = document.getElementById('autoSyncErp').checked;
-                if (autoSync && data.total_persons > 0) {
-                    await syncAndUploadErp();
-                }
-
             } catch (err) {
                 clearTimeout(timeoutId);
                 if (err.name === 'AbortError') {
@@ -1016,50 +1004,6 @@
                 `;
                 body.appendChild(section);
             });
-        }
-
-        async function syncAndUploadErp() {
-            const apiBase = getApiBase();
-
-            // === Step 1: 同步 Excel ===
-            addLog('正在同步提取结果到本地 Excel...', 'info');
-            document.getElementById('progressText').textContent = '正在同步 Excel...';
-
-            try {
-                const syncResp = await fetch(`${apiBase}/api/sync-excel`, {
-                    method: 'POST',
-                    signal: AbortSignal.timeout(60000),
-                });
-                const syncData = await syncResp.json();
-
-                if (!syncResp.ok || !syncData.success) {
-                    throw new Error(syncData.detail || '同步 Excel 失败');
-                }
-
-                const stats = syncData.stats;
-                addLog(`Excel 同步完成: 新增 ${stats.added} 人, 删除 ${stats.removed} 人, 跳过 ${stats.skipped} 人, 共 ${stats.total_in_excel} 人`, 'ok');
-
-                // === Step 2: 上传 ERP ===
-                addLog('正在上传 Excel 到 ERP 系统...', 'info');
-                document.getElementById('progressText').textContent = '正在上传 ERP...';
-
-                const erpResp = await fetch(`${apiBase}/api/upload-erp`, {
-                    method: 'POST',
-                    signal: AbortSignal.timeout(120000),
-                });
-                const erpData = await erpResp.json();
-
-                if (!erpResp.ok || !erpData.success) {
-                    throw new Error(erpData.detail || erpData.message || '上传 ERP 失败');
-                }
-
-                addLog(`ERP 上传成功: ${erpData.message}`, 'ok');
-                document.getElementById('progressText').textContent = '全部完成';
-                addLog('===== 全链路完成: 提取 → 同步Excel → 上传ERP =====', 'ok');
-
-            } catch (err) {
-                addLog(`同步/上传失败: ${err.message}`, 'error');
-            }
         }
 
         function downloadFile(format) {
