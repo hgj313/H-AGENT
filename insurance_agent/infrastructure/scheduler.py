@@ -71,6 +71,31 @@ def save_scheduler_config(config: dict) -> bool:
     return False
 
 
+# 上次执行日期持久化文件（避免服务重启后同一天重复触发定时任务/重复发邮件）
+STATE_PATH = os.path.join(os.path.dirname(CONFIG_PATH), "scheduler_state.json")
+
+
+def _load_last_run_date() -> Optional[str]:
+    """加载上次执行日期"""
+    if os.path.exists(STATE_PATH):
+        try:
+            with open(STATE_PATH, "r", encoding="utf-8") as f:
+                return json.load(f).get("last_run_date")
+        except (json.JSONDecodeError, IOError):
+            pass
+    return None
+
+
+def _save_last_run_date(date_str: str):
+    """保存上次执行日期"""
+    try:
+        os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
+        with open(STATE_PATH, "w", encoding="utf-8") as f:
+            json.dump({"last_run_date": date_str}, f)
+    except Exception:
+        pass
+
+
 class Scheduler:
     """后台定时任务调度器
 
@@ -88,7 +113,8 @@ class Scheduler:
         self._check_interval = check_interval
         self._running = False
         self._thread: Optional[threading.Thread] = None
-        self._last_run_date: Optional[str] = None  # 上次执行日期，避免同一天重复执行
+        # 上次执行日期，避免同一天重复执行；从文件加载，服务重启后不丢失
+        self._last_run_date: Optional[str] = _load_last_run_date()
 
     def start(self):
         if self._running:
@@ -133,6 +159,7 @@ class Scheduler:
         # 当前时间在目标时间之后且今天还没执行过
         if now >= target and self._last_run_date != today:
             self._last_run_date = today
+            _save_last_run_date(today)  # 持久化，避免服务重启后同一天重复触发
             logger.info("触发定时任务: %s", sync_time)
             try:
                 result = self._task_callback()
