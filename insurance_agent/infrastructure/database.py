@@ -311,6 +311,87 @@ def upsert_insurance_personnel(persons: list[dict]) -> int:
             conn.close()
 
 
+def add_insurance_personnel(persons: list[dict]) -> dict:
+    """新增保单人员数据（同名同身份证则更新最新起止日期）
+
+    匹配规则：name + id_number 相同视为同一人。
+    - 不存在 → 新增记录
+    - 存在 → 更新 start_date、end_date 为最新（并重算 status），
+      同时刷新 company/job_title/insurance_company/policy_number 等字段为最新。
+
+    Args:
+        persons: 人员列表，每个 dict 需包含 status 字段
+
+    Returns:
+        {"added": 新增条数, "updated": 更新条数}
+    """
+    added = 0
+    updated = 0
+    with _lock:
+        conn = get_connection()
+        try:
+            cursor = conn.cursor()
+            created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for p in persons:
+                name = (p.get("name") or "").strip()
+                id_num = (p.get("id_number") or "").strip()
+                if not id_num:
+                    continue
+
+                start_date = p.get("start_date", "")
+                end_date = p.get("end_date", "")
+                status = p.get("status", "正常")
+                company = p.get("company", "")
+                job_title = p.get("job_title", "")
+                insurance_company = p.get("insurance_company", "")
+                policy_number = (p.get("policy_number") or "").strip()
+                source_file = p.get("file_name", p.get("source_file", ""))
+
+                cursor.execute(
+                    "SELECT id FROM insurance_personnel WHERE name = ? AND id_number = ?",
+                    (name, id_num),
+                )
+                row = cursor.fetchone()
+
+                if row:
+                    # 同名同身份证 → 更新最新起止日期
+                    cursor.execute("""
+                        UPDATE insurance_personnel SET
+                            start_date = ?, end_date = ?, status = ?,
+                            company = ?, job_title = ?, insurance_company = ?,
+                            policy_number = ?, source_file = ?
+                        WHERE id = ?
+                    """, (
+                        start_date, end_date, status,
+                        company, job_title, insurance_company,
+                        policy_number, source_file,
+                        row["id"],
+                    ))
+                    updated += 1
+                else:
+                    # 新增
+                    cursor.execute("""
+                        INSERT INTO insurance_personnel (
+                            name, id_number, id_type, company, start_date, end_date,
+                            job_title, birth_date, insurance_company, policy_number,
+                            source_file, status, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        name, id_num,
+                        p.get("id_type", "身份证"), company,
+                        start_date, end_date,
+                        job_title, p.get("birth_date", ""),
+                        insurance_company, policy_number,
+                        source_file, status, created_at,
+                    ))
+                    added += 1
+
+            conn.commit()
+            return {"added": added, "updated": updated}
+        finally:
+            conn.close()
+
+
 def deactivate_insurance(id_numbers: list[str]) -> int:
     """减保：将指定身份证号的人员状态设为失效
 

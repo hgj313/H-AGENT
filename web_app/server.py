@@ -775,21 +775,11 @@ async def get_personnel():
     })
 
 
-@app.post("/api/personnel/upload-excel")
-async def upload_personnel_excel(file: UploadFile = File(...)):
-    """上传 Excel 模板文件，替换全部保单人员数据
+def _parse_personnel_excel(content: bytes) -> list[dict]:
+    """解析保单人员 Excel，返回人员列表（统一表头字段）
 
-    支持字段（表头需匹配）：
-    姓名/证件号码/证件类型/出生日期/所属公司/批改类型/起始时间/起止时间/岗位名称/保险公司/保单号/来源文件
+    支持字段：姓名/证件号码/证件类型/出生日期/所属公司/状态/起始时间/起止时间/岗位名称/保险公司/保单号/来源文件
     """
-    filename = _fix_filename(file.filename or "")
-    if not filename.lower().endswith((".xlsx", ".xls")):
-        raise HTTPException(status_code=400, detail="请上传 Excel 文件（.xlsx）")
-
-    content = await file.read()
-    if not content:
-        raise HTTPException(status_code=400, detail="文件为空")
-
     try:
         wb = load_workbook(io.BytesIO(content), data_only=True)
         ws = wb.active
@@ -854,6 +844,24 @@ async def upload_personnel_excel(file: UploadFile = File(...)):
 
     if not persons:
         raise HTTPException(status_code=400, detail="Excel 中没有有效的人员数据")
+    return persons
+
+
+async def _read_personnel_excel(file: UploadFile) -> list[dict]:
+    """读取并解析上传的 Excel 文件"""
+    filename = _fix_filename(file.filename or "")
+    if not filename.lower().endswith((".xlsx", ".xls")):
+        raise HTTPException(status_code=400, detail="请上传 Excel 文件（.xlsx）")
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="文件为空")
+    return _parse_personnel_excel(content)
+
+
+@app.post("/api/personnel/upload-excel")
+async def upload_personnel_excel(file: UploadFile = File(...)):
+    """上传 Excel 模板文件，替换全部保单人员数据"""
+    persons = await _read_personnel_excel(file)
 
     # 替换：清空旧数据，写入新数据
     removed = db.clear_insurance_personnel()
@@ -864,6 +872,21 @@ async def upload_personnel_excel(file: UploadFile = File(...)):
         "message": f"替换成功：清空 {removed} 条旧数据，导入 {stored} 条新数据",
         "total": stored,
         "removed": removed,
+    })
+
+
+@app.post("/api/personnel/upload-excel-add")
+async def upload_personnel_excel_add(file: UploadFile = File(...)):
+    """上传 Excel 模板文件，新增保单人员数据（同名同身份证则更新最新起止日期）"""
+    persons = await _read_personnel_excel(file)
+
+    result = db.add_insurance_personnel(persons)
+
+    return JSONResponse({
+        "success": True,
+        "message": f"新增成功：新增 {result['added']} 条，更新 {result['updated']} 条",
+        "added": result["added"],
+        "updated": result["updated"],
     })
 
 

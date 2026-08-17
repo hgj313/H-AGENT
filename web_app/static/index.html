@@ -624,9 +624,11 @@
             <h3 style="font-size:16px;margin-bottom:12px;color:#4a5568;">📋 保单人员数据（共 <span id="personnelCount">0</span> 人）</h3>
             <div class="btn-group" style="justify-content:flex-start;margin-bottom:12px;">
                 <button class="btn btn-primary" id="btnRefreshPersonnel" onclick="loadPersonnel()">🔄 刷新数据</button>
+                <button class="btn btn-secondary" onclick="document.getElementById('personnelFileInputAdd').click()">📥 上传 Excel 新增</button>
                 <button class="btn btn-secondary" onclick="document.getElementById('personnelFileInput').click()">📤 上传 Excel 替换数据</button>
                 <button class="btn btn-primary" onclick="downloadPersonnel()" style="background:#48bb78;">⬇️ 下载 Excel 表格</button>
             </div>
+            <input type="file" id="personnelFileInputAdd" accept=".xlsx,.xls" style="display:none;">
             <input type="file" id="personnelFileInput" accept=".xlsx,.xls" style="display:none;">
             <div id="personnelStatus" style="margin-top:8px;text-align:center;font-size:14px;"></div>
 
@@ -1749,12 +1751,38 @@
             setTimeout(() => { status.innerHTML = ''; }, 5000);
         }
 
+        async function uploadPersonnelExcelAdd(file) {
+            const apiBase = getApiBase();
+            const status = document.getElementById('personnelStatus');
+            status.innerHTML = '<span class="spinner"></span> 正在上传并新增数据...';
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                const resp = await fetch(`${apiBase}/api/personnel/upload-excel-add`, {
+                    method: 'POST',
+                    body: formData,
+                });
+                const data = await resp.json();
+                if (resp.ok && data.success) {
+                    status.innerHTML = `<span style="color:#48bb78;">✅ ${data.message}</span>`;
+                    loadPersonnel();
+                } else {
+                    status.innerHTML = `<span style="color:#e53e3e;">❌ ${data.detail || '上传失败'}</span>`;
+                }
+            } catch (err) {
+                status.innerHTML = `<span style="color:#e53e3e;">❌ 上传失败: ${err.message}</span>`;
+            }
+            setTimeout(() => { status.innerHTML = ''; }, 5000);
+        }
+
         function downloadPersonnel() {
             const apiBase = getApiBase();
             window.location.href = `${apiBase}/api/personnel/export`;
         }
 
-        // 绑定上传文件事件
+        // 绑定上传文件事件：替换数据
         document.getElementById('personnelFileInput').addEventListener('change', function(e) {
             if (e.target.files.length) {
                 const file = e.target.files[0];
@@ -1763,6 +1791,19 @@
                     return;
                 }
                 uploadPersonnelExcel(file);
+                e.target.value = '';
+            }
+        });
+
+        // 绑定上传文件事件：新增数据
+        document.getElementById('personnelFileInputAdd').addEventListener('change', function(e) {
+            if (e.target.files.length) {
+                const file = e.target.files[0];
+                if (!confirm(`确定新增「${file.name}」的保单数据吗？\n\n同名同身份证的人员会更新其最新保险起始/起止日期。`)) {
+                    e.target.value = '';
+                    return;
+                }
+                uploadPersonnelExcelAdd(file);
                 e.target.value = '';
             }
         });
