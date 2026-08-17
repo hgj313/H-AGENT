@@ -597,15 +597,31 @@ async def update_reminder_config(body: ReminderConfigSchema):
 
 @app.post("/api/reminder/test-sms")
 async def test_reminder_sms():
-    """发送测试短信（短信功能开发中，占位）"""
+    """发送测试短信
+
+    用短信模板 + 测试变量发送一条测试短信。
+    短信服务商 SDK 待提供凭证后对接，当前返回模板和变量预览。
+    """
+    from insurance_agent.tools.insurance_reminder import SMS_TEMPLATE, build_sms_messages
+    from insurance_agent.tools.sms_sender import send_sms
+
     config = load_config()
     sms = config.get("sms", {})
     if not sms.get("enabled", False):
         raise HTTPException(status_code=400, detail="短信通知已禁用")
-    # TODO: 待用户提供服务商凭证后实现短信发送
+
+    # 构造测试消息
+    test_messages = [{
+        "project": "测试项目",
+        "names": "张三、李四",
+        "count": "2",
+    }]
+
+    result = send_sms(sms, test_messages)
     return JSONResponse({
-        "success": False,
-        "message": "短信发送功能开发中，请先提供服务商凭证（AccessKey/SecretKey、签名、模板Code）",
+        **result,
+        "sms_template": SMS_TEMPLATE,
+        "sample_message": test_messages[0],
     })
 
 

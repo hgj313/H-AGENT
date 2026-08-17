@@ -91,6 +91,7 @@ def run_daily_check(session_manager=None, punch_date: str = None) -> dict:
         "sync": None,
         "coverage": None,
         "email": None,
+        "sms": None,
     }
 
     # 1. 同步打卡数据
@@ -121,8 +122,35 @@ def run_daily_check(session_manager=None, punch_date: str = None) -> dict:
     else:
         result["email"] = {"success": True, "message": "无异常人员，无需提醒"}
 
+    # 4. 触发短信提醒
+    if uninsured:
+        result["sms"] = _send_coverage_sms(uninsured)
+    else:
+        result["sms"] = {"success": True, "message": "无异常人员，无需短信提醒"}
+
     result["success"] = True
     return result
+
+
+def _send_coverage_sms(uninsured: list[dict]) -> dict:
+    """发送覆盖检查提醒短信
+
+    根据无保险人员列表构建短信模板变量（按项目分组），
+    调用短信服务商发送。短信功能未启用或未配置凭证时跳过。
+    """
+    from insurance_agent.tools.insurance_reminder import build_sms_messages
+    from insurance_agent.tools.sms_sender import send_sms
+
+    config = load_config()
+    sms_config = config.get("sms", {})
+    if not sms_config.get("enabled", False):
+        return {"success": False, "message": "短信通知已禁用"}
+
+    messages = build_sms_messages(uninsured)
+    if not messages:
+        return {"success": True, "message": "无需发送短信"}
+
+    return send_sms(sms_config, messages)
 
 
 def _send_coverage_email(check_result, punch_date, email_config, uninsured) -> dict:

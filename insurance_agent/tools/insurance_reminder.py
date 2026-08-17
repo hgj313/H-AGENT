@@ -71,6 +71,62 @@ ALL_FIELDS = [
 ]
 
 
+# ============ 短信提醒模板 ============
+
+# 短信模板内容（不含签名，签名由短信服务商侧配置 SignName）
+# 变量用 ${变量名} 占位，与阿里云/腾讯云短信模板变量规范一致。
+# 申请短信模板时，请将本模板原文（含 ${变量} 占位符）提交给服务商审核。
+SMS_TEMPLATE = "${project}项目上有${names}等${count}人打卡上班却无保险，请及时购买。详情请查看邮箱。"
+
+# 短信模板变量定义（变量名 → 说明）
+SMS_TEMPLATE_VARS = {
+    "project": "项目名称",
+    "names": "无保险人员姓名（最多3人，顿号分隔）",
+    "count": "该项目无保险总人数",
+}
+
+# 每条短信最多展示的人员姓名数（超出用"等N人"概括）
+SMS_MAX_NAMES = 3
+
+
+def build_sms_messages(uninsured_list: list[dict], max_names: int = SMS_MAX_NAMES) -> list[dict]:
+    """从无保险人员列表构建短信模板变量
+
+    按项目分组，每个项目生成一条短信的模板变量。
+
+    Args:
+        uninsured_list: check_insurance_coverage 返回的 uninsured_list
+                        （每项含 name / project_name 等字段）
+        max_names: 每条短信最多展示的姓名数
+
+    Returns:
+        [{"project": ..., "names": ..., "count": ...}, ...]
+        空列表表示无需发送短信
+    """
+    if not uninsured_list:
+        return []
+
+    # 按项目分组
+    by_project: dict[str, list[dict]] = {}
+    for p in uninsured_list:
+        project = (p.get("project_name") or "").strip() or "未知项目"
+        by_project.setdefault(project, []).append(p)
+
+    messages = []
+    for project, persons in by_project.items():
+        names = "、".join(
+            (p.get("name") or "").strip()
+            for p in persons[:max_names]
+            if (p.get("name") or "").strip()
+        )
+        messages.append({
+            "project": project,
+            "names": names,
+            "count": str(len(persons)),
+        })
+    return messages
+
+
 def load_config(config_path: str = CONFIG_PATH) -> dict:
     """加载提醒配置，不存在时返回默认值。"""
     if os.path.exists(config_path):
@@ -117,6 +173,8 @@ def get_config_for_response(config: dict) -> dict:
     return {
         "email": email,
         "sms": sms,
+        "sms_template": SMS_TEMPLATE,
+        "sms_template_vars": SMS_TEMPLATE_VARS,
         "check_days": config.get("check_days", [1, 3, 7]),
         "data_source": config.get("data_source", "json"),
         "last_check": config.get("last_check"),
