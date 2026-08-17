@@ -994,6 +994,69 @@ async def upload_personnel_excel_add(file: UploadFile = File(...)):
     })
 
 
+class ManualAddSchema(BaseModel):
+    """手动添加保单人员请求体"""
+    name: str = ""
+    id_number: str = ""
+    id_type: str = "身份证"
+    birth_date: str = ""
+    company: str = ""
+    start_date: str = ""
+    end_date: str = ""
+    job_title: str = ""
+    insurance_company: str = ""
+    policy_number: str = ""
+    status: str = "正常"
+
+
+@app.post("/api/personnel/manual-add")
+async def manual_add_personnel(body: ManualAddSchema):
+    """手动添加单条保单人员数据（少量无法识别的保单格式）"""
+    name = body.name.strip()
+    id_num = body.id_number.strip()
+
+    if not name:
+        raise HTTPException(status_code=400, detail="姓名不能为空")
+    if not id_num:
+        raise HTTPException(status_code=400, detail="证件号码不能为空")
+
+    # 出生日期为空时从身份证号自动提取（第7-14位）
+    birth_date = body.birth_date.strip()
+    if not birth_date and len(id_num) >= 14 and id_num[6:14].isdigit():
+        birth_date = f"{id_num[6:10]}-{id_num[10:12]}-{id_num[12:14]}"
+
+    # 状态：未指定或为"正常"时，根据起止日期判断是否已到期
+    status = body.status.strip() or "正常"
+    end_date = body.end_date.strip()
+    if status == "正常" and end_date:
+        today = datetime.now().strftime("%Y-%m-%d")
+        if end_date < today:
+            status = "失效"
+
+    person = {
+        "name": name,
+        "id_number": id_num,
+        "id_type": body.id_type.strip() or "身份证",
+        "birth_date": birth_date,
+        "company": body.company.strip(),
+        "start_date": body.start_date.strip(),
+        "end_date": end_date,
+        "job_title": body.job_title.strip(),
+        "insurance_company": body.insurance_company.strip(),
+        "policy_number": body.policy_number.strip(),
+        "status": status,
+    }
+
+    result = db.add_insurance_personnel([person])
+
+    return JSONResponse({
+        "success": True,
+        "message": f"添加成功：新增 {result['added']} 条，更新 {result['updated']} 条",
+        "added": result["added"],
+        "updated": result["updated"],
+    })
+
+
 @app.get("/api/personnel/export")
 async def export_personnel():
     """下载保单人员数据为 Excel 表格"""

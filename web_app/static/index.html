@@ -624,6 +624,7 @@
             <h3 style="font-size:16px;margin-bottom:12px;color:#4a5568;">📋 保单人员数据（共 <span id="personnelCount">0</span> 人）</h3>
             <div class="btn-group" style="justify-content:flex-start;margin-bottom:12px;">
                 <button class="btn btn-primary" id="btnRefreshPersonnel" onclick="loadPersonnel()">🔄 刷新数据</button>
+                <button class="btn btn-primary" onclick="toggleManualAdd()" style="background:#48bb78;">➕ 手动添加</button>
                 <button class="btn btn-secondary" onclick="document.getElementById('personnelFileInputAdd').click()">📥 上传 Excel 新增</button>
                 <button class="btn btn-secondary" onclick="document.getElementById('personnelFileInput').click()">📤 上传 Excel 替换数据</button>
                 <button class="btn btn-primary" onclick="downloadPersonnel()" style="background:#48bb78;">⬇️ 下载 Excel 表格</button>
@@ -631,6 +632,65 @@
             <input type="file" id="personnelFileInputAdd" accept=".xlsx,.xls" style="display:none;">
             <input type="file" id="personnelFileInput" accept=".xlsx,.xls" style="display:none;">
             <div id="personnelStatus" style="margin-top:8px;text-align:center;font-size:14px;"></div>
+
+            <!-- 手动添加表单 -->
+            <div class="upload-card" id="manualAddCard" style="display:none;border:1px solid #c6f6d5;background:#f0fff4;">
+                <h3 style="font-size:16px;margin-bottom:16px;color:#276749;">➕ 手动添加保单数据（用于少量无法识别的保单格式）</h3>
+                <div class="reminder-form">
+                    <div class="form-group">
+                        <label>姓名 *</label>
+                        <input type="text" id="maName" placeholder="必填">
+                    </div>
+                    <div class="form-group">
+                        <label>证件号码 *</label>
+                        <input type="text" id="maIdNumber" placeholder="必填，如身份证号/护照号">
+                    </div>
+                    <div class="form-group">
+                        <label>证件类型</label>
+                        <input type="text" id="maIdType" value="身份证">
+                    </div>
+                    <div class="form-group">
+                        <label>出生日期</label>
+                        <input type="date" id="maBirthDate">
+                    </div>
+                    <div class="form-group">
+                        <label>所属公司</label>
+                        <input type="text" id="maCompany" placeholder="用工单位/被保人">
+                    </div>
+                    <div class="form-group">
+                        <label>岗位名称</label>
+                        <input type="text" id="maJobTitle" placeholder="工种">
+                    </div>
+                    <div class="form-group">
+                        <label>起始时间</label>
+                        <input type="date" id="maStartDate">
+                    </div>
+                    <div class="form-group">
+                        <label>起止时间</label>
+                        <input type="date" id="maEndDate">
+                    </div>
+                    <div class="form-group">
+                        <label>保险公司</label>
+                        <input type="text" id="maInsuranceCompany">
+                    </div>
+                    <div class="form-group">
+                        <label>保单号</label>
+                        <input type="text" id="maPolicyNumber">
+                    </div>
+                    <div class="form-group">
+                        <label>状态</label>
+                        <select id="maStatus">
+                            <option value="正常">正常</option>
+                            <option value="失效">失效</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="btn-group" style="margin-top:16px;">
+                    <button class="btn btn-primary" onclick="submitManualAdd()" style="background:#48bb78;">💾 保存</button>
+                    <button class="btn btn-secondary" onclick="toggleManualAdd()">取消</button>
+                </div>
+                <div id="manualAddStatus" style="margin-top:12px;text-align:center;font-size:14px;"></div>
+            </div>
 
             <div class="filter-bar">
                 <input type="text" id="personnelSearch" placeholder="🔍 搜索姓名/证件号码/所属公司/保险公司/保单号..." oninput="renderPersonnelTable()">
@@ -1800,6 +1860,70 @@
         function downloadPersonnel() {
             const apiBase = getApiBase();
             window.location.href = `${apiBase}/api/personnel/export`;
+        }
+
+        function toggleManualAdd() {
+            const card = document.getElementById('manualAddCard');
+            if (card.style.display === 'none') {
+                card.style.display = 'block';
+            } else {
+                card.style.display = 'none';
+            }
+        }
+
+        async function submitManualAdd() {
+            const apiBase = getApiBase();
+            const status = document.getElementById('manualAddStatus');
+
+            const name = document.getElementById('maName').value.trim();
+            const idNumber = document.getElementById('maIdNumber').value.trim();
+            if (!name) {
+                status.innerHTML = '<span style="color:#e53e3e;">❌ 请填写姓名</span>';
+                return;
+            }
+            if (!idNumber) {
+                status.innerHTML = '<span style="color:#e53e3e;">❌ 请填写证件号码</span>';
+                return;
+            }
+
+            const payload = {
+                name: name,
+                id_number: idNumber,
+                id_type: document.getElementById('maIdType').value.trim() || '身份证',
+                birth_date: document.getElementById('maBirthDate').value,
+                company: document.getElementById('maCompany').value.trim(),
+                job_title: document.getElementById('maJobTitle').value.trim(),
+                start_date: document.getElementById('maStartDate').value,
+                end_date: document.getElementById('maEndDate').value,
+                insurance_company: document.getElementById('maInsuranceCompany').value.trim(),
+                policy_number: document.getElementById('maPolicyNumber').value.trim(),
+                status: document.getElementById('maStatus').value,
+            };
+
+            status.innerHTML = '<span class="spinner"></span> 正在保存...';
+            try {
+                const resp = await fetch(`${apiBase}/api/personnel/manual-add`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+                const data = await resp.json();
+                if (resp.ok && data.success) {
+                    status.innerHTML = `<span style="color:#48bb78;">✅ ${data.message}</span>`;
+                    // 清空表单
+                    ['maName','maIdNumber','maBirthDate','maCompany','maJobTitle','maStartDate','maEndDate','maInsuranceCompany','maPolicyNumber'].forEach(id => {
+                        document.getElementById(id).value = '';
+                    });
+                    document.getElementById('maIdType').value = '身份证';
+                    document.getElementById('maStatus').value = '正常';
+                    loadPersonnel();
+                } else {
+                    status.innerHTML = `<span style="color:#e53e3e;">❌ ${data.detail || '保存失败'}</span>`;
+                }
+            } catch (err) {
+                status.innerHTML = `<span style="color:#e53e3e;">❌ 保存失败: ${err.message}</span>`;
+            }
+            setTimeout(() => { status.innerHTML = ''; }, 5000);
         }
 
         // 绑定上传文件事件：替换数据
