@@ -53,12 +53,78 @@ class InlineExtractor(BaseExtractor):
         if not text:
             return persons
 
+        # 检测"替换"格式（太平洋批单：由人员 X 替换为人员 Y）
+        if "替换为人员" in text:
+            persons = self._extract_replacement(text, policy_holder)
+            if persons:
+                return persons
+
         # 将文本按增保/减保标记分段
         segments = self._split_by_modification_type(text)
 
         for seg_text, mod_type in segments:
             seg_persons = self._extract_from_segment(seg_text, policy_holder, mod_type)
             persons.extend(seg_persons)
+
+        return persons
+
+    def _extract_replacement(self, text: str, policy_holder: str = "") -> list[InsuredPerson]:
+        """提取"由人员 X 替换为人员 Y"格式（太平洋批单等）
+
+        每个替换 = 1 个减保（原人员 X）+ 1 个增保（新人员 Y）。
+
+        文本特征：
+            由人员 邓礼山 ... 证件号码 512223197004182972
+            替换为人员 李红 ... 证件号码 500231198711087553 ，责任起期：2026年07月07日
+        """
+        persons = []
+
+        # 合并跨行身份证号: "50023\n1198711087553" → "500231198711087553"
+        text = re.sub(r'(\d)\n(\d|[Xx])', r'\1\2', text)
+
+        # 按句号/分号分割，每句处理一个替换
+        for sentence in re.split(r'[。；]', text):
+            if '替换为人员' not in sentence:
+                continue
+            m = re.search(
+                r"由人员\s*([\u4e00-\u9fff]{2,4})[\s\S]*?证件号码\s*(\d{17}[\dXx])"
+                r"[\s\S]*?替换为人员\s*([\u4e00-\u9fff]{2,4})[\s\S]*?证件号码\s*(\d{17}[\dXx])",
+                sentence,
+            )
+            if not m:
+                continue
+            old_name, old_id, new_name, new_id = m.groups()
+
+            # 责任起期（作为增保人员的起期）
+            date_m = re.search(r"责任起期[：:]\s*(\d{4})[年\-/](\d{1,2})[月\-/](\d{1,2})", sentence)
+            start_date = ""
+            if date_m:
+                start_date = f"{date_m.group(1)}-{int(date_m.group(2)):02d}-{int(date_m.group(3)):02d}"
+
+            # 原人员 → 减保
+            persons.append(InsuredPerson(
+                name=old_name,
+                id_number=old_id.upper(),
+                id_type="身份证",
+                company=policy_holder,
+                start_date="",
+                end_date="",
+                job_title="",
+                confidence=0.9,
+                modification_type="减保",
+            ))
+            # 新人员 → 增保
+            persons.append(InsuredPerson(
+                name=new_name,
+                id_number=new_id.upper(),
+                id_type="身份证",
+                company=policy_holder,
+                start_date=start_date,
+                end_date="",
+                job_title="",
+                confidence=0.9,
+                modification_type="增保",
+            ))
 
         return persons
 
