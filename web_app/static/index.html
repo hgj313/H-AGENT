@@ -1543,9 +1543,10 @@
                 if (resp.ok) {
                     const names = (data.expiring_persons || []).slice(0, 10).map(p => p.name).join('、');
                     const more = (data.expiring_count || 0) > 10 ? ` 等 ${data.expiring_count} 人` : '';
+                    const daysText = aheadDays === 0 ? '今天' : `未来 ${aheadDays} 天内`;
                     status.innerHTML = data.expiring_count > 0
-                        ? `<span style="color:#ed8936;">⏰ ${data.target_date} 到期 ${data.expiring_count} 人：${names}${more}</span>`
-                        : `<span style="color:#48bb78;">✅ 暂无 ${data.target_date} 到期的人员</span>`;
+                        ? `<span style="color:#ed8936;">⏰ ${daysText}到期 ${data.expiring_count} 人（截至 ${data.target_date}）：${names}${more}</span>`
+                        : `<span style="color:#48bb78;">✅ 暂无${daysText}到期的人员（截至 ${data.target_date}）</span>`;
                 } else {
                     status.innerHTML = `<span style="color:#e53e3e;">❌ 查询失败: ${data.detail || '未知错误'}</span>`;
                 }

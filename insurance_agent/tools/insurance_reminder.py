@@ -431,10 +431,14 @@ EXPIRY_FIELDS = [
 
 
 def find_expiring_from_db(ahead_days: int) -> list[dict]:
-    """从数据库查询还有 ahead_days 天到期的人员（状态正常）
+    """从数据库查询「ahead_days 天内到期」的人员（状态正常）
+
+    语义：查询到期日在 [今天, 今天+ahead_days] 范围内的人员，
+    即"未来 N 天内即将到期"，而非"恰好第 N 天到期"。
+    这样还有 1 天、2 天到期的人也会被一并提醒，避免漏掉。
 
     Args:
-        ahead_days: 提前天数，如 3 表示查询"还有 3 天到期"（end_date = 今天+3天）
+        ahead_days: 提前天数，如 3 表示查询"未来 3 天内到期"（今天 ≤ end_date ≤ 今天+3天）
 
     Returns:
         即将到期的人员列表（数据库记录）
@@ -444,19 +448,23 @@ def find_expiring_from_db(ahead_days: int) -> list[dict]:
     if ahead_days is None or ahead_days < 0:
         ahead_days = 0
 
-    target_date = (datetime.now() + timedelta(days=ahead_days)).strftime("%Y-%m-%d")
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    deadline = (now + timedelta(days=ahead_days)).strftime("%Y-%m-%d")
+
     persons = db.get_insurance_personnel()
     return [
         p for p in persons
         if (p.get("status") or "") == "正常"
-        and (p.get("end_date") or "") == target_date
+        and today <= (p.get("end_date") or "") <= deadline
     ]
 
 
 def build_expiry_email_html(persons: list[dict], target_date: str, ahead_days: int) -> str:
-    """构建到期提醒邮件 HTML（提示"还有 N 天到期，请及时续保"）"""
+    """构建到期提醒邮件 HTML（提示"未来 N 天内到期，请及时续保"）"""
     if not persons:
-        return f"<p>暂无 {target_date} 到期的人员保险。</p>"
+        days_text = "今天" if ahead_days == 0 else f"未来 {ahead_days} 天内"
+        return f"<p>暂无{days_text}（截至 {target_date}）到期的人员保险。</p>"
 
     rows_html = ""
     for i, p in enumerate(persons, 1):
@@ -479,14 +487,14 @@ def build_expiry_email_html(persons: list[dict], target_date: str, ahead_days: i
     company_names = {p.get("company", "") for p in persons}
     companies = "、".join(c for c in company_names if c)
 
-    days_text = "今天" if ahead_days == 0 else f"{ahead_days} 天"
+    days_text = "今天" if ahead_days == 0 else f"未来 {ahead_days} 天内"
 
     return f"""
     <html><body style="font-family:'Microsoft YaHei',Arial,sans-serif;background:#f5f5f5;padding:20px">
     <div style="max-width:1200px;margin:0 auto;background:white;border-radius:8px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.1)">
         <div style="background:linear-gradient(135deg,#ed8936,#dd6b20);color:white;padding:20px 24px">
             <h2 style="margin:0">⏰ 保险即将到期提醒</h2>
-            <p style="margin:4px 0 0;opacity:0.9">以下人员保险还有 <b>{days_text}</b> 到期（到期日 <b>{target_date}</b>），请及时续保</p>
+            <p style="margin:4px 0 0;opacity:0.9">以下人员保险将在 <b>{days_text}</b> 到期（最晚 <b>{target_date}</b>），请及时续保</p>
         </div>
         <div style="padding:16px 24px">
             <p>涉及公司：{companies or '—'}</p>
@@ -527,7 +535,8 @@ def _send_expiry_email(
     smtp_host = email_config.get("smtp_host", "smtp.qq.com")
     smtp_port = email_config.get("smtp_port", 465)
 
-    subject = f"⏰ 保险即将到期提醒 — {target_date} 到期 {len(persons)} 人，请及时续保"
+    days_text = "今天" if ahead_days == 0 else f"未来 {ahead_days} 天内"
+    subject = f"⏰ 保险即将到期提醒 — {days_text}到期 {len(persons)} 人，请及时续保"
 
     msg = MIMEMultipart("alternative")
     msg["From"] = sender
@@ -552,7 +561,7 @@ def _send_expiry_email(
 def run_expiry_check(ahead_days: Optional[int] = None, config: Optional[dict] = None) -> dict:
     """执行一次到期提醒检查（定时任务回调入口）
 
-    查询还有 ahead_days 天到期的人员保险，如有则发送邮件提醒续保。
+    查询「ahead_days 天内」即将到期的人员保险，如有则发送邮件提醒续保。
 
     Args:
         ahead_days: 提前天数（默认从配置 expiry_ahead_days 读取）
@@ -569,31 +578,33 @@ def run_expiry_check(ahead_days: Optional[int] = None, config: Optional[dict] = 
 
     email_config = config.get("email", {})
 
-    target_date = (datetime.now() + timedelta(days=ahead_days)).strftime("%Y-%m-%d")
+    deadline = (datetime.now() + timedelta(days=ahead_days)).strftime("%Y-%m-%d")
     expiring = find_expiring_from_db(ahead_days)
 
     result = {
         "check_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "ahead_days": ahead_days,
-        "target_date": target_date,
+        "target_date": deadline,
         "expiring_count": len(expiring),
         "expiring_persons": expiring,
         "email": None,
     }
 
+    days_text = "今天" if ahead_days == 0 else f"未来 {ahead_days} 天内"
+
     if not expiring:
         result["success"] = True
-        result["message"] = f"{target_date} 无即将到期人员，无需提醒"
+        result["message"] = f"{days_text}（截至 {deadline}）无即将到期人员，无需提醒"
         result["email"] = {"success": True, "message": "无即将到期人员"}
         return result
 
     if not email_config.get("enabled", True):
         result["success"] = False
-        result["message"] = "存在即将到期人员，但邮件通知已禁用"
+        result["message"] = f"存在 {len(expiring)} 人即将到期，但邮件通知已禁用"
         result["email"] = {"success": False, "message": "邮件通知已禁用"}
         return result
 
-    email_result = _send_expiry_email(expiring, target_date, ahead_days, email_config)
+    email_result = _send_expiry_email(expiring, deadline, ahead_days, email_config)
     result["email"] = email_result
     result["success"] = email_result.get("success", False)
     result["message"] = email_result.get("message", "")
@@ -602,7 +613,7 @@ def run_expiry_check(ahead_days: Optional[int] = None, config: Optional[dict] = 
     config["last_expiry_check"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     config["last_expiry_result"] = {
         "ahead_days": ahead_days,
-        "target_date": target_date,
+        "target_date": deadline,
         "expiring_count": len(expiring),
         "email_sent": email_result.get("success", False),
     }
