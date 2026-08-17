@@ -72,7 +72,9 @@ class TableExtractor(BaseExtractor):
 
         # 预处理：合并 PDF 表格中跨行断开的内容
         # 1. 合并跨行身份证号: "4527251967\n0226048X" → "45272519670226048X"
-        list_text = re.sub(r'(\d)\n(\d|[Xx])', r'\1\2', list_text)
+        #    注意：前段要求≥3位数字，避免误伤日期时间文本
+        #    （如"2026-04-03 00:00:00\n2026-09-10"里"00\n2"是时分秒，不应合并）
+        list_text = re.sub(r'(\d{3,})\n(\d|[Xx])', r'\1\2', list_text)
         # 2. 合并跨行公司名: "广州市粤灿建设工程有限\n公司" → "广州市粤灿建设工程有限公司"
         list_text = re.sub(r'([\u4e00-\u9fff])\n(公司|集团|股份|责任)', r'\1\2', list_text)
         # 3. 去除"制单时间"页脚噪声（含日期，会干扰每人起止日期提取）
@@ -113,19 +115,24 @@ class TableExtractor(BaseExtractor):
                 birth_day = id_number[12:14]
                 birth_date = f"{birth_year}-{birth_month}-{birth_day}"
 
-            # 4. 在身份证号附近提取日期（排除出生日期和其他人员的出生日期）
+            # 身份证号之后的文本（表格中起止日期/工种/公司都在证件号之后）
+            post_region = list_text[id_pos:id_pos + 400]
+
+            # 4. 在身份证号之后提取日期（只取证件号之后，避免混入前一人日期）
             # 出生日期通常年份 < 2010，保险起止日期通常在 2020 年代
             dates = [
-                d for d in extract_dates_near(list_text, id_pos, window=400)
+                d for d in extract_dates_near(post_region, 0, window=400)
                 if d != birth_date and int(d[:4]) >= 2010
             ]
             start_date = dates[0] if len(dates) >= 1 else ""
             end_date = dates[1] if len(dates) >= 2 else ""
+            # 兜底：起始时间晚于起止时间（识别反了）时交换
+            if start_date and end_date and start_date > end_date:
+                start_date, end_date = end_date, start_date
 
             # 5. 在身份证号附近提取公司名 / 用工单位
             company = ""
             # 优先用工单位标签
-            post_region = list_text[id_pos:id_pos + 400]
             m_company = re.search(
                 r"(?:实际)?用工单位[：:\s]*([\u4e00-\u9fff]+(?:有限公司|集团(?:公司)?|股份有限公司|责任公司|公司))",
                 post_region

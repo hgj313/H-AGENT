@@ -80,7 +80,8 @@ class InlineExtractor(BaseExtractor):
         persons = []
 
         # 合并跨行身份证号: "50023\n1198711087553" → "500231198711087553"
-        text = re.sub(r'(\d)\n(\d|[Xx])', r'\1\2', text)
+        # 前段要求≥3位，避免误伤日期时间文本
+        text = re.sub(r'(\d{3,})\n(\d|[Xx])', r'\1\2', text)
 
         # 按句号/分号分割，每句处理一个替换
         for sentence in re.split(r'[。；]', text):
