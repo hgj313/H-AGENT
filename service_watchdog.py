@@ -34,13 +34,18 @@ def main():
     while True:
         log("启动服务...")
         try:
-            # 用 DETACHED 标志，让子进程尽量脱离
-            creationflags = subprocess.CREATE_NEW_PROCESS_GROUP
+            # 服务日志重定向到文件，便于排查（pythonw 无 stdout）
+            log_file = open(os.path.join(WORKDIR, "server.log"), "a", encoding="utf-8")
+            err_file = open(os.path.join(WORKDIR, "server.err.log"), "a", encoding="utf-8")
             proc = subprocess.Popen(
                 [PYTHON, SERVER_SCRIPT],
                 cwd=WORKDIR,
-                creationflags=creationflags,
+                stdout=log_file,
+                stderr=err_file,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
             )
+            log_file.close()
+            err_file.close()
             proc.wait()
             code = proc.returncode
             log(f"服务退出（退出码 {code}），{RESTART_DELAY} 秒后重启...")

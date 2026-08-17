@@ -48,14 +48,27 @@ def load_scheduler_config() -> dict:
 
 
 def save_scheduler_config(config: dict) -> bool:
-    """保存定时任务配置"""
+    """保存定时任务配置（带重试，避免文件被短暂锁定导致失败）"""
+    import time
+    last_err = None
+    for attempt in range(3):
+        try:
+            os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(config, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception as e:
+            last_err = e
+            time.sleep(0.3 * (attempt + 1))
+    # 记录异常，便于排查（服务进程无 stdout）
     try:
-        os.makedirs(DATA_DIR, exist_ok=True)
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            json.dump(config, f, ensure_ascii=False, indent=2)
-        return True
-    except IOError:
-        return False
+        import traceback
+        with open(os.path.join(os.path.dirname(CONFIG_PATH), "scheduler_save_error.log"), "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.now()}] {type(last_err).__name__}: {last_err}\n")
+            traceback.print_exc(file=f)
+    except Exception:
+        pass
+    return False
 
 
 class Scheduler:

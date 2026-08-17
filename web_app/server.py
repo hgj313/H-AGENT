@@ -824,6 +824,19 @@ async def get_scheduler_config():
     return JSONResponse(scheduler_mod.load_scheduler_config())
 
 
+@app.get("/api/scheduler/status")
+async def get_scheduler_status():
+    """获取定时任务运行状态"""
+    sched = scheduler_mod.get_scheduler()
+    if sched is None:
+        return JSONResponse({"running": False, "message": "调度器未创建"})
+    return JSONResponse({
+        "running": bool(sched._running),
+        "last_run_date": sched._last_run_date,
+        "check_interval": sched._check_interval,
+    })
+
+
 @app.put("/api/scheduler/config")
 async def update_scheduler_config(body: SchedulerConfigSchema):
     """更新定时任务配置"""
