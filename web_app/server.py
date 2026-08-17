@@ -12,6 +12,7 @@ import sys
 import tempfile
 import traceback
 from datetime import datetime, timedelta
+from typing import Optional
 from urllib.parse import quote
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
@@ -48,6 +49,7 @@ from insurance_agent.tools.excel_sync import sync_excel_with_extraction
 from insurance_agent.tools.insurance_reminder import (
     run_reminder_check, load_persons_from_json, find_expiring_tomorrow,
     load_config, save_config, get_config_for_response, send_reminder_email,
+    run_expiry_check, find_expiring_from_db,
 )
 from insurance_agent.tools import coverage_check
 from insurance_agent.tools.daily_check_service import run_daily_check
@@ -548,7 +550,7 @@ class ReminderConfigSchema(BaseModel):
     sender_auth: str = ""
     recipient_emails: list[str] = []
     enabled: bool = True
-    check_days: list[int] = [1, 3, 7]
+    check_days: Optional[list[int]] = None
     sms: SmsConfigSchema = SmsConfigSchema()
 
 
@@ -571,7 +573,8 @@ async def update_reminder_config(body: ReminderConfigSchema):
     if body.recipient_emails:
         email["recipient_emails"] = body.recipient_emails
     email["enabled"] = body.enabled
-    config["check_days"] = body.check_days
+    if body.check_days is not None:
+        config["check_days"] = body.check_days
 
     # 保存短信配置
     sms = config.setdefault("sms", {})
@@ -634,6 +637,37 @@ async def check_reminder():
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"提醒检查失败: {e}")
+
+
+@app.post("/api/reminder/check-expiry")
+async def check_expiry():
+    """手动触发到期提醒检查（查询还有 N 天到期的人员并发送邮件）"""
+    try:
+        cfg = scheduler_mod.load_scheduler_config()
+        ahead_days = cfg.get("expiry_ahead_days", 3)
+        result = run_expiry_check(ahead_days=ahead_days)
+        return JSONResponse(result)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"到期提醒检查失败: {e}")
+
+
+@app.get("/api/reminder/expiring-db")
+async def list_expiring_db(ahead_days: int = 3):
+    """查看即将到期的人员（数据库数据源，不发送邮件）
+
+    Args:
+        ahead_days: 提前天数，查询"还有 N 天到期"的人员
+    """
+    expiring = find_expiring_from_db(ahead_days)
+    target_date = (datetime.now() + timedelta(days=ahead_days)).strftime("%Y-%m-%d")
+    return JSONResponse({
+        "check_date": datetime.now().strftime("%Y-%m-%d"),
+        "ahead_days": ahead_days,
+        "target_date": target_date,
+        "expiring_count": len(expiring),
+        "expiring_persons": expiring,
+    })
 
 
 @app.get("/api/reminder/history")
@@ -813,9 +847,12 @@ async def daily_check():
 # ==================== 定时任务配置 ====================
 
 class SchedulerConfigSchema(BaseModel):
-    enabled: bool = True
-    sync_time: str = "08:00"
-    alert_enabled: bool = True
+    enabled: Optional[bool] = None
+    sync_time: Optional[str] = None
+    alert_enabled: Optional[bool] = None
+    expiry_time: Optional[str] = None
+    expiry_ahead_days: Optional[int] = None
+    expiry_enabled: Optional[bool] = None
 
 
 @app.get("/api/scheduler/config")
@@ -833,17 +870,20 @@ async def get_scheduler_status():
     return JSONResponse({
         "running": bool(sched._running),
         "last_run_date": sched._last_run_date,
+        "last_run_dates": sched._last_run_dates,
         "check_interval": sched._check_interval,
+        "tasks": [{"name": t["name"], "time_key": t["time_key"]} for t in sched._tasks],
     })
 
 
 @app.put("/api/scheduler/config")
 async def update_scheduler_config(body: SchedulerConfigSchema):
-    """更新定时任务配置"""
+    """更新定时任务配置（仅更新传入的字段）"""
     config = scheduler_mod.load_scheduler_config()
-    config["enabled"] = body.enabled
-    config["sync_time"] = body.sync_time
-    config["alert_enabled"] = body.alert_enabled
+    updates = body.dict(exclude_none=True)
+    if not updates:
+        return JSONResponse({"success": True, "message": "无更新内容", "config": config})
+    config.update(updates)
     if scheduler_mod.save_scheduler_config(config):
         return JSONResponse({"success": True, "message": "配置已保存", "config": config})
     raise HTTPException(status_code=500, detail="保存配置失败")
@@ -1179,11 +1219,19 @@ async def startup_event():
     """服务启动时启动会话续期 + 定时任务调度器"""
     _session_manager.start()
 
-    # 启动每日打卡检查调度器
+    # 任务1：每日打卡检查（同步打卡 → 覆盖对比 → 邮件/短信提醒）
     def daily_task():
         return run_daily_check(session_manager=_session_manager)
 
-    scheduler_mod.create_scheduler(daily_task)
+    # 任务2：到期提醒（查询还有 N 天到期的人员保险 → 发邮件提醒续保）
+    def expiry_task():
+        cfg = scheduler_mod.load_scheduler_config()
+        ahead_days = cfg.get("expiry_ahead_days", 3)
+        return run_expiry_check(ahead_days=ahead_days)
+
+    scheduler_mod.create_scheduler()
+    scheduler_mod.get_scheduler().add_task("daily_check", daily_task, "sync_time")
+    scheduler_mod.get_scheduler().add_task("expiry_reminder", expiry_task, "expiry_time")
     scheduler_mod.get_scheduler().start()
 
 

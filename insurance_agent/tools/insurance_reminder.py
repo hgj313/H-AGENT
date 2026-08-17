@@ -415,6 +415,202 @@ def run_reminder_check(config: Optional[dict] = None) -> dict:
     return result
 
 
+# ============ 到期提醒（数据库数据源） ============
+
+# 到期提醒邮件的展示字段（贴合数据库字段名）
+EXPIRY_FIELDS = [
+    ("姓名", "name"),
+    ("证件号码", "id_number"),
+    ("所属公司", "company"),
+    ("岗位名称", "job_title"),
+    ("起始时间", "start_date"),
+    ("起止时间", "end_date"),
+    ("保险公司", "insurance_company"),
+    ("保单号", "policy_number"),
+]
+
+
+def find_expiring_from_db(ahead_days: int) -> list[dict]:
+    """从数据库查询还有 ahead_days 天到期的人员（状态正常）
+
+    Args:
+        ahead_days: 提前天数，如 3 表示查询"还有 3 天到期"（end_date = 今天+3天）
+
+    Returns:
+        即将到期的人员列表（数据库记录）
+    """
+    from insurance_agent.infrastructure import database as db
+
+    if ahead_days is None or ahead_days < 0:
+        ahead_days = 0
+
+    target_date = (datetime.now() + timedelta(days=ahead_days)).strftime("%Y-%m-%d")
+    persons = db.get_insurance_personnel()
+    return [
+        p for p in persons
+        if (p.get("status") or "") == "正常"
+        and (p.get("end_date") or "") == target_date
+    ]
+
+
+def build_expiry_email_html(persons: list[dict], target_date: str, ahead_days: int) -> str:
+    """构建到期提醒邮件 HTML（提示"还有 N 天到期，请及时续保"）"""
+    if not persons:
+        return f"<p>暂无 {target_date} 到期的人员保险。</p>"
+
+    rows_html = ""
+    for i, p in enumerate(persons, 1):
+        rows_html += "<tr>"
+        rows_html += f"<td>{i}</td>"
+        for _, key in EXPIRY_FIELDS:
+            value = p.get(key, "") or ""
+            if key == "end_date":
+                rows_html += f'<td style="color:#e53e3e;font-weight:bold">{value}</td>'
+            else:
+                rows_html += f"<td>{value}</td>"
+        rows_html += "</tr>\n"
+
+    header_html = "<tr><th>#</th>"
+    for label, _ in EXPIRY_FIELDS:
+        header_html += f"<th>{label}</th>"
+    header_html += "</tr>"
+
+    total = len(persons)
+    company_names = {p.get("company", "") for p in persons}
+    companies = "、".join(c for c in company_names if c)
+
+    days_text = "今天" if ahead_days == 0 else f"{ahead_days} 天"
+
+    return f"""
+    <html><body style="font-family:'Microsoft YaHei',Arial,sans-serif;background:#f5f5f5;padding:20px">
+    <div style="max-width:1200px;margin:0 auto;background:white;border-radius:8px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.1)">
+        <div style="background:linear-gradient(135deg,#ed8936,#dd6b20);color:white;padding:20px 24px">
+            <h2 style="margin:0">⏰ 保险即将到期提醒</h2>
+            <p style="margin:4px 0 0;opacity:0.9">以下人员保险还有 <b>{days_text}</b> 到期（到期日 <b>{target_date}</b>），请及时续保</p>
+        </div>
+        <div style="padding:16px 24px">
+            <p>涉及公司：{companies or '—'}</p>
+            <p>即将到期人数：<b style="color:#ed8936">{total} 人</b></p>
+            <table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:12px">
+                <thead>
+                    {header_html}
+                </thead>
+                <tbody>
+                    {rows_html}
+                </tbody>
+            </table>
+        </div>
+        <div style="background:#fafafa;padding:12px 24px;color:#999;font-size:11px">
+            本邮件由保险单识别系统自动发送 &mdash; {datetime.now().strftime('%Y-%m-%d %H:%M')}
+        </div>
+    </div>
+    </body></html>
+    """
+
+
+def _send_expiry_email(
+    persons: list[dict],
+    target_date: str,
+    ahead_days: int,
+    email_config: dict,
+) -> dict:
+    """发送到期提醒邮件"""
+    sender = email_config.get("sender_email", "")
+    password = email_config.get("sender_auth", "")
+    recipients = email_config.get("recipient_emails", [])
+    if isinstance(recipients, str):
+        recipients = [r.strip() for r in recipients.split(",") if r.strip()]
+
+    if not sender or not password or not recipients:
+        return {"success": False, "message": "邮箱配置不完整，请填写发件人/授权码/收件人"}
+
+    smtp_host = email_config.get("smtp_host", "smtp.qq.com")
+    smtp_port = email_config.get("smtp_port", 465)
+
+    subject = f"⏰ 保险即将到期提醒 — {target_date} 到期 {len(persons)} 人，请及时续保"
+
+    msg = MIMEMultipart("alternative")
+    msg["From"] = sender
+    msg["To"] = ", ".join(recipients)
+    msg["Subject"] = subject
+    msg.attach(MIMEText(build_expiry_email_html(persons, target_date, ahead_days), "html", "utf-8"))
+
+    try:
+        server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30)
+        server.login(sender, password)
+        server.sendmail(sender, recipients, msg.as_string())
+        server.quit()
+        return {"success": True, "message": f"已发送到期提醒邮件到 {', '.join(recipients)}，{len(persons)} 人即将到期"}
+    except smtplib.SMTPAuthenticationError:
+        return {"success": False, "message": "SMTP认证失败，请检查授权码是否正确"}
+    except smtplib.SMTPConnectError:
+        return {"success": False, "message": f"无法连接SMTP服务器 {smtp_host}:{smtp_port}"}
+    except Exception as e:
+        return {"success": False, "message": f"邮件发送失败: {e}"}
+
+
+def run_expiry_check(ahead_days: Optional[int] = None, config: Optional[dict] = None) -> dict:
+    """执行一次到期提醒检查（定时任务回调入口）
+
+    查询还有 ahead_days 天到期的人员保险，如有则发送邮件提醒续保。
+
+    Args:
+        ahead_days: 提前天数（默认从配置 expiry_ahead_days 读取）
+        config: 提醒配置（默认从配置文件读取）
+
+    Returns:
+        dict: 执行结果
+    """
+    if config is None:
+        config = load_config()
+
+    if ahead_days is None:
+        ahead_days = int(config.get("expiry_ahead_days", 3))
+
+    email_config = config.get("email", {})
+
+    target_date = (datetime.now() + timedelta(days=ahead_days)).strftime("%Y-%m-%d")
+    expiring = find_expiring_from_db(ahead_days)
+
+    result = {
+        "check_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "ahead_days": ahead_days,
+        "target_date": target_date,
+        "expiring_count": len(expiring),
+        "expiring_persons": expiring,
+        "email": None,
+    }
+
+    if not expiring:
+        result["success"] = True
+        result["message"] = f"{target_date} 无即将到期人员，无需提醒"
+        result["email"] = {"success": True, "message": "无即将到期人员"}
+        return result
+
+    if not email_config.get("enabled", True):
+        result["success"] = False
+        result["message"] = "存在即将到期人员，但邮件通知已禁用"
+        result["email"] = {"success": False, "message": "邮件通知已禁用"}
+        return result
+
+    email_result = _send_expiry_email(expiring, target_date, ahead_days, email_config)
+    result["email"] = email_result
+    result["success"] = email_result.get("success", False)
+    result["message"] = email_result.get("message", "")
+
+    # 保存执行记录
+    config["last_expiry_check"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    config["last_expiry_result"] = {
+        "ahead_days": ahead_days,
+        "target_date": target_date,
+        "expiring_count": len(expiring),
+        "email_sent": email_result.get("success", False),
+    }
+    save_config(config)
+
+    return result
+
+
 def _load_persons_from_excel() -> list[dict]:
     """从 Excel 模板加载人员（字段较少的兜底方案）"""
     if not os.path.exists(EXCEL_PATH):
