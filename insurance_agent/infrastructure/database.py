@@ -453,6 +453,60 @@ def get_insurance_personnel() -> list[dict]:
             conn.close()
 
 
+# 可更新的字段白名单
+_EDITABLE_FIELDS = [
+    "name", "id_number", "id_type", "birth_date", "company", "status",
+    "start_date", "end_date", "job_title", "insurance_company", "policy_number",
+]
+
+
+def update_personnel(person_id: int, updates: dict) -> bool:
+    """更新保单人员数据（仅白名单字段）
+
+    Args:
+        person_id: 记录主键 id
+        updates: 需更新的字段字典
+
+    Returns:
+        是否更新成功
+    """
+    fields = []
+    values = []
+    for key in _EDITABLE_FIELDS:
+        if key in updates:
+            fields.append(f"{key} = ?")
+            values.append(updates[key])
+    if not fields:
+        return False
+    values.append(person_id)
+
+    with _lock:
+        conn = get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"UPDATE insurance_personnel SET {', '.join(fields)} WHERE id = ?",
+                values,
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+
+def delete_personnel(person_id: int) -> bool:
+    """删除保单人员数据（按主键 id）"""
+    with _lock:
+        conn = get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM insurance_personnel WHERE id = ?", (person_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+
 def clear_insurance_personnel() -> int:
     """清空保单人员数据表（替换数据前）"""
     with _lock:

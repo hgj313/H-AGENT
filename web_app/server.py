@@ -858,8 +858,8 @@ async def get_db_stats():
 # ==================== 保单人员数据管理 ====================
 
 def _personnel_to_row(p: dict) -> dict:
-    """数据库记录 → 中文表头行"""
-    row = {}
+    """数据库记录 → 中文表头行（含主键 id，用于编辑/删除）"""
+    row = {"id": p.get("id")}
     for label, key in PERSONNEL_FIELDS:
         row[label] = p.get(key, "") or ""
     return row
@@ -1055,6 +1055,56 @@ async def manual_add_personnel(body: ManualAddSchema):
         "added": result["added"],
         "updated": result["updated"],
     })
+
+
+@app.put("/api/personnel/{person_id}")
+async def update_personnel(person_id: int, body: ManualAddSchema):
+    """编辑保单人员数据"""
+    name = body.name.strip()
+    id_num = body.id_number.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="姓名不能为空")
+    if not id_num:
+        raise HTTPException(status_code=400, detail="证件号码不能为空")
+
+    # 出生日期为空时从身份证号自动提取
+    birth_date = body.birth_date.strip()
+    if not birth_date and len(id_num) >= 14 and id_num[6:14].isdigit():
+        birth_date = f"{id_num[6:10]}-{id_num[10:12]}-{id_num[12:14]}"
+
+    # 状态判断
+    status = body.status.strip() or "正常"
+    end_date = body.end_date.strip()
+    if status == "正常" and end_date:
+        today = datetime.now().strftime("%Y-%m-%d")
+        if end_date < today:
+            status = "失效"
+
+    updates = {
+        "name": name,
+        "id_number": id_num,
+        "id_type": body.id_type.strip() or "身份证",
+        "birth_date": birth_date,
+        "company": body.company.strip(),
+        "start_date": body.start_date.strip(),
+        "end_date": end_date,
+        "job_title": body.job_title.strip(),
+        "insurance_company": body.insurance_company.strip(),
+        "policy_number": body.policy_number.strip(),
+        "status": status,
+    }
+
+    if db.update_personnel(person_id, updates):
+        return JSONResponse({"success": True, "message": "更新成功"})
+    raise HTTPException(status_code=404, detail="记录不存在")
+
+
+@app.delete("/api/personnel/{person_id}")
+async def delete_personnel(person_id: int):
+    """删除保单人员数据"""
+    if db.delete_personnel(person_id):
+        return JSONResponse({"success": True, "message": "删除成功"})
+    raise HTTPException(status_code=404, detail="记录不存在")
 
 
 @app.get("/api/personnel/export")

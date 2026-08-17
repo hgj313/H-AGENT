@@ -256,7 +256,7 @@
         .tag-error { background: #fed7d7; color: #822727; }
 
         .container {
-            max-width: 1200px;
+            max-width: none;
             margin: 24px auto;
             padding: 0 24px;
         }
@@ -635,7 +635,7 @@
 
             <!-- 手动添加表单 -->
             <div class="upload-card" id="manualAddCard" style="display:none;border:1px solid #c6f6d5;background:#f0fff4;">
-                <h3 style="font-size:16px;margin-bottom:16px;color:#276749;">➕ 手动添加保单数据（用于少量无法识别的保单格式）</h3>
+                <h3 id="manualAddTitle" style="font-size:16px;margin-bottom:16px;color:#276749;">➕ 手动添加保单数据（用于少量无法识别的保单格式）</h3>
                 <div class="reminder-form">
                     <div class="form-group">
                         <label>姓名 *</label>
@@ -719,10 +719,11 @@
                             <th style="padding:8px;border:1px solid #e2e8f0;">岗位名称</th>
                             <th style="padding:8px;border:1px solid #e2e8f0;">保险公司</th>
                             <th style="padding:8px;border:1px solid #e2e8f0;">保单号</th>
+                            <th style="padding:8px;border:1px solid #e2e8f0;white-space:nowrap;">操作</th>
                         </tr>
                     </thead>
                     <tbody id="personnelTableBody">
-                        <tr><td colspan="11" style="text-align:center;color:#999;padding:20px;">加载中...</td></tr>
+                        <tr><td colspan="12" style="text-align:center;color:#999;padding:20px;">加载中...</td></tr>
                     </tbody>
                 </table>
             </div>
@@ -1783,11 +1784,12 @@
             if (countEl) countEl.textContent = `筛选结果 ${filtered.length} / ${personnelRecordsCache.length} 条`;
 
             if (!filtered.length) {
-                tbody.innerHTML = '<tr><td colspan="11" style="text-align:center;color:#999;padding:20px;">无匹配数据</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="12" style="text-align:center;color:#999;padding:20px;">无匹配数据</td></tr>';
                 return;
             }
             tbody.innerHTML = filtered.map(r => {
                 const statusColor = r['状态'] === '失效' ? '#e53e3e' : '#48bb78';
+                const rid = r['id'] !== undefined ? r['id'] : '';
                 return `
                 <tr>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['姓名'] || ''}</td>
@@ -1801,6 +1803,10 @@
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['岗位名称'] || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['保险公司'] || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['保单号'] || ''}</td>
+                    <td style="padding:6px 8px;border:1px solid #e2e8f0;white-space:nowrap;">
+                        <button class="btn btn-secondary" style="padding:2px 10px;font-size:12px;margin-right:4px;" onclick="editPersonnel(${rid})">✏️ 编辑</button>
+                        <button class="btn btn-secondary" style="padding:2px 10px;font-size:12px;color:#e53e3e;" onclick="deletePersonnel(${rid})">🗑️ 删除</button>
+                    </td>
                 </tr>
             `;}).join('');
         }
@@ -1862,12 +1868,70 @@
             window.location.href = `${apiBase}/api/personnel/export`;
         }
 
+        // 当前编辑的记录 id（null 表示新增模式）
+        let editingPersonnelId = null;
+
         function toggleManualAdd() {
             const card = document.getElementById('manualAddCard');
             if (card.style.display === 'none') {
+                // 打开表单（新增模式）
+                resetManualAddForm();
+                editingPersonnelId = null;
+                document.getElementById('manualAddTitle').textContent = '➕ 手动添加保单数据（用于少量无法识别的保单格式）';
                 card.style.display = 'block';
             } else {
                 card.style.display = 'none';
+                editingPersonnelId = null;
+            }
+        }
+
+        function resetManualAddForm() {
+            ['maName','maIdNumber','maBirthDate','maCompany','maJobTitle','maStartDate','maEndDate','maInsuranceCompany','maPolicyNumber'].forEach(id => {
+                document.getElementById(id).value = '';
+            });
+            document.getElementById('maIdType').value = '身份证';
+            document.getElementById('maStatus').value = '正常';
+            document.getElementById('manualAddStatus').innerHTML = '';
+        }
+
+        function editPersonnel(id) {
+            const rec = personnelRecordsCache.find(r => r['id'] === id);
+            if (!rec) return;
+            // 填充表单
+            document.getElementById('maName').value = rec['姓名'] || '';
+            document.getElementById('maIdNumber').value = rec['证件号码'] || '';
+            document.getElementById('maIdType').value = rec['证件类型'] || '身份证';
+            document.getElementById('maBirthDate').value = rec['出生日期'] || '';
+            document.getElementById('maCompany').value = rec['所属公司'] || '';
+            document.getElementById('maJobTitle').value = rec['岗位名称'] || '';
+            document.getElementById('maStartDate').value = rec['起始时间'] || '';
+            document.getElementById('maEndDate').value = rec['起止时间'] || '';
+            document.getElementById('maInsuranceCompany').value = rec['保险公司'] || '';
+            document.getElementById('maPolicyNumber').value = rec['保单号'] || '';
+            document.getElementById('maStatus').value = rec['状态'] || '正常';
+            // 切换到编辑模式
+            editingPersonnelId = id;
+            document.getElementById('manualAddTitle').textContent = '✏️ 编辑保单数据';
+            document.getElementById('manualAddCard').style.display = 'block';
+            document.getElementById('manualAddStatus').innerHTML = '';
+            // 滚动到表单
+            document.getElementById('manualAddCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        async function deletePersonnel(id) {
+            if (!confirm('确定删除这条保单人员数据吗？\n\n此操作不可恢复。')) return;
+            const apiBase = getApiBase();
+            try {
+                const resp = await fetch(`${apiBase}/api/personnel/${id}`, { method: 'DELETE' });
+                const data = await resp.json();
+                if (resp.ok && data.success) {
+                    alert('✅ 删除成功');
+                    loadPersonnel();
+                } else {
+                    alert(`❌ ${data.detail || '删除失败'}`);
+                }
+            } catch (err) {
+                alert(`❌ 删除失败: ${err.message}`);
             }
         }
 
@@ -1900,22 +1964,24 @@
                 status: document.getElementById('maStatus').value,
             };
 
+            const url = editingPersonnelId !== null
+                ? `${apiBase}/api/personnel/${editingPersonnelId}`
+                : `${apiBase}/api/personnel/manual-add`;
+            const method = editingPersonnelId !== null ? 'PUT' : 'POST';
+
             status.innerHTML = '<span class="spinner"></span> 正在保存...';
             try {
-                const resp = await fetch(`${apiBase}/api/personnel/manual-add`, {
-                    method: 'POST',
+                const resp = await fetch(url, {
+                    method: method,
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload),
                 });
                 const data = await resp.json();
                 if (resp.ok && data.success) {
                     status.innerHTML = `<span style="color:#48bb78;">✅ ${data.message}</span>`;
-                    // 清空表单
-                    ['maName','maIdNumber','maBirthDate','maCompany','maJobTitle','maStartDate','maEndDate','maInsuranceCompany','maPolicyNumber'].forEach(id => {
-                        document.getElementById(id).value = '';
-                    });
-                    document.getElementById('maIdType').value = '身份证';
-                    document.getElementById('maStatus').value = '正常';
+                    resetManualAddForm();
+                    editingPersonnelId = null;
+                    document.getElementById('manualAddTitle').textContent = '➕ 手动添加保单数据（用于少量无法识别的保单格式）';
                     loadPersonnel();
                 } else {
                     status.innerHTML = `<span style="color:#e53e3e;">❌ ${data.detail || '保存失败'}</span>`;
