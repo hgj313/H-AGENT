@@ -724,6 +724,81 @@ async def check_coverage():
         raise HTTPException(status_code=500, detail=f"检查失败: {e}")
 
 
+@app.get("/api/punch/export-uninsured")
+async def export_uninsured():
+    """导出无正常保单人员清单为 Excel"""
+    punch_date = datetime.now().strftime("%Y-%m-%d")
+    result = coverage_check.check_insurance_coverage(punch_date)
+    uninsured = result.get("uninsured_list", [])
+
+    if not uninsured:
+        raise HTTPException(status_code=404, detail="当前无「无保险」人员")
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "无保险人员清单"
+
+    # 表头样式
+    header_font = Font(name="微软雅黑", bold=True, color="FFFFFF", size=11)
+    header_fill = PatternFill(start_color="E53E3E", end_color="E53E3E", fill_type="solid")
+    header_align = Alignment(horizontal="center", vertical="center")
+    thin_border = Border(
+        left=Side(style="thin"), right=Side(style="thin"),
+        top=Side(style="thin"), bottom=Side(style="thin"),
+    )
+
+    # 列定义：Excel 表头 → uninsured 字段
+    columns = [
+        ("序号", None),
+        ("姓名", "name"),
+        ("身份证号", "id_number"),
+        ("项目名称", "project_name"),
+        ("班组", "team_name"),
+        ("劳务公司", "supplier_name"),
+        ("劳务分类", "category_name"),
+    ]
+
+    # 写表头
+    for col_idx, (label, _) in enumerate(columns, 1):
+        cell = ws.cell(row=1, column=col_idx, value=label)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_align
+        cell.border = thin_border
+
+    # 写数据
+    data_font = Font(name="微软雅黑", size=10)
+    for row_idx, p in enumerate(uninsured, 2):
+        for col_idx, (label, key) in enumerate(columns, 1):
+            if key is None:
+                value = row_idx - 1  # 序号
+            else:
+                value = p.get(key, "") or ""
+            cell = ws.cell(row=row_idx, column=col_idx, value=value)
+            cell.font = data_font
+            cell.border = thin_border
+            cell.alignment = Alignment(vertical="center")
+
+    # 列宽
+    col_widths = {"序号": 6, "姓名": 12, "身份证号": 22, "项目名称": 40, "班组": 14, "劳务公司": 28, "劳务分类": 12}
+    for col_idx, (label, _) in enumerate(columns, 1):
+        ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = col_widths.get(label, 15)
+
+    ws.freeze_panes = "A2"
+
+    output = io.BytesIO()
+    wb.save(output)
+    output.seek(0)
+
+    filename = f"无保险人员清单_{punch_date}.xlsx"
+    encoded_filename = quote(filename)
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"}
+    )
+
+
 @app.post("/api/daily-check")
 async def daily_check():
     """手动执行每日检查（同步打卡 → 覆盖对比 → 邮件提醒）"""

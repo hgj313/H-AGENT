@@ -818,6 +818,7 @@
                 <div class="btn-group">
                     <button class="btn btn-primary" id="btnSyncPunch" onclick="syncPunchData()">🔄 同步今日打卡</button>
                     <button class="btn btn-primary" id="btnCheckCoverage" onclick="checkCoverage()" style="background:#ed8936;">🔍 检查保险覆盖</button>
+                    <button class="btn btn-primary" id="btnExportUninsured" onclick="exportUninsured()" style="background:#e53e3e;">⬇️ 导出无保险人员清单</button>
                     <button class="btn btn-primary" id="btnDailyCheck" onclick="runDailyCheck()" style="background:#805ad5;">🚀 执行每日检查</button>
                 </div>
                 <div id="punchStatus" style="margin-top:12px;text-align:center;font-size:14px;"></div>
@@ -1610,6 +1611,11 @@
             document.getElementById('punchTotal').textContent = data.total_punch || 0;
             document.getElementById('punchCovered').textContent = data.covered || 0;
             document.getElementById('punchUninsured').textContent = data.uninsured || 0;
+        }
+
+        function exportUninsured() {
+            const apiBase = getApiBase();
+            window.location.href = `${apiBase}/api/punch/export-uninsured`;
         }
 
         function renderAbnormal(data) {
