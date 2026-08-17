@@ -75,6 +75,20 @@ class TableExtractor(BaseExtractor):
         list_text = re.sub(r'(\d)\n(\d|[Xx])', r'\1\2', list_text)
         # 2. 合并跨行公司名: "广州市粤灿建设工程有限\n公司" → "广州市粤灿建设工程有限公司"
         list_text = re.sub(r'([\u4e00-\u9fff])\n(公司|集团|股份|责任)', r'\1\2', list_text)
+        # 3. 去除"制单时间"页脚噪声（含日期，会干扰每人起止日期提取）
+        #    例: "制单时间：2026年03月23日15时16分12秒"
+        list_text = re.sub(r'制单时间[：:]\s*\d{4}[年\-]\d{1,2}[月\-]\d{1,2}[^\n]*', '', list_text)
+        # 4. 合并跨行工种（表格单元格内换行）:
+        #    例: "起重装卸机械\n操作工（吊车\n）" → "起重装卸机械操作工（吊车）"
+        #    4a. 先合并括号跨行 "吊车\n）" → "吊车）"
+        list_text = re.sub(r'([\u4e00-\u9fff（])\n(）)', r'\1\2', list_text)
+        #    4b. 再合并工种主体跨行 "机械\n操作工" → "机械操作工"
+        #        （后一行须以工/员/师/者/人结尾，且排除"雇员/员工/人员"等表头词，避免误合并表头）
+        list_text = re.sub(
+            r'([\u4e00-\u9fff])\n((?!雇员|员工|人员)[\u4e00-\u9fff]{1,8}(?:工|员|师|者|人))',
+            r'\1\2',
+            list_text,
+        )
 
         # 1. 定位所有合法身份证号
         valid_ids = extract_chinese_id_from_text(list_text)
