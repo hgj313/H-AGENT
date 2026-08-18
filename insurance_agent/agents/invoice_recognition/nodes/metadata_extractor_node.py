@@ -67,24 +67,33 @@ class MetadataExtractorNode:
         list_pages = self._find_list_pages(pdf_doc)
 
         # 5. 决策 format_hint
-        # 5.1 文件名识别：投保单
+        # 注意：文件名含"投保单"不能直接判定为无清单。
+        #   例：某保险公司把"保险单"文件命名为"XXX投保单.pdf"，实际含 保险单号 + 人员清单。
+        #   真正的 投保申请书（仅条款）特征：无 保险单号 且 无 人员清单页。
+        #   因此"投保单"文件名仅作为弱信号，且需 保险单号/清单页 都不存在时才判 no_list。
         fname = state.get("file_path", "")
-        if "投保单" in fname:
-            format_hint = "no_list"  # 投保单 = 投保申请书 + 条款，无人员清单
+        is_toubiaodan_file = "投保单" in fname
+
+        if list_pages:
+            # 有人员清单页 → 真实保单，优先按清单格式识别
+            if any(marker in all_text for marker in _INLINE_MARKERS):
+                format_hint = "inline"
+            elif self._is_individual_policy(all_text):
+                format_hint = "individual"
+                list_pages = self._find_individual_pages(pdf_doc) or list_pages
+            else:
+                format_hint = "table"
         elif state.get("is_scanned"):
             format_hint = "ocr"
-        elif any(marker in all_text for marker in _INLINE_MARKERS):
-            format_hint = "inline"
-        elif list_pages:
-            format_hint = "table"
-        elif self._is_individual_policy(all_text):
-            format_hint = "individual"
-            # 个人保单：定位含"被保险人信息"的页面
-            if not list_pages:
-                list_pages = self._find_individual_pages(pdf_doc)
+        elif is_toubiaodan_file and not policy_number:
+            # 文件名含"投保单"且确无保单号/清单 → 投保申请书（仅条款），无人员清单
+            format_hint = "no_list"
         elif self._is_unlisted_policy(all_text):
             # 不记名投保（如灵工版）：只有总人数，没有人员清单
             format_hint = "no_list"
+        elif self._is_individual_policy(all_text):
+            format_hint = "individual"
+            list_pages = self._find_individual_pages(pdf_doc)
         else:
             format_hint = "ocr"  # 兜底走 OCR
 
