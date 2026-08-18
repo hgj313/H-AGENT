@@ -1830,12 +1830,38 @@
 
             let html = '';
             if (uninsured.length) {
+                const rows = uninsured.slice(0, 500).map((p, i) => `
+                    <tr>
+                        <td style="padding:5px 7px;border:1px solid #feb2b2;">${i + 1}</td>
+                        <td style="padding:5px 7px;border:1px solid #feb2b2;">${p.name || ''}</td>
+                        <td style="padding:5px 7px;border:1px solid #feb2b2;">${p.id_number || ''}</td>
+                        <td style="padding:5px 7px;border:1px solid #feb2b2;">${p.project_name || ''}</td>
+                        <td style="padding:5px 7px;border:1px solid #feb2b2;">${p.project_manager || ''}</td>
+                        <td style="padding:5px 7px;border:1px solid #feb2b2;">${p.manager_phone || ''}</td>
+                        <td style="padding:5px 7px;border:1px solid #feb2b2;">${p.manager_email || ''}</td>
+                        <td style="padding:5px 7px;border:1px solid #feb2b2;">${p.team_name || ''}</td>
+                        <td style="padding:5px 7px;border:1px solid #feb2b2;">${p.supplier_name || ''}</td>
+                        <td style="padding:5px 7px;border:1px solid #feb2b2;">${p.category_name || ''}</td>
+                    </tr>`).join('');
                 html += `<h4 style="color:#e53e3e;margin:8px 0;">🔴 无正常保单（${uninsured.length}人）</h4>`;
-                html += uninsured.slice(0, 100).map(p => `
-                    <div class="line">
-                        <span>${p.name} | ${p.id_number} | ${p.project_name} | ${p.team_name} | ${p.supplier_name}</span>
-                        <span class="tag tag-error">无正常保单</span>
-                    </div>`).join('');
+                html += `
+                <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                    <thead>
+                        <tr style="background:#fde8e8;color:#c53030;">
+                            <th style="padding:5px 7px;border:1px solid #feb2b2;">#</th>
+                            <th style="padding:5px 7px;border:1px solid #feb2b2;">姓名</th>
+                            <th style="padding:5px 7px;border:1px solid #feb2b2;">身份证号</th>
+                            <th style="padding:5px 7px;border:1px solid #feb2b2;">项目</th>
+                            <th style="padding:5px 7px;border:1px solid #feb2b2;">项目经理</th>
+                            <th style="padding:5px 7px;border:1px solid #feb2b2;">手机号</th>
+                            <th style="padding:5px 7px;border:1px solid #feb2b2;">邮箱</th>
+                            <th style="padding:5px 7px;border:1px solid #feb2b2;">班组</th>
+                            <th style="padding:5px 7px;border:1px solid #feb2b2;">劳务公司</th>
+                            <th style="padding:5px 7px;border:1px solid #feb2b2;">劳务分类</th>
+                        </tr>
+                    </thead>
+                    <tbody>${rows}</tbody>
+                </table>`;
             }
             list.innerHTML = html;
         }

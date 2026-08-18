@@ -823,6 +823,9 @@ async def export_uninsured():
         ("姓名", "name"),
         ("身份证号", "id_number"),
         ("项目名称", "project_name"),
+        ("项目经理", "project_manager"),
+        ("手机号", "manager_phone"),
+        ("邮箱", "manager_email"),
         ("班组", "team_name"),
         ("劳务公司", "supplier_name"),
         ("劳务分类", "category_name"),
@@ -850,7 +853,7 @@ async def export_uninsured():
             cell.alignment = Alignment(vertical="center")
 
     # 列宽
-    col_widths = {"序号": 6, "姓名": 12, "身份证号": 22, "项目名称": 40, "班组": 14, "劳务公司": 28, "劳务分类": 12}
+    col_widths = {"序号": 6, "姓名": 12, "身份证号": 22, "项目名称": 40, "项目经理": 14, "手机号": 16, "邮箱": 26, "班组": 14, "劳务公司": 28, "劳务分类": 12}
     for col_idx, (label, _) in enumerate(columns, 1):
         ws.column_dimensions[ws.cell(row=1, column=col_idx).column_letter].width = col_widths.get(label, 15)
 

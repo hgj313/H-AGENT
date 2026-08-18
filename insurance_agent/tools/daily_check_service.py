@@ -31,6 +31,9 @@ def build_coverage_email_html(persons: list[dict], punch_date: str, scope_label:
                 <td>{p.get('name', '')}</td>
                 <td>{p.get('id_number', '')}</td>
                 <td>{p.get('project_name', '')}</td>
+                <td>{p.get('project_manager', '')}</td>
+                <td>{p.get('manager_phone', '')}</td>
+                <td>{p.get('manager_email', '')}</td>
                 <td>{p.get('team_name', '')}</td>
                 <td>{p.get('supplier_name', '')}</td>
                 <td>{p.get('category_name', '')}</td>
@@ -42,6 +45,7 @@ def build_coverage_email_html(persons: list[dict], punch_date: str, scope_label:
     header = """
     <tr>
         <th>#</th><th>姓名</th><th>身份证号</th><th>项目</th>
+        <th>项目经理</th><th>手机号</th><th>邮箱</th>
         <th>班组</th><th>劳务公司</th><th>劳务分类</th>
     </tr>"""
 
