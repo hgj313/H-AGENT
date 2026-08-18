@@ -870,10 +870,14 @@ async def export_uninsured():
 
 
 @app.post("/api/daily-check")
-async def daily_check():
-    """手动执行每日检查（同步打卡 → 覆盖对比 → 邮件提醒）"""
+async def daily_check(skip_sync: bool = False):
+    """手动执行每日检查（同步打卡 → 覆盖对比 → 邮件提醒）
+
+    skip_sync=true 时不重新同步打卡数据，直接使用数据库现有记录（便于用测试联系人触发验证）。
+    """
     try:
-        result = run_daily_check(session_manager=_session_manager)
+        sm = None if skip_sync else _session_manager
+        result = run_daily_check(session_manager=sm)
         return JSONResponse(result)
     except Exception as e:
         traceback.print_exc()

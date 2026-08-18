@@ -914,6 +914,9 @@
                     <button class="btn btn-primary" id="btnCheckCoverage" onclick="checkCoverage()" style="background:#ed8936;">🔍 检查保险覆盖</button>
                     <button class="btn btn-primary" id="btnExportUninsured" onclick="exportUninsured()" style="background:#e53e3e;">⬇️ 导出无保险人员清单</button>
                     <button class="btn btn-primary" id="btnDailyCheck" onclick="runDailyCheck()" style="background:#805ad5;">🚀 执行每日检查</button>
+                    <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:#718096;margin-left:6px;">
+                        <input type="checkbox" id="chkSkipSync"> 使用现有数据（不重新同步）
+                    </label>
                 </div>
                 <div id="punchStatus" style="margin-top:12px;text-align:center;font-size:14px;"></div>
             </div>
@@ -1846,7 +1849,8 @@
             status.innerHTML = '<span class="spinner"></span> 正在执行每日检查（同步+对比+提醒）...';
 
             try {
-                const resp = await fetch(`${apiBase}/api/daily-check`, { method: 'POST' });
+                const skipSync = document.getElementById('chkSkipSync')?.checked ? '?skip_sync=true' : '';
+                const resp = await fetch(`${apiBase}/api/daily-check${skipSync}`, { method: 'POST' });
                 const data = await resp.json();
                 if (data.success) {
                     const cov = data.coverage || {};
