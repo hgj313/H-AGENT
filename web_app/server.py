@@ -543,6 +543,7 @@ class SmsConfigSchema(BaseModel):
     template_code: str = ""
     region: str = ""
     phone_numbers: list[str] = []
+    template_content: str = ""   # 短信正文模板（可在前端编辑）
 
 
 class ReminderConfigSchema(BaseModel):
@@ -552,7 +553,16 @@ class ReminderConfigSchema(BaseModel):
     recipient_emails: list[str] = []
     enabled: bool = True
     check_days: Optional[list[int]] = None
+    smtp_host: str = ""
+    smtp_port: int = 0
     sms: SmsConfigSchema = SmsConfigSchema()
+    # ===== 邮件文案（可在前端编辑，后台不写死）=====
+    subject_template: str = ""
+    title: str = ""
+    subtitle_template: str = ""
+    footer: str = ""
+    expiry_title: str = ""
+    expiry_subtitle_template: str = ""
 
 
 @app.get("/api/reminder/config")
@@ -576,6 +586,24 @@ async def update_reminder_config(body: ReminderConfigSchema):
     email["enabled"] = body.enabled
     if body.check_days is not None:
         config["check_days"] = body.check_days
+    if body.smtp_host:
+        email["smtp_host"] = body.smtp_host
+    if body.smtp_port:
+        email["smtp_port"] = body.smtp_port
+
+    # 邮件文案（前端可编辑，留空则不覆盖默认值）
+    if body.subject_template:
+        email["subject_template"] = body.subject_template
+    if body.title:
+        email["title"] = body.title
+    if body.subtitle_template:
+        email["subtitle_template"] = body.subtitle_template
+    if body.footer:
+        email["footer"] = body.footer
+    if body.expiry_title:
+        email["expiry_title"] = body.expiry_title
+    if body.expiry_subtitle_template:
+        email["expiry_subtitle_template"] = body.expiry_subtitle_template
 
     # 保存短信配置
     sms = config.setdefault("sms", {})
@@ -595,6 +623,8 @@ async def update_reminder_config(body: ReminderConfigSchema):
         sms["region"] = body.sms.region
     if body.sms.phone_numbers:
         sms["phone_numbers"] = body.sms.phone_numbers
+    if body.sms.template_content:
+        sms["template_content"] = body.sms.template_content
 
     if save_config(config):
         return JSONResponse({"success": True, "message": "配置已保存"})
@@ -608,13 +638,16 @@ async def test_reminder_sms():
     用短信模板 + 测试变量发送一条测试短信。
     短信服务商 SDK 待提供凭证后对接，当前返回模板和变量预览。
     """
-    from insurance_agent.tools.insurance_reminder import SMS_TEMPLATE, build_sms_messages
+    from insurance_agent.tools.insurance_reminder import SMS_TEMPLATE
     from insurance_agent.tools.sms_sender import send_sms
 
     config = load_config()
     sms = config.get("sms", {})
     if not sms.get("enabled", False):
         raise HTTPException(status_code=400, detail="短信通知已禁用")
+
+    # 短信正文模板取配置（前端可编辑），缺省用后台默认
+    sms_template = sms.get("template_content") or SMS_TEMPLATE
 
     # 构造测试消息
     test_messages = [{
@@ -626,7 +659,7 @@ async def test_reminder_sms():
     result = send_sms(sms, test_messages)
     return JSONResponse({
         **result,
-        "sms_template": SMS_TEMPLATE,
+        "sms_template": sms_template,
         "sample_message": test_messages[0],
     })
 

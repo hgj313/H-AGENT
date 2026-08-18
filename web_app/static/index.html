@@ -757,6 +757,24 @@
                     <div id="recipientList" style="display:flex;flex-direction:column;gap:6px;"></div>
                     <button class="btn btn-secondary" onclick="addRecipient()" style="margin-top:8px;padding:4px 16px;font-size:12px;">＋ 添加收件人</button>
                 </div>
+                <div class="form-group">
+                    <label>邮件主题模板</label>
+                    <input type="text" id="cfgEmailSubject" placeholder="⚠️ 保险到期提醒 — ${target_date} 到期 ${total} 人">
+                    <div style="font-size:11px;color:#999;margin-top:4px;">可用变量：${target_date} 到期日、${total} 人数</div>
+                </div>
+                <div class="form-group">
+                    <label>邮件标题（正文大标题）</label>
+                    <input type="text" id="cfgEmailTitle" placeholder="⚠️ 保险到期提醒">
+                </div>
+                <div class="form-group">
+                    <label>邮件副标题</label>
+                    <input type="text" id="cfgEmailSubtitle" placeholder="以下人员保险将于 ${target_date} 到期，请及时处理续保">
+                    <div style="font-size:11px;color:#999;margin-top:4px;">可用变量：${target_date} 到期日</div>
+                </div>
+                <div class="form-group">
+                    <label>邮件页脚说明</label>
+                    <input type="text" id="cfgEmailFooter" placeholder="本邮件由保险单识别系统自动发送">
+                </div>
                 <div class="form-group" style="justify-content:flex-end;">
                     <label>&nbsp;</label>
                     <div class="toggle-label" onclick="toggleEmailEnabled()">
@@ -803,8 +821,8 @@
                     <input type="text" id="smsRegion" placeholder="阿里云默认 cn-hangzhou；腾讯云默认 ap-guangzhou（可留空）">
                 </div>
                 <div class="form-group">
-                    <label>短信模板内容（申请模板时提交此原文）</label>
-                    <div style="background:#f7fafc;border:1px dashed #cbd5e0;border-radius:6px;padding:10px 12px;font-size:12px;color:#4a5568;line-height:1.6;" id="smsTemplatePreview">加载中...</div>
+                    <label>短信模板内容（申请模板时提交此原文，可自由修改）</label>
+                    <textarea id="smsTemplateContent" rows="3" style="width:100%;padding:10px 12px;border:1px solid #d0d5dd;border-radius:6px;font-size:13px;line-height:1.6;resize:vertical;" placeholder="${project}项目上有${names}等${count}人打卡上班却无保险，请及时购买。详情请查看邮箱。"></textarea>
                     <div style="font-size:11px;color:#999;margin-top:4px;" id="smsTemplateVars"></div>
                 </div>
                 <div class="form-group">
@@ -1243,6 +1261,12 @@
                 document.getElementById('cfgSenderEmail').value = data.email.sender_email || '';
                 document.getElementById('cfgSenderAuth').value = data.email.sender_auth || '';
 
+                // 邮件文案（前端可编辑）
+                document.getElementById('cfgEmailSubject').value = data.email.subject_template || '';
+                document.getElementById('cfgEmailTitle').value = data.email.title || '';
+                document.getElementById('cfgEmailSubtitle').value = data.email.subtitle_template || '';
+                document.getElementById('cfgEmailFooter').value = data.email.footer || '';
+
                 // 收件人列表
                 const emails = data.email.recipient_emails || [];
                 const list = document.getElementById('recipientList');
@@ -1271,10 +1295,10 @@
                 updateSmsToggle(sms.enabled === true);
                 onSmsProviderChange();
 
-                // 短信模板预览
+                // 短信模板内容（可编辑）
                 const template = data.sms_template || '';
                 const templateVars = data.sms_template_vars || {};
-                document.getElementById('smsTemplatePreview').textContent = template || '（未获取到模板）';
+                document.getElementById('smsTemplateContent').value = template || '';
                 const varText = Object.entries(templateVars)
                     .map(([k, v]) => `\${${k}} = ${v}`)
                     .join('　');
@@ -1442,6 +1466,12 @@
                 sender_auth: document.getElementById('cfgSenderAuth').value,
                 recipient_emails: recipientEmails,
                 enabled: enabled,
+                smtp_host: document.getElementById('cfgSmtpHost').value.trim(),
+                smtp_port: parseInt(document.getElementById('cfgSmtpPort').value, 10) || 0,
+                subject_template: document.getElementById('cfgEmailSubject').value.trim(),
+                title: document.getElementById('cfgEmailTitle').value.trim(),
+                subtitle_template: document.getElementById('cfgEmailSubtitle').value.trim(),
+                footer: document.getElementById('cfgEmailFooter').value.trim(),
                 sms: {
                     enabled: smsEnabled,
                     provider: document.getElementById('smsProvider').value,
@@ -1451,6 +1481,7 @@
                     sign_name: document.getElementById('smsSignName').value,
                     template_code: document.getElementById('smsTemplateCode').value,
                     region: document.getElementById('smsRegion').value.trim(),
+                    template_content: document.getElementById('smsTemplateContent').value.trim(),
                     phone_numbers: phoneNumbers,
                 },
             };

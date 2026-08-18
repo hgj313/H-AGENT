@@ -24,6 +24,35 @@ from typing import Optional
 
 import openpyxl
 
+# ============ 提醒文案默认模板（均可在前端「信息提醒配置」覆盖，后台不写死）============
+# 变量占位符：${project}/${names}/${count}（短信）、${target_date}/${total}/${days_text}（邮件）
+SMS_TEMPLATE = "${project}项目上有${names}等${count}人打卡上班却无保险，请及时购买。详情请查看邮箱。"
+SMS_TEMPLATE_VARS = {
+    "project": "项目名称",
+    "names": "无保险人员姓名（最多3人，顿号分隔）",
+    "count": "该项目无保险总人数",
+}
+SMS_MAX_NAMES = 3
+
+EMAIL_SUBJECT_DEFAULT = "⚠️ 保险到期提醒 — ${target_date} 到期 ${total} 人"
+EMAIL_TITLE_DEFAULT = "⚠️ 保险到期提醒"
+EMAIL_SUBTITLE_DEFAULT = "以下人员保险将于 ${target_date} 到期，请及时处理续保"
+EMAIL_FOOTER_DEFAULT = "本邮件由保险单识别系统自动发送"
+
+EXPIRY_SUBJECT_DEFAULT = "⏰ 保险即将到期提醒 — ${days_text}到期 ${total} 人，请及时续保"
+EXPIRY_TITLE_DEFAULT = "⏰ 保险即将到期提醒"
+EXPIRY_SUBTITLE_DEFAULT = "以下人员保险将在 ${days_text} 到期（最晚 ${target_date}），请及时续保"
+
+
+def render_template(tpl: str, **vars) -> str:
+    """将 ${变量名} 占位符替换为实际值；未提供的变量保持原样。"""
+    if not tpl:
+        return ""
+    for k, v in vars.items():
+        tpl = tpl.replace("${%s}" % k, str(v))
+    return tpl
+
+
 # ============ 默认配置 (首次使用时写入配置文件) ============
 DEFAULT_CONFIG = {
     "email": {
@@ -33,6 +62,13 @@ DEFAULT_CONFIG = {
         "sender_auth": "qwutucsktjwobaha",
         "recipient_emails": ["1130530657@qq.com"],
         "enabled": True,
+        # ===== 以下文案均可在前端「信息提醒配置」中灵活修改（后台仅作默认值）=====
+        "subject_template": EMAIL_SUBJECT_DEFAULT,
+        "title": EMAIL_TITLE_DEFAULT,
+        "subtitle_template": EMAIL_SUBTITLE_DEFAULT,
+        "footer": EMAIL_FOOTER_DEFAULT,
+        "expiry_title": EXPIRY_TITLE_DEFAULT,
+        "expiry_subtitle_template": EXPIRY_SUBTITLE_DEFAULT,
     },
     "sms": {
         "enabled": False,               # 短信通知启用开关
@@ -44,6 +80,7 @@ DEFAULT_CONFIG = {
         "template_code": "",            # 短信模板 Code / TemplateId（需服务商审核）
         "region": "",                   # 区域（可选，缺省 aliyun=cn-hangzhou / tencent=ap-guangzhou）
         "phone_numbers": [],            # 接收手机号列表
+        "template_content": SMS_TEMPLATE,  # 短信正文模板，可在前端编辑（申请模板时提交的原文）
     },
     "check_days": [1, 3, 7],  # 提前1/3/7天检查
     "data_source": "json",
@@ -74,20 +111,17 @@ ALL_FIELDS = [
 
 # ============ 短信提醒模板 ============
 
-# 短信模板内容（不含签名，签名由短信服务商侧配置 SignName）
-# 变量用 ${变量名} 占位，与阿里云/腾讯云短信模板变量规范一致。
-# 申请短信模板时，请将本模板原文（含 ${变量} 占位符）提交给服务商审核。
-SMS_TEMPLATE = "${project}项目上有${names}等${count}人打卡上班却无保险，请及时购买。详情请查看邮箱。"
+# SMS_TEMPLATE / SMS_TEMPLATE_VARS / SMS_MAX_NAMES 已统一定义于文件顶部
+# （后台默认模板，可在前端「信息提醒配置」中编辑覆盖）。
 
-# 短信模板变量定义（变量名 → 说明）
-SMS_TEMPLATE_VARS = {
-    "project": "项目名称",
-    "names": "无保险人员姓名（最多3人，顿号分隔）",
-    "count": "该项目无保险总人数",
-}
 
-# 每条短信最多展示的人员姓名数（超出用"等N人"概括）
-SMS_MAX_NAMES = 3
+
+
+# ============ 邮件文案默认模板（均可在前端「信息提醒配置」覆盖，后台不写死）============
+# EMAIL_SUBJECT_DEFAULT / EMAIL_TITLE_DEFAULT / EMAIL_SUBTITLE_DEFAULT / EMAIL_FOOTER_DEFAULT
+# 及 EXPIRY_* 默认模板、render_template 已统一定义于文件顶部（可在前端编辑覆盖）。
+
+
 
 
 def build_sms_messages(uninsured_list: list[dict], max_names: int = SMS_MAX_NAMES) -> list[dict]:
@@ -174,7 +208,7 @@ def get_config_for_response(config: dict) -> dict:
     return {
         "email": email,
         "sms": sms,
-        "sms_template": SMS_TEMPLATE,
+        "sms_template": config.get("sms", {}).get("template_content") or SMS_TEMPLATE,
         "sms_template_vars": SMS_TEMPLATE_VARS,
         "check_days": config.get("check_days", [1, 3, 7]),
         "data_source": config.get("data_source", "json"),
@@ -226,10 +260,15 @@ def find_expiring_tomorrow(persons: list[dict]) -> list[dict]:
     return [p for p in persons if p["end_date"] == tomorrow]
 
 
-def build_email_html(persons: list[dict], target_date: str) -> str:
-    """构建 HTML 表格邮件内容"""
+def build_email_html(persons: list[dict], target_date: str, email_config: Optional[dict] = None) -> str:
+    """构建 HTML 表格邮件内容（标题/副标题/页脚均读 email_config，缺省用默认模板）"""
+    ec = email_config or {}
+    title = ec.get("title") or EMAIL_TITLE_DEFAULT
+    subtitle = render_template(ec.get("subtitle_template") or EMAIL_SUBTITLE_DEFAULT, target_date=target_date)
+    footer = ec.get("footer") or EMAIL_FOOTER_DEFAULT
+
     if not persons:
-        return f"<p>暂无明天（{target_date}）到期的保险人员。</p>"
+        return f"<p>暂无（{target_date}）到期的保险人员。</p>"
 
     rows_html = ""
     for i, p in enumerate(persons, 1):
@@ -257,8 +296,8 @@ def build_email_html(persons: list[dict], target_date: str) -> str:
     <html><body style="font-family:'Microsoft YaHei',Arial,sans-serif;background:#f5f5f5;padding:20px">
     <div style="max-width:1200px;margin:0 auto;background:white;border-radius:8px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.1)">
         <div style="background:linear-gradient(135deg,#e53e3e,#c53030);color:white;padding:20px 24px">
-            <h2 style="margin:0">⚠️ 保险到期提醒</h2>
-            <p style="margin:4px 0 0;opacity:0.9">以下人员保险将于 <b>{target_date}</b> 到期，请及时处理续保</p>
+            <h2 style="margin:0">{title}</h2>
+            <p style="margin:4px 0 0;opacity:0.9">{subtitle}</p>
         </div>
         <div style="padding:16px 24px">
             <p>涉及公司：{companies or '—'}</p>
@@ -273,7 +312,7 @@ def build_email_html(persons: list[dict], target_date: str) -> str:
             </table>
         </div>
         <div style="background:#fafafa;padding:12px 24px;color:#999;font-size:11px">
-            本邮件由保险单识别系统自动发送 &mdash; {datetime.now().strftime('%Y-%m-%d %H:%M')}
+            {footer} &mdash; {datetime.now().strftime('%Y-%m-%d %H:%M')}
         </div>
     </div>
     </body></html>
@@ -316,14 +355,18 @@ def send_reminder_email(
     if not sender or not password or not recipients:
         return {"success": False, "message": "邮箱配置不完整，请填写发件人/授权码/收件人"}
 
-    subject = f"⚠️ 保险到期提醒 — {target_date} 到期 {len(persons)} 人"
+    subject = render_template(
+        email_config.get("subject_template") or EMAIL_SUBJECT_DEFAULT,
+        target_date=target_date,
+        total=len(persons),
+    )
 
     msg = MIMEMultipart("alternative")
     msg["From"] = sender
     msg["To"] = ", ".join(recipients)
     msg["Subject"] = subject
 
-    html_body = build_email_html(persons, target_date)
+    html_body = build_email_html(persons, target_date, email_config)
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     try:
@@ -461,10 +504,19 @@ def find_expiring_from_db(ahead_days: int) -> list[dict]:
     ]
 
 
-def build_expiry_email_html(persons: list[dict], target_date: str, ahead_days: int) -> str:
-    """构建到期提醒邮件 HTML（提示"未来 N 天内到期，请及时续保"）"""
+def build_expiry_email_html(persons: list[dict], target_date: str, ahead_days: int, email_config: Optional[dict] = None) -> str:
+    """构建到期提醒邮件 HTML（提示"未来 N 天内到期，请及时续保"）标题/副标题/页脚读 email_config"""
+    ec = email_config or {}
+    title = ec.get("expiry_title") or EXPIRY_TITLE_DEFAULT
+    days_text = "今天" if ahead_days == 0 else f"未来 {ahead_days} 天内"
+    subtitle = render_template(
+        ec.get("expiry_subtitle_template") or EXPIRY_SUBTITLE_DEFAULT,
+        days_text=days_text,
+        target_date=target_date,
+    )
+    footer = ec.get("footer") or EMAIL_FOOTER_DEFAULT
+
     if not persons:
-        days_text = "今天" if ahead_days == 0 else f"未来 {ahead_days} 天内"
         return f"<p>暂无{days_text}（截至 {target_date}）到期的人员保险。</p>"
 
     rows_html = ""
@@ -488,14 +540,12 @@ def build_expiry_email_html(persons: list[dict], target_date: str, ahead_days: i
     company_names = {p.get("company", "") for p in persons}
     companies = "、".join(c for c in company_names if c)
 
-    days_text = "今天" if ahead_days == 0 else f"未来 {ahead_days} 天内"
-
     return f"""
     <html><body style="font-family:'Microsoft YaHei',Arial,sans-serif;background:#f5f5f5;padding:20px">
     <div style="max-width:1200px;margin:0 auto;background:white;border-radius:8px;overflow:hidden;box-shadow:0 2px 12px rgba(0,0,0,0.1)">
         <div style="background:linear-gradient(135deg,#ed8936,#dd6b20);color:white;padding:20px 24px">
-            <h2 style="margin:0">⏰ 保险即将到期提醒</h2>
-            <p style="margin:4px 0 0;opacity:0.9">以下人员保险将在 <b>{days_text}</b> 到期（最晚 <b>{target_date}</b>），请及时续保</p>
+            <h2 style="margin:0">{title}</h2>
+            <p style="margin:4px 0 0;opacity:0.9">{subtitle}</p>
         </div>
         <div style="padding:16px 24px">
             <p>涉及公司：{companies or '—'}</p>
@@ -510,7 +560,7 @@ def build_expiry_email_html(persons: list[dict], target_date: str, ahead_days: i
             </table>
         </div>
         <div style="background:#fafafa;padding:12px 24px;color:#999;font-size:11px">
-            本邮件由保险单识别系统自动发送 &mdash; {datetime.now().strftime('%Y-%m-%d %H:%M')}
+            {footer} &mdash; {datetime.now().strftime('%Y-%m-%d %H:%M')}
         </div>
     </div>
     </body></html>
@@ -537,13 +587,17 @@ def _send_expiry_email(
     smtp_port = email_config.get("smtp_port", 465)
 
     days_text = "今天" if ahead_days == 0 else f"未来 {ahead_days} 天内"
-    subject = f"⏰ 保险即将到期提醒 — {days_text}到期 {len(persons)} 人，请及时续保"
+    subject = render_template(
+        email_config.get("expiry_subject_template") or EXPIRY_SUBJECT_DEFAULT,
+        days_text=days_text,
+        total=len(persons),
+    )
 
     msg = MIMEMultipart("alternative")
     msg["From"] = sender
     msg["To"] = ", ".join(recipients)
     msg["Subject"] = subject
-    msg.attach(MIMEText(build_expiry_email_html(persons, target_date, ahead_days), "html", "utf-8"))
+    msg.attach(MIMEText(build_expiry_email_html(persons, target_date, ahead_days, email_config), "html", "utf-8"))
 
     try:
         server = smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=30)
