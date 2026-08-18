@@ -133,10 +133,11 @@ def run_daily_check(session_manager=None, punch_date: str = None) -> dict:
 
 
 def _send_coverage_sms(uninsured: list[dict]) -> dict:
-    """发送覆盖检查提醒短信
+    """发送覆盖检查提醒短信（按项目经理分组发送）
 
-    根据无保险人员列表构建短信模板变量（按项目分组），
-    调用短信服务商发送。短信功能未启用或未配置凭证时跳过。
+    每个项目的短信发给「对应项目经理手机 + 原固定收件手机号」（去重）。
+    无项目经理手机的项目，降级发给固定收件手机号。
+    短信功能未启用或未配置凭证时跳过。
     """
     from insurance_agent.tools.insurance_reminder import build_sms_messages
     from insurance_agent.tools.sms_sender import send_sms
@@ -146,11 +147,49 @@ def _send_coverage_sms(uninsured: list[dict]) -> dict:
     if not sms_config.get("enabled", False):
         return {"success": False, "message": "短信通知已禁用"}
 
-    messages = build_sms_messages(uninsured)
-    if not messages:
-        return {"success": True, "message": "无需发送短信"}
+    fixed_phones = sms_config.get("phone_numbers", []) or []
+    if isinstance(fixed_phones, str):
+        fixed_phones = [p.strip() for p in fixed_phones.split(",") if p.strip()]
 
-    return send_sms(sms_config, messages)
+    # 按 (项目经理, 经理手机, 经理邮箱) 聚合人员，避免同一经理多项目重复
+    groups: dict = {}
+    for p in uninsured:
+        key = (
+            p.get("project_manager", "") or "",
+            p.get("manager_phone", "") or "",
+            p.get("manager_email", "") or "",
+        )
+        groups.setdefault(key, []).append(p)
+
+    results = []
+    for (mgr_name, mgr_phone, _mgr_email), persons in groups.items():
+        messages = build_sms_messages(persons)
+        if not messages:
+            continue
+        # 收件人：经理手机 + 固定列表（去重）
+        recv = []
+        if mgr_phone:
+            recv.append(mgr_phone)
+        for ph in fixed_phones:
+            if ph not in recv:
+                recv.append(ph)
+        if not recv:
+            results.append({"success": False, "message": f"{mgr_name or '未知经理'} 无接收手机号"})
+            continue
+        cfg = dict(sms_config)
+        cfg["phone_numbers"] = recv
+        results.append(send_sms(cfg, messages))
+
+    sent = sum(1 for r in results if r.get("success"))
+    if not results:
+        return {"success": True, "message": "无需发送短信"}
+    if sent == 0:
+        return {"success": False, "message": "；".join(r.get("message", "") for r in results), "details": results}
+    return {
+        "success": True,
+        "message": f"已向 {sent}/{len(results)} 个项目经理组发送无保险提醒短信",
+        "details": results,
+    }
 
 
 def _send_coverage_email(check_result, punch_date, email_config, uninsured) -> dict:
@@ -161,12 +200,20 @@ def _send_coverage_email(check_result, punch_date, email_config, uninsured) -> d
 
     sender = email_config.get("sender_email", "")
     password = email_config.get("sender_auth", "")
-    recipients = email_config.get("recipient_emails", [])
-    if isinstance(recipients, str):
-        recipients = [r.strip() for r in recipients.split(",") if r.strip()]
+    fixed_recipients = email_config.get("recipient_emails", [])
+    if isinstance(fixed_recipients, str):
+        fixed_recipients = [r.strip() for r in fixed_recipients.split(",") if r.strip()]
+
+    # 收件人 = 对应项目经理邮箱 + 原固定收件人列表（去重）
+    manager_emails = []
+    for p in uninsured:
+        em = (p.get("manager_email") or "").strip()
+        if em and em not in manager_emails and em not in fixed_recipients:
+            manager_emails.append(em)
+    recipients = fixed_recipients + manager_emails
 
     if not sender or not password or not recipients:
-        return {"success": False, "message": "邮箱配置不完整"}
+        return {"success": False, "message": "邮箱配置不完整（且无可关联的项目经理邮箱）"}
 
     smtp_host = email_config.get("smtp_host", "smtp.qq.com")
     smtp_port = email_config.get("smtp_port", 465)
@@ -185,6 +232,7 @@ def _send_coverage_email(check_result, punch_date, email_config, uninsured) -> d
         server.login(sender, password)
         server.sendmail(sender, recipients, msg.as_string())
         server.quit()
-        return {"success": True, "message": f"已发送提醒邮件到 {', '.join(recipients)}，{total_alert} 人需购买保险"}
+        extra = f"（含 {len(manager_emails)} 位项目经理）" if manager_emails else ""
+        return {"success": True, "message": f"已发送提醒邮件到 {', '.join(recipients)}，{total_alert} 人需购买保险{extra}"}
     except Exception as e:
         return {"success": False, "message": f"邮件发送失败: {e}"}

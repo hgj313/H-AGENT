@@ -51,12 +51,71 @@ def sync_punch_data(session_manager, punch_date: str = None) -> dict:
 
     logger.info("打卡数据同步完成: %s 共 %d 条，入库 %d 条", punch_date, len(records), stored)
 
+    # 同步项目经理信息：通过项目名称 → 项目台账(经理姓名) → 人员信息(手机/邮箱)
+    manager_synced = _sync_manager_info(session_manager, punch_date)
+
     return {
         "success": True,
         "punch_date": punch_date,
         "total": len(records),
         "stored": stored,
+        "manager_synced": manager_synced,
     }
+
+
+def _sync_manager_info(session_manager, punch_date: str) -> dict:
+    """拉取项目台账 + 人员信息，构建项目经理映射并写入当天打卡记录
+
+    返回同步统计 {"success", "projects", "updated", "error"}
+    """
+    try:
+        client = ERPClient(session_manager)
+        manager_map = build_manager_map(client)
+        if not manager_map:
+            return {"success": False, "projects": 0, "updated": 0, "error": "未获取到项目台账/人员信息"}
+        updated = db.update_punch_manager_info(punch_date, manager_map)
+        logger.info("项目经理信息同步完成: %d 个项目，更新 %d 条打卡记录", len(manager_map), updated)
+        return {"success": True, "projects": len(manager_map), "updated": updated}
+    except Exception as e:  # noqa: BLE001
+        logger.warning("项目经理信息同步失败: %s", e)
+        return {"success": False, "projects": 0, "updated": 0, "error": str(e)}
+
+
+def build_manager_map(client) -> dict:
+    """从 ERP 构建 {项目名称: {project_manager, manager_phone, manager_email}} 映射
+
+    数据来源：
+    - 项目台账接口：projectName → projectDutyUserName（项目经理）
+    - 人员信息接口：按 userId / name 匹配 → phone / email
+    """
+    po = client.fetch_project_orders()
+    ul = client.fetch_user_list()
+    if not po.get("success") or not ul.get("success"):
+        logger.warning(
+            "拉取项目/人员信息失败: project=%s user=%s",
+            po.get("error"), ul.get("error"),
+        )
+        return {}
+
+    users_by_id = {u.get("id"): u for u in ul.get("records", [])}
+    users_by_name = {}
+    for u in ul.get("records", []):
+        users_by_name.setdefault(u.get("name"), u)
+
+    manager_map = {}
+    for p in po.get("records", []):
+        project_name = p.get("projectName", "")
+        if not project_name:
+            continue
+        manager_name = p.get("projectDutyUserName") or p.get("projectAssignUserName") or ""
+        manager_id = p.get("projectDutyUserId")
+        user = users_by_id.get(manager_id) or users_by_name.get(manager_name)
+        manager_map[project_name] = {
+            "project_manager": manager_name,
+            "manager_phone": (user or {}).get("phone", "") or "",
+            "manager_email": (user or {}).get("email", "") or "",
+        }
+    return manager_map
 
 
 def check_insurance_coverage(punch_date: str = None) -> dict:
@@ -105,6 +164,9 @@ def check_insurance_coverage(punch_date: str = None) -> dict:
             "team_name": record.get("team_name", ""),
             "supplier_name": record.get("supplier_name", ""),
             "category_name": record.get("category_name", ""),
+            "project_manager": record.get("project_manager", ""),
+            "manager_phone": record.get("manager_phone", ""),
+            "manager_email": record.get("manager_email", ""),
         })
 
     return {

@@ -35,6 +35,12 @@ SIGN_SECRET_KEY = "c1744f81678da7aa5fca887c18df464ba54dada867bc0b3600ee73958d727
 # 打卡数据接口
 PUNCH_DATA_PATH = "/api/labor/warehousing/findCompleteLaborCalculation/page"
 
+# 项目台账接口（含项目名称与对应项目经理姓名）
+PROJECT_ORDERS_PATH = "/api/project/assign/queryOrders"
+
+# 人员信息接口（含项目经理手机/邮箱）
+USER_LIST_PATH = "/api/user/queryUserList"
+
 
 def generate_sign_headers(data_str: str = "") -> dict:
     """生成签名请求头
@@ -160,3 +166,82 @@ class ERPClient:
             "records": all_records,
             "total": total,
         }
+
+    def _fetch_paged(self, path: str, params_base: dict, page_size: int = 20) -> dict:
+        """通用翻页拉取（GET + HMAC 签名头，复用已登录 session）
+
+        Returns:
+            {"success", "records": [...], "total": N}
+        """
+        session = self._get_session()
+        if session is None:
+            return {"success": False, "error": "ERP 登录失败", "records": []}
+
+        all_records = []
+        current = 1
+        while True:
+            headers = generate_sign_headers("")  # GET 请求 body 为空
+            params = dict(params_base)
+            params["pageSize"] = page_size
+            params["current"] = current
+            url = f"{self._base_url}{path}"
+            try:
+                resp = session.get(url, params=params, headers=headers, timeout=30)
+                data = resp.json()
+            except Exception as e:  # noqa: BLE001
+                return {"success": False, "error": f"请求异常: {e}", "records": all_records}
+
+            if not data.get("success"):
+                return {
+                    "success": False,
+                    "error": data.get("message", "未知错误"),
+                    "http_status": getattr(resp, "status_code", None),
+                    "records": all_records,
+                }
+
+            # 兼容两种返回结构：data.pageDTO.{data,total,pages} 或 data.data（直接列表）
+            page_dto = (data.get("data") or {}).get("pageDTO") or {}
+            inner = data.get("data") or {}
+            records = page_dto.get("data", []) or inner.get("data", []) or []
+            if isinstance(records, dict):
+                records = records.get("data", []) or []
+            pages = page_dto.get("pages", 0) or inner.get("pages", 0)
+            total = page_dto.get("total", 0) or inner.get("total", 0)
+
+            if records:
+                all_records.extend(records)
+            if current >= (pages or 1) or not records:
+                break
+            current += 1
+
+        return {"success": True, "records": all_records, "total": len(all_records)}
+
+    def fetch_project_orders(
+        self, business_type: str = "LANDSCAPE_ENGINEERING", page_size: int = 20
+    ) -> dict:
+        """拉取项目台账（含项目名称与对应项目经理姓名）
+
+        返回 {"success", "records": [...原始记录...], "total"}
+        """
+        return self._fetch_paged(
+            PROJECT_ORDERS_PATH,
+            {"businessType": business_type},
+            page_size=page_size,
+        )
+
+    def fetch_user_list(
+        self,
+        company_id: int = 2,
+        department_id: int = 23,
+        query_status: str = "all",
+        page_size: int = 20,
+    ) -> dict:
+        """拉取人员信息（含姓名 / 手机 / 邮箱）
+
+        返回 {"success", "records": [...原始记录...], "total"}
+        """
+        return self._fetch_paged(
+            USER_LIST_PATH,
+            {"queryStatus": query_status, "companyId": company_id, "departmentId": department_id},
+            page_size=page_size,
+        )

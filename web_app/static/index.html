@@ -959,13 +959,16 @@
                                 <th style="padding:8px;border:1px solid #e2e8f0;">姓名</th>
                                 <th style="padding:8px;border:1px solid #e2e8f0;">身份证号</th>
                                 <th style="padding:8px;border:1px solid #e2e8f0;">项目</th>
+                                <th style="padding:8px;border:1px solid #e2e8f0;">项目经理</th>
+                                <th style="padding:8px;border:1px solid #e2e8f0;">手机号</th>
+                                <th style="padding:8px;border:1px solid #e2e8f0;">邮箱</th>
                                 <th style="padding:8px;border:1px solid #e2e8f0;">班组</th>
                                 <th style="padding:8px;border:1px solid #e2e8f0;">劳务公司</th>
                                 <th style="padding:8px;border:1px solid #e2e8f0;">劳务分类</th>
                             </tr>
                         </thead>
                         <tbody id="punchTableBody">
-                            <tr><td colspan="6" style="text-align:center;color:#999;padding:20px;">暂无数据，请先同步今日打卡</td></tr>
+                            <tr><td colspan="9" style="text-align:center;color:#999;padding:20px;">暂无数据，请先同步今日打卡</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -1718,7 +1721,7 @@
                 if (supFilter && r.supplier_name !== supFilter) return false;
                 if (catFilter && r.category_name !== catFilter) return false;
                 if (search) {
-                    const haystack = [r.member_name, r.identification_number, r.project_name, r.team_name, r.supplier_name, r.category_name]
+                    const haystack = [r.member_name, r.identification_number, r.project_name, r.project_manager, r.manager_phone, r.manager_email, r.team_name, r.supplier_name, r.category_name]
                         .filter(Boolean).join(' ').toLowerCase();
                     if (!haystack.includes(search)) return false;
                 }
@@ -1729,7 +1732,7 @@
             if (countEl) countEl.textContent = `筛选结果 ${filtered.length} / ${punchRecordsCache.length} 条`;
 
             if (!filtered.length) {
-                tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#999;padding:20px;">无匹配数据</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:#999;padding:20px;">无匹配数据</td></tr>';
                 return;
             }
             tbody.innerHTML = filtered.slice(0, 500).map(r => `
@@ -1737,6 +1740,9 @@
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r.member_name || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r.identification_number || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r.project_name || ''}</td>
+                    <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r.project_manager || ''}</td>
+                    <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r.manager_phone || ''}</td>
+                    <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r.manager_email || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r.team_name || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r.supplier_name || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r.category_name || ''}</td>

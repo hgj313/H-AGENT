@@ -67,6 +67,9 @@ def init_db() -> None:
                     category_name TEXT,                -- 劳务分类
                     examination_status TEXT,           -- 审核状态
                     telephone TEXT,                    -- 电话
+                    project_manager TEXT,             -- 项目经理姓名
+                    manager_phone TEXT,               -- 项目经理手机
+                    manager_email TEXT,               -- 项目经理邮箱
                     synced_at TEXT,                    -- 同步时间
                     UNIQUE(punch_date, erp_id)
                 )
@@ -102,6 +105,8 @@ def init_db() -> None:
 
             # 迁移：旧表结构含 modification_type，需要替换为 status
             _migrate_insurance_personnel(conn)
+            # 迁移：punch_records 增加项目经理三列
+            _migrate_punch_manager_columns(conn)
             logger.info("数据库初始化完成: %s", DB_PATH)
         finally:
             conn.close()
@@ -155,6 +160,18 @@ def _migrate_insurance_personnel(conn: sqlite3.Connection) -> None:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_ins_idnum ON insurance_personnel(id_number)")
         conn.commit()
         logger.info("迁移完成")
+
+
+def _migrate_punch_manager_columns(conn: sqlite3.Connection) -> None:
+    """迁移 punch_records 表：增加项目经理 / 手机 / 邮箱三列（兼容旧库）"""
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(punch_records)")
+    columns = [row[1] for row in cursor.fetchall()]
+    for col in ("project_manager", "manager_phone", "manager_email"):
+        if col not in columns:
+            logger.info("punch_records 缺少列 %s，执行 ALTER ADD COLUMN", col)
+            cursor.execute(f"ALTER TABLE punch_records ADD COLUMN {col} TEXT")
+    conn.commit()
 
 
 # ==================== 打卡数据操作 ====================
@@ -250,6 +267,47 @@ def clear_punch_records(punch_date: str) -> int:
             cursor.execute("DELETE FROM punch_records WHERE punch_date = ?", (punch_date,))
             conn.commit()
             return cursor.rowcount
+        finally:
+            conn.close()
+
+
+def update_punch_manager_info(punch_date: str, manager_map: dict) -> int:
+    """按项目名称批量更新当天打卡记录的项目经理 / 手机 / 邮箱
+
+    Args:
+        punch_date: 打卡日期 YYYY-MM-DD
+        manager_map: {project_name: {"project_manager": ..., "manager_phone": ..., "manager_email": ...}}
+
+    Returns:
+        更新的记录条数
+    """
+    if not manager_map:
+        return 0
+    with _lock:
+        conn = get_connection()
+        try:
+            cursor = conn.cursor()
+            updated = 0
+            for project_name, info in manager_map.items():
+                if not project_name:
+                    continue
+                cursor.execute(
+                    """
+                    UPDATE punch_records
+                    SET project_manager = ?, manager_phone = ?, manager_email = ?
+                    WHERE punch_date = ? AND project_name = ?
+                    """,
+                    (
+                        info.get("project_manager", ""),
+                        info.get("manager_phone", ""),
+                        info.get("manager_email", ""),
+                        punch_date,
+                        project_name,
+                    ),
+                )
+                updated += cursor.rowcount
+            conn.commit()
+            return updated
         finally:
             conn.close()
 
