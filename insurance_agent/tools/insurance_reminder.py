@@ -130,13 +130,14 @@ def build_sms_messages(uninsured_list: list[dict], key_field: str = "project_nam
     """从无保险人员列表构建短信模板变量（按 key_field 聚合，每分组仅一条）
 
     按 key_field（默认 project_name）分组，每个分组（即每个项目）只生成
-    **一条**聚合短信：names = 该组前 max_names 个姓名（顿号分隔），count =
-    该组总人数。例如「黄希明、黄永琴、彭志忠等4人」。
+    **一条**聚合短信：names = 该组**第一人**的姓名（单姓名，符合阿里云
+    「个人姓名」变量规范），count = 该组总人数。模板渲染后为
+    「${project}项目上有${names}等${count}人打卡上班却无保险...」，即
+    「华南保利...项目上有黄希明等4人打卡上班却无保险...」。
 
-    注意：阿里云模板 SMS_511870133 的 `names` 变量当前为「个人姓名」类型，
-    会拒绝多人名（返回「不符合[个人姓名]的变量规范」）。需将变量类型改为
-    「文本/其他」后此聚合格式才会被接受。在变量类型未改前，调用方会自动
-    退回「每人一条」以保证短信仍可送达（见 daily_check_service 的回退逻辑）。
+    这样每个项目只发一条短信，且 names 为单一真实姓名，阿里云「个人姓名」
+    变量类型可直接接受，无需修改短信模板。max_names 仅作兼容保留（不再用于
+    截断多人名）。
     """
     if not uninsured_list:
         return []
@@ -149,16 +150,18 @@ def build_sms_messages(uninsured_list: list[dict], key_field: str = "project_nam
     messages = []
     for key, persons in by_key.items():
         total = len(persons)
-        names = "、".join(
-            (p.get("name") or "").strip()
-            for p in persons[:max_names]
-            if (p.get("name") or "").strip()
-        )
-        if not names:
+        # 仅取第一人姓名（单姓名，符合阿里云「个人姓名」变量规范）
+        first_name = ""
+        for p in persons:
+            n = (p.get("name") or "").strip()
+            if n:
+                first_name = n
+                break
+        if not first_name:
             continue
         messages.append({
             "project": key,
-            "names": names,
+            "names": first_name,
             "count": str(total),
         })
     return messages
@@ -168,9 +171,8 @@ def build_expiry_sms_messages(persons: list[dict], max_names: int = SMS_MAX_NAME
     """从即将到期人员列表构建短信模板变量（按所属公司聚合，每公司一条）
 
     与打卡无保险提醒共用 build_sms_messages：按 company 分组，每公司一条
-    聚合短信（names = 前 max_names 个姓名顿号分隔，count = 该公司总人数）。
-    阿里云模板 names 变量需为「文本」类型方能接受多人名，否则会被拒绝并
-    由调用方自动退回每人一条。
+    聚合短信（names = 第一人姓名，count = 该公司总人数）。单姓名符合阿里云
+    「个人姓名」变量规范，可直接发送，无需修改短信模板。
     """
     if not persons:
         return []
