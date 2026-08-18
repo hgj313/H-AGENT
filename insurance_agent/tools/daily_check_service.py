@@ -31,9 +31,6 @@ def build_coverage_email_html(persons: list[dict], punch_date: str, scope_label:
                 <td>{p.get('name', '')}</td>
                 <td>{p.get('id_number', '')}</td>
                 <td>{p.get('project_name', '')}</td>
-                <td>{p.get('project_manager', '')}</td>
-                <td>{p.get('manager_phone', '')}</td>
-                <td>{p.get('manager_email', '')}</td>
                 <td>{p.get('team_name', '')}</td>
                 <td>{p.get('supplier_name', '')}</td>
                 <td>{p.get('category_name', '')}</td>
@@ -45,7 +42,6 @@ def build_coverage_email_html(persons: list[dict], punch_date: str, scope_label:
     header = """
     <tr>
         <th>#</th><th>姓名</th><th>身份证号</th><th>项目</th>
-        <th>项目经理</th><th>手机号</th><th>邮箱</th>
         <th>班组</th><th>劳务公司</th><th>劳务分类</th>
     </tr>"""
 
@@ -151,14 +147,43 @@ def run_daily_check(session_manager=None, punch_date: str = None) -> dict:
     return result
 
 
+def _build_per_person_messages(persons: list[dict]) -> list[dict]:
+    """回退用：将一组人员拆成「每人一条」短信变量（单姓名，兼容阿里云姓名类型）"""
+    msgs = []
+    proj = (persons[0].get("project_name") if persons else "") or "未知项目"
+    total = str(len(persons))
+    for p in persons:
+        name = (p.get("name") or "").strip()
+        if not name:
+            continue
+        msgs.append({
+            "project": (p.get("project_name") or "").strip() or proj,
+            "names": name,
+            "count": total,
+        })
+    return msgs
+
+
+def _is_aliyun_var_spec_error(result: dict) -> bool:
+    """判断是否为阿里云「变量规范」类拒绝（names 变量类型不匹配多人名）"""
+    m = result.get("message", "")
+    return ("变量规范" in m) or ("变量" in m and "规范" in m)
+
+
 def _send_coverage_sms(uninsured: list[dict]) -> dict:
-    """发送覆盖检查提醒短信（双通道路由）
+    """发送覆盖检查提醒短信（双通道路由，按项目聚合成一条）
 
     路由规则（按用户要求）：
-    1) 每位项目经理手机：仅收到「自己项目上」打卡却无正常保险的人员短信。
-    2) 汇总：所有无正常保险人员汇总短信发送至「信息提醒配置」中的固定手机号。
-    无项目经理手机的人员由固定收件人汇总兜底。
+    1) 每位项目经理手机：仅收到「自己项目上」打卡却无正常保险的人员，且汇总为
+       **一条**短信（前若干姓名顿号分隔 + 总人数，如「黄希明、黄永琴、彭志忠等4人」）。
+    2) 汇总：所有无正常保险人员按项目聚合后，逐项目发送汇总短信至「信息提醒
+       配置」中的固定手机号。
+    无项目经理手机的项目由固定收件人汇总兜底。
     短信功能未启用或未配置凭证时跳过。
+
+    阿里云变量类型兼容：若短信服务商（阿里云）因 `names` 变量为「个人姓名」
+    类型而拒绝多人名，会自动回退为「每人一条」以保证短信仍可送达，并在结果中
+    标注 fallback，提示需将模板变量类型改为「文本/其他」。
     """
     from insurance_agent.tools.insurance_reminder import build_sms_messages
     from insurance_agent.tools.sms_sender import send_sms
@@ -172,38 +197,66 @@ def _send_coverage_sms(uninsured: list[dict]) -> dict:
     if isinstance(fixed_phones, str):
         fixed_phones = [p.strip() for p in fixed_phones.split(",") if p.strip()]
 
-    # 通道1：按 (项目经理, 经理手机) 分组 —— 每位经理只看自己项目
-    manager_map: dict = {}
+    # 按项目分组无保险人员
+    by_proj: dict[str, list[dict]] = {}
     for p in uninsured:
-        key = (
-            p.get("project_manager", "") or "",
-            p.get("manager_phone", "") or "",
-        )
-        manager_map.setdefault(key, []).append(p)
+        proj = (p.get("project_name") or "").strip() or "未知项目"
+        by_proj.setdefault(proj, []).append(p)
+
+    # 构建 项目 -> 项目经理(姓名/手机/邮箱) 映射（取首个含经理信息的记录，
+    # 即便部分打卡记录该项目经理字段为空，也能通过同项目其它记录补全）
+    proj_manager: dict[str, dict] = {}
+    for p in uninsured:
+        proj = (p.get("project_name") or "").strip() or "未知项目"
+        if proj not in proj_manager and (p.get("manager_phone") or p.get("manager_email")):
+            proj_manager[proj] = {
+                "name": p.get("project_manager", "") or "",
+                "phone": p.get("manager_phone", "") or "",
+                "email": p.get("manager_email", "") or "",
+            }
 
     results = []
-    # 通道1：项目经理（本人手机）
-    for (mgr_name, mgr_phone), persons in manager_map.items():
-        messages = build_sms_messages(persons)
+    fallback_hint = False
+
+    # 通道1：按项目 → 项目经理本人手机（每个项目一条聚合短信）
+    for proj, persons in by_proj.items():
+        mgr = proj_manager.get(proj)
+        if not mgr or not mgr["phone"]:
+            continue  # 无经理手机，交由固定收件人汇总兜底
+        messages = build_sms_messages(persons, "project_name")
         if not messages:
             continue
-        if not mgr_phone:
-            # 无经理手机，交由固定收件人汇总兜底，不单独发
-            continue
         cfg = dict(sms_config)
-        cfg["phone_numbers"] = [mgr_phone]
+        cfg["phone_numbers"] = [mgr["phone"]]
         r = send_sms(cfg, messages)
-        r["target"] = f"{mgr_name or '未知经理'}({mgr_phone})"
+        # 阿里云变量类型拒绝多人名 → 自动回退每人一条
+        if not r.get("success") and _is_aliyun_var_spec_error(r):
+            r2 = send_sms(cfg, _build_per_person_messages(persons))
+            r2["fallback"] = True
+            r2["target"] = r.get("target")
+            r2["type"] = r.get("type")
+            r = r2
+            fallback_hint = True
+        r["target"] = f"{mgr['name'] or '未知经理'}({mgr['phone']})"
         r["type"] = "manager"
         results.append(r)
 
-    # 通道2：汇总至固定手机号
+    # 通道2：汇总至固定手机号（每个项目一条聚合短信）
     if fixed_phones:
-        agg_messages = build_sms_messages(uninsured)
-        if agg_messages:
+        for proj, persons in by_proj.items():
+            messages = build_sms_messages(persons, "project_name")
+            if not messages:
+                continue
             cfg = dict(sms_config)
             cfg["phone_numbers"] = fixed_phones
-            r = send_sms(cfg, agg_messages)
+            r = send_sms(cfg, messages)
+            if not r.get("success") and _is_aliyun_var_spec_error(r):
+                r2 = send_sms(cfg, _build_per_person_messages(persons))
+                r2["fallback"] = True
+                r2["target"] = r.get("target")
+                r2["type"] = r.get("type")
+                r = r2
+                fallback_hint = True
             r["target"] = ",".join(fixed_phones)
             r["type"] = "aggregate"
             results.append(r)
@@ -213,11 +266,10 @@ def _send_coverage_sms(uninsured: list[dict]) -> dict:
         return {"success": True, "message": "无需发送短信（无项目经理手机且无固定收件人）"}
     if sent == 0:
         return {"success": False, "message": "；".join(r.get("message", "") for r in results), "details": results}
-    return {
-        "success": True,
-        "message": f"已向 {len([k for k in manager_map if k[1]])} 位项目经理发送短信，并向 {len(fixed_phones)} 个固定手机号发送汇总短信",
-        "details": results,
-    }
+    msg = f"已向 {len([m for m in proj_manager.values() if m['phone']])} 位项目经理逐项目发送聚合短信，并向 {len(fixed_phones)} 个固定手机号逐项目发送汇总短信"
+    if fallback_hint:
+        msg += "（注：阿里云 names 变量仍为「个人姓名」类型，已自动回退每人一条；请将模板变量类型改为「文本/其他」以启用聚合短信）"
+    return {"success": True, "message": msg, "details": results}
 
 
 def _send_coverage_email(check_result, punch_date, email_config, uninsured) -> dict:
