@@ -9,6 +9,7 @@
     "enabled": true,
     "sync_time": "08:00",          # 每日打卡检查时间
     "alert_enabled": true,         # 是否发送打卡提醒邮件
+    "punch_sync_enabled": true,    # 是否启用「今日打卡数据同步」（关闭后不再从ERP拉取打卡，仅用现有数据做对比提醒）
     "expiry_time": "09:00",        # 到期提醒检查时间
     "expiry_ahead_days": 3,        # 提前 N 天提醒
     "expiry_enabled": true,        # 是否启用到期提醒
@@ -33,6 +34,7 @@ DEFAULT_CONFIG = {
     "enabled": True,
     "sync_time": "08:00",
     "alert_enabled": True,
+    "punch_sync_enabled": True,
     "expiry_time": "09:00",
     "expiry_ahead_days": 3,
     "expiry_enabled": True,

@@ -383,6 +383,21 @@
 
         @keyframes spin { to { transform: rotate(360deg); } }
 
+        .mgr-input {
+            width: 100%;
+            box-sizing: border-box;
+            font-size: 12px;
+            border: 1px solid #cbd5e0;
+            border-radius: 3px;
+            padding: 2px 4px;
+            background: #fff;
+        }
+        .mgr-input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 2px rgba(102,126,234,0.2);
+        }
+
         .progress-text {
             display: inline-flex;
             align-items: center;
@@ -934,6 +949,13 @@
                         <div class="toggle-label" onclick="toggleSchedulerEnabled()">
                             <div class="toggle-switch on" id="toggleSchedulerEnabled"></div>
                             <span id="toggleSchedulerText">定时任务已启用</span>
+                        </div>
+                    </div>
+                    <div class="form-group" style="justify-content:flex-end;">
+                        <label>&nbsp;</label>
+                        <div class="toggle-label" onclick="togglePunchSyncEnabled()">
+                            <div class="toggle-switch on" id="togglePunchSync"></div>
+                            <span id="togglePunchSyncText">打卡同步已开启</span>
                         </div>
                     </div>
                 </div>
@@ -1636,6 +1658,7 @@
                 const data = await resp.json();
                 document.getElementById('schedSyncTime').value = data.sync_time || '08:00';
                 updateSchedulerToggle(data.enabled !== false);
+                updatePunchSyncToggle(data.punch_sync_enabled !== false);
             } catch (err) {
                 console.error('加载定时配置失败:', err);
             }
@@ -1654,17 +1677,36 @@
             document.getElementById('toggleSchedulerText').textContent = enabled ? '定时任务已启用' : '定时任务已禁用';
         }
 
+        function togglePunchSyncEnabled() {
+            const toggle = document.getElementById('togglePunchSync');
+            toggle.classList.toggle('on');
+            updatePunchSyncToggle(toggle.classList.contains('on'));
+        }
+
+        function updatePunchSyncToggle(enabled) {
+            const toggle = document.getElementById('togglePunchSync');
+            if (enabled) toggle.classList.add('on'); else toggle.classList.remove('on');
+            document.getElementById('togglePunchSyncText').textContent = enabled ? '打卡同步已开启' : '打卡同步已关闭';
+            const btn = document.getElementById('btnSyncPunch');
+            if (btn) {
+                btn.disabled = !enabled;
+                btn.title = enabled ? '' : '打卡同步功能已关闭（在定时任务配置中开启）';
+                btn.style.opacity = enabled ? '1' : '0.5';
+            }
+        }
+
         async function saveSchedulerConfig() {
             const apiBase = getApiBase();
             const status = document.getElementById('punchStatus');
             const enabled = document.getElementById('toggleSchedulerEnabled').classList.contains('on');
             const sync_time = document.getElementById('schedSyncTime').value || '08:00';
+            const punch_sync_enabled = document.getElementById('togglePunchSync').classList.contains('on');
 
             try {
                 const resp = await fetch(`${apiBase}/api/scheduler/config`, {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ enabled, sync_time, alert_enabled: enabled }),
+                    body: JSON.stringify({ enabled, sync_time, alert_enabled: enabled, punch_sync_enabled }),
                 });
                 const data = await resp.json();
                 if (resp.ok && data.success) {
@@ -1676,6 +1718,43 @@
                 status.innerHTML = `<span style="color:#e53e3e;">❌ 保存失败: ${err.message}</span>`;
             }
             setTimeout(() => { status.innerHTML = ''; }, 3000);
+        }
+
+        // 打卡表明细中「项目经理/手机号/邮箱」单元格内联编辑保存
+        function escAttr(s) {
+            return (s == null ? '' : String(s))
+                .replace(/&/g, '&amp;').replace(/"/g, '&quot;')
+                .replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        async function savePunchField(el) {
+            const id = el.getAttribute('data-id');
+            const field = el.getAttribute('data-field');
+            const value = el.value;
+            // 立即回写前端缓存，避免筛选/重渲染后被覆盖
+            const rec = punchRecordsCache.find(r => String(r.id) === String(id));
+            if (rec) rec[field] = value;
+
+            const apiBase = getApiBase();
+            el.style.background = '#fffbe6';
+            try {
+                const resp = await fetch(`${apiBase}/api/punch/record/${id}`, {
+                    method: 'PATCH',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ [field]: value }),
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    el.style.background = '#f0fff4';
+                } else {
+                    el.style.background = '#fff5f5';
+                    console.error('保存失败:', data);
+                }
+            } catch (err) {
+                el.style.background = '#fff5f5';
+                console.error('保存异常:', err);
+            }
+            setTimeout(() => { if (el) el.style.background = ''; }, 900);
         }
 
         let punchRecordsCache = [];  // 打卡数据缓存（用于搜索筛选）
@@ -1743,9 +1822,9 @@
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r.member_name || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r.identification_number || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r.project_name || ''}</td>
-                    <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r.project_manager || ''}</td>
-                    <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r.manager_phone || ''}</td>
-                    <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r.manager_email || ''}</td>
+                    <td style="padding:4px 6px;border:1px solid #e2e8f0;"><input class="mgr-input" data-id="${r.id}" data-field="project_manager" value="${escAttr(r.project_manager)}" onchange="savePunchField(this)" title="可编辑：项目经理"></td>
+                    <td style="padding:4px 6px;border:1px solid #e2e8f0;"><input class="mgr-input" data-id="${r.id}" data-field="manager_phone" value="${escAttr(r.manager_phone)}" onchange="savePunchField(this)" title="可编辑：手机号"></td>
+                    <td style="padding:4px 6px;border:1px solid #e2e8f0;"><input class="mgr-input" data-id="${r.id}" data-field="manager_email" value="${escAttr(r.manager_email)}" onchange="savePunchField(this)" title="可编辑：邮箱"></td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r.team_name || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r.supplier_name || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r.category_name || ''}</td>

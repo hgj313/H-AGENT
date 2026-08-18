@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "sync_time": "16:00",
+  "alert_enabled": true,
+  "punch_sync_enabled": false,
+  "expiry_time": "09:00",
+  "expiry_ahead_days": 3,
+  "expiry_enabled": true
+}

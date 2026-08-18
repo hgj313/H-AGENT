@@ -773,6 +773,15 @@ async def get_punch_records(punch_date: str = None):
 @app.post("/api/punch/sync")
 async def sync_punch():
     """手动同步今日打卡数据"""
+    # 打卡同步功能开关：关闭后禁止从 ERP 拉取打卡数据
+    sched_cfg = scheduler_mod.load_scheduler_config()
+    if not sched_cfg.get("punch_sync_enabled", True):
+        return JSONResponse({
+            "success": False,
+            "disabled": True,
+            "error": "打卡同步功能已关闭，请在「定时任务配置」中重新启用后再同步",
+        })
+
     punch_date = datetime.now().strftime("%Y-%m-%d")
     try:
         result = coverage_check.sync_punch_data(_session_manager, punch_date)
@@ -780,6 +789,28 @@ async def sync_punch():
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"同步失败: {e}")
+
+
+@app.patch("/api/punch/record/{record_id}")
+async def update_punch_record(record_id: int, body: dict):
+    """更新单条打卡记录的可编辑字段（项目经理/手机号/邮箱）
+
+    仅允许更新 project_manager / manager_phone / manager_email。
+    """
+    allowed = {"project_manager", "manager_phone", "manager_email"}
+    updates = {k: v for k, v in (body or {}).items() if k in allowed}
+    if not updates:
+        raise HTTPException(status_code=400, detail="无可更新的合法字段")
+    try:
+        ok = db.update_punch_record_fields(record_id, updates)
+        if not ok:
+            raise HTTPException(status_code=404, detail="记录不存在或更新失败")
+        return JSONResponse({"success": True, "record_id": record_id, "updated": updates})
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"更新失败: {e}")
 
 
 @app.post("/api/punch/check")
@@ -893,6 +924,7 @@ class SchedulerConfigSchema(BaseModel):
     enabled: Optional[bool] = None
     sync_time: Optional[str] = None
     alert_enabled: Optional[bool] = None
+    punch_sync_enabled: Optional[bool] = None
     expiry_time: Optional[str] = None
     expiry_ahead_days: Optional[int] = None
     expiry_enabled: Optional[bool] = None

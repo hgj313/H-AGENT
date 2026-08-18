@@ -271,6 +271,36 @@ def clear_punch_records(punch_date: str) -> int:
             conn.close()
 
 
+def update_punch_record_fields(record_id: int, fields: dict) -> bool:
+    """更新单条打卡记录的可编辑字段（项目经理 / 手机 / 邮箱）
+
+    Args:
+        record_id: 打卡记录主键 id
+        fields: 需更新的字段字典，仅允许 project_manager / manager_phone / manager_email
+
+    Returns:
+        是否成功更新（记录存在且有更新）
+    """
+    allowed = {"project_manager", "manager_phone", "manager_email"}
+    updates = {k: v for k, v in (fields or {}).items() if k in allowed}
+    if not updates:
+        return False
+    set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
+    params = list(updates.values()) + [record_id]
+    with _lock:
+        conn = get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                f"UPDATE punch_records SET {set_clause} WHERE id = ?",
+                params,
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        finally:
+            conn.close()
+
+
 def update_punch_manager_info(punch_date: str, manager_map: dict) -> int:
     """按项目名称批量更新当天打卡记录的项目经理 / 手机 / 邮箱
 

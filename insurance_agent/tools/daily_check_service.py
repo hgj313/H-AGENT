@@ -103,8 +103,15 @@ def run_daily_check(session_manager=None, punch_date: str = None) -> dict:
         "sms": None,
     }
 
-    # 1. 同步打卡数据
-    if session_manager is not None:
+    # 1. 同步打卡数据（受「打卡同步功能」开关控制）
+    sync_enabled = True
+    try:
+        from insurance_agent.infrastructure.scheduler import load_scheduler_config
+        sync_enabled = load_scheduler_config().get("punch_sync_enabled", True)
+    except Exception:
+        pass
+
+    if session_manager is not None and sync_enabled:
         sync_result = coverage_check.sync_punch_data(session_manager, punch_date)
         result["sync"] = sync_result
         if not sync_result.get("success"):
@@ -112,7 +119,10 @@ def run_daily_check(session_manager=None, punch_date: str = None) -> dict:
             result["error"] = f"同步打卡数据失败: {sync_result.get('error')}"
             return result
     else:
-        result["sync"] = {"success": True, "note": "未提供 session_manager，跳过同步，仅检查现有数据"}
+        result["sync"] = {
+            "success": True,
+            "note": "打卡同步功能已关闭（或未提供 session_manager），跳过同步，仅检查现有数据",
+        }
 
     # 2. 检查保险覆盖
     coverage = coverage_check.check_insurance_coverage(punch_date)
