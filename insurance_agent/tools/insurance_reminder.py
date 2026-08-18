@@ -24,6 +24,8 @@ from typing import Optional
 
 import openpyxl
 
+from insurance_agent.tools.sms_sender import send_sms
+
 # ============ 提醒文案默认模板（均可在前端「信息提醒配置」覆盖，后台不写死）============
 # 变量占位符：${project}/${names}/${count}（短信）、${target_date}/${total}/${days_text}（邮件）
 SMS_TEMPLATE = "${project}项目上有${names}等${count}人打卡上班却无保险，请及时购买。详情请查看邮箱。"
@@ -158,6 +160,35 @@ def build_sms_messages(uninsured_list: list[dict], max_names: int = SMS_MAX_NAME
             "project": project,
             "names": names,
             "count": str(len(persons)),
+        })
+    return messages
+
+
+def build_expiry_sms_messages(persons: list[dict], max_names: int = SMS_MAX_NAMES) -> list[dict]:
+    """从即将到期人员列表构建短信模板变量（按所属公司分组）
+
+    与打卡无保险提醒共用同一套短信服务商模板变量（project/names/count），
+    因短信模板需服务商后台审核，变量名须保持一致，故复用 build_sms_messages 的结构。
+    """
+    if not persons:
+        return []
+
+    by_company: dict[str, list[dict]] = {}
+    for p in persons:
+        company = (p.get("company") or "").strip() or "未知公司"
+        by_company.setdefault(company, []).append(p)
+
+    messages = []
+    for company, group in by_company.items():
+        names = "、".join(
+            (p.get("name") or "").strip()
+            for p in group[:max_names]
+            if (p.get("name") or "").strip()
+        )
+        messages.append({
+            "project": company,
+            "names": names,
+            "count": str(len(group)),
         })
     return messages
 
@@ -664,6 +695,17 @@ def run_expiry_check(ahead_days: Optional[int] = None, config: Optional[dict] = 
     result["success"] = email_result.get("success", False)
     result["message"] = email_result.get("message", "")
 
+    # 短信提醒：与打卡无保险提醒共用同一套短信配置（由 sms.enabled 控制开关）
+    sms_config = config.get("sms", {})
+    sms_result = {"success": False, "message": "短信通知未启用"}
+    if sms_config.get("enabled", False):
+        sms_messages = build_expiry_sms_messages(expiring)
+        if sms_messages:
+            sms_result = send_sms(sms_config, sms_messages)
+        else:
+            sms_result = {"success": True, "message": "无短信内容可发送"}
+    result["sms"] = sms_result
+
     # 保存执行记录
     config["last_expiry_check"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     config["last_expiry_result"] = {
@@ -671,6 +713,8 @@ def run_expiry_check(ahead_days: Optional[int] = None, config: Optional[dict] = 
         "target_date": deadline,
         "expiring_count": len(expiring),
         "email_sent": email_result.get("success", False),
+        "sms_sent": sms_result.get("success", False),
+        "sms_message": sms_result.get("message", ""),
     }
     save_config(config)
 
