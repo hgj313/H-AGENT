@@ -129,21 +129,26 @@ ALL_FIELDS = [
 def build_sms_messages(uninsured_list: list[dict], max_names: int = SMS_MAX_NAMES) -> list[dict]:
     """从无保险人员列表构建短信模板变量
 
-    按项目分组，每个项目生成一条短信的模板变量。
+    按项目分组，每个项目下的每一位无保险人员生成一条短信的模板变量。
+
+    阿里云已审核模板的 `names` 变量类型为「个人姓名」，只能填单个姓名，
+    故改为「每人一条短信」，每条仅含该人员姓名（单姓名合规），count 为
+    该项目无保险总人数（与模板「${names}等${count}人」语义一致）。
+    这样既能把每位人员姓名都送达项目经理，又不会触发阿里云变量校验失败。
 
     Args:
         uninsured_list: check_insurance_coverage 返回的 uninsured_list
                         （每项含 name / project_name 等字段）
-        max_names: 每条短信最多展示的姓名数
+        max_names: 预留参数（兼容旧调用），当前不再用于截断
 
     Returns:
-        [{"project": ..., "names": ..., "count": ...}, ...]
+        [{"project": ..., "names": ..., "count": ...}, ...]  # 每人一条
         空列表表示无需发送短信
     """
     if not uninsured_list:
         return []
 
-    # 按项目分组
+    # 按项目分组，统计每组总人数
     by_project: dict[str, list[dict]] = {}
     for p in uninsured_list:
         project = (p.get("project_name") or "").strip() or "未知项目"
@@ -151,24 +156,25 @@ def build_sms_messages(uninsured_list: list[dict], max_names: int = SMS_MAX_NAME
 
     messages = []
     for project, persons in by_project.items():
-        names = "、".join(
-            (p.get("name") or "").strip()
-            for p in persons[:max_names]
-            if (p.get("name") or "").strip()
-        )
-        messages.append({
-            "project": project,
-            "names": names,
-            "count": str(len(persons)),
-        })
+        total = str(len(persons))
+        for p in persons:
+            name = (p.get("name") or "").strip()
+            if not name:
+                continue
+            messages.append({
+                "project": project,
+                "names": name,
+                "count": total,
+            })
     return messages
 
 
 def build_expiry_sms_messages(persons: list[dict], max_names: int = SMS_MAX_NAMES) -> list[dict]:
     """从即将到期人员列表构建短信模板变量（按所属公司分组）
 
-    与打卡无保险提醒共用同一套短信服务商模板变量（project/names/count），
-    因短信模板需服务商后台审核，变量名须保持一致，故复用 build_sms_messages 的结构。
+    与打卡无保险提醒共用同一套短信服务商模板变量（project/names/count）。
+    阿里云模板的 `names` 变量为「个人姓名」类型，只能填单个姓名，故改为
+    「每人一条短信」，每条仅含该人员姓名，count 为该公司即将到期总人数。
     """
     if not persons:
         return []
@@ -180,16 +186,16 @@ def build_expiry_sms_messages(persons: list[dict], max_names: int = SMS_MAX_NAME
 
     messages = []
     for company, group in by_company.items():
-        names = "、".join(
-            (p.get("name") or "").strip()
-            for p in group[:max_names]
-            if (p.get("name") or "").strip()
-        )
-        messages.append({
-            "project": company,
-            "names": names,
-            "count": str(len(group)),
-        })
+        total = str(len(group))
+        for p in group:
+            name = (p.get("name") or "").strip()
+            if not name:
+                continue
+            messages.append({
+                "project": company,
+                "names": name,
+                "count": total,
+            })
     return messages
 
 
