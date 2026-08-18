@@ -541,6 +541,7 @@ class SmsConfigSchema(BaseModel):
     sdk_app_id: str = ""
     sign_name: str = ""
     template_code: str = ""
+    region: str = ""
     phone_numbers: list[str] = []
 
 
@@ -590,6 +591,8 @@ async def update_reminder_config(body: ReminderConfigSchema):
         sms["sign_name"] = body.sms.sign_name
     if body.sms.template_code:
         sms["template_code"] = body.sms.template_code
+    if body.sms.region:
+        sms["region"] = body.sms.region
     if body.sms.phone_numbers:
         sms["phone_numbers"] = body.sms.phone_numbers
 

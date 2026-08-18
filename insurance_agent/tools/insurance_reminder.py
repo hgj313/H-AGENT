@@ -41,7 +41,8 @@ DEFAULT_CONFIG = {
         "access_key_secret": "",        # 阿里云 AccessKey Secret / 腾讯云 SecretKey
         "sdk_app_id": "",               # 腾讯云专用 SDKAppID
         "sign_name": "",                # 短信签名（需服务商审核）
-        "template_code": "",            # 短信模板 Code（需服务商审核）
+        "template_code": "",            # 短信模板 Code / TemplateId（需服务商审核）
+        "region": "",                   # 区域（可选，缺省 aliyun=cn-hangzhou / tencent=ap-guangzhou）
         "phone_numbers": [],            # 接收手机号列表
     },
     "check_days": [1, 3, 7],  # 提前1/3/7天检查
