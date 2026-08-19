@@ -136,7 +136,7 @@ class ERPClient:
         except Exception as e:
             return {"success": False, "error": f"请求异常: {e}"}
 
-    def fetch_all_punch_data(self, punch_date: str, page_size: int = 100) -> dict:
+    def fetch_all_punch_data(self, punch_date: str, page_size: int = 500) -> dict:
         """分页拉取全部打卡数据
 
         Returns:
@@ -217,7 +217,7 @@ class ERPClient:
         return {"success": True, "records": all_records, "total": len(all_records)}
 
     def fetch_project_orders(
-        self, business_type: str = "LANDSCAPE_ENGINEERING", page_size: int = 20
+        self, business_type: str = "LANDSCAPE_ENGINEERING", page_size: int = 500
     ) -> dict:
         """拉取项目台账（含项目名称与对应项目经理姓名）
 
@@ -234,7 +234,7 @@ class ERPClient:
         company_id: int = 2,
         department_id: int = 23,
         query_status: str = "all",
-        page_size: int = 20,
+        page_size: int = 1000,
     ) -> dict:
         """拉取人员信息（含姓名 / 手机 / 邮箱）
 
