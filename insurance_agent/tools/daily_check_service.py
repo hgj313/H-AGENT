@@ -77,7 +77,7 @@ def build_coverage_email_html(persons: list[dict], punch_date: str, scope_label:
     """
 
 
-def run_daily_check(session_manager=None, punch_date: str = None, force: bool = False, projects_limit: int = None) -> dict:
+def run_daily_check(session_manager=None, punch_date: str = None, force: bool = False, projects_limit: int = None, project_filter: str = None) -> dict:
     """执行每日打卡+保险覆盖检查（同步 → 对比 → 提醒）
 
     Args:
@@ -86,6 +86,8 @@ def run_daily_check(session_manager=None, punch_date: str = None, force: bool = 
         force: 强制重发，绕过"今日已发送过则跳过"的去重保护
         projects_limit: 测试用：只处理前 N 个项目的人员（None 或 0 = 不限制）。
                        短信和邮件都只涉及这 N 个项目，不会给每个项目都发一遍。
+        project_filter: 测试用：精确匹配项目名（含子串匹配），只处理该项目的人员。
+                       与 projects_limit 互斥，同时指定时 project_filter 优先。
 
     Returns:
         完整执行结果
@@ -149,10 +151,23 @@ def run_daily_check(session_manager=None, punch_date: str = None, force: bool = 
     coverage = coverage_check.check_insurance_coverage(punch_date)
     result["coverage"] = coverage
 
-    # 2.5 测试模式：限制只处理前 N 个项目的人员
+    # 2.5 测试模式：限制只处理指定项目的人员
     full_uninsured = coverage.get("uninsured_list", []) or []
     uninsured = full_uninsured
-    if projects_limit and projects_limit > 0:
+    if project_filter:
+        # 精确匹配项目名（先尝试精确匹配，否则尝试子串匹配）
+        filter_str = project_filter.strip()
+        matched = [p for p in full_uninsured if (p.get("project_name") or "").strip() == filter_str]
+        if not matched:
+            matched = [p for p in full_uninsured if filter_str in (p.get("project_name") or "")]
+        result["project_filter"] = filter_str
+        result["limited_projects"] = sorted({(p.get("project_name") or "").strip() for p in matched if p.get("project_name")})
+        uninsured = matched
+        logger.info(
+            "run_daily_check: 测试模式 project_filter=%r，实际处理项目=%s（%s 人）",
+            filter_str, result["limited_projects"], len(uninsured),
+        )
+    elif projects_limit and projects_limit > 0:
         # 按 project_name 去重取前 N 个项目
         seen_projects: list[str] = []
         limited: list[dict] = []
@@ -172,10 +187,13 @@ def run_daily_check(session_manager=None, punch_date: str = None, force: bool = 
         )
 
     # 3. 触发邮件提醒
+    # 测试模式（project_filter 或 projects_limit>0）下不发送汇总邮件，
+    # 仅发送给该项目的经理，避免测试时打扰固定收件人（用户本人邮箱）。
+    is_test_mode = bool(project_filter) or (projects_limit and projects_limit > 0)
     if uninsured:
         email_config = load_config().get("email", {})
         if email_config.get("enabled", True):
-            email_result = _send_coverage_email(coverage, punch_date, email_config, uninsured)
+            email_result = _send_coverage_email(coverage, punch_date, email_config, uninsured, send_aggregate=not is_test_mode)
             result["email"] = email_result
         else:
             result["email"] = {"success": False, "message": "邮件通知已禁用"}
@@ -184,7 +202,12 @@ def run_daily_check(session_manager=None, punch_date: str = None, force: bool = 
 
     # 4. 触发短信提醒
     if uninsured:
-        result["sms"] = _send_coverage_sms(uninsured)
+        if force:
+            logger.warning(
+                "run_daily_check: force=true 跳过「今日已发送」全流程保护，但仍受 "
+                "_send_coverage_sms 内部 per-phone dedup 约束（同一手机号一天内仅一条）"
+            )
+        result["sms"] = _send_coverage_sms(uninsured, punch_date=punch_date)
     else:
         result["sms"] = {"success": True, "message": "无异常人员，无需短信提醒"}
 
@@ -202,6 +225,7 @@ def run_daily_check(session_manager=None, punch_date: str = None, force: bool = 
             "sms_success": (result.get("sms") or {}).get("success"),
             "force": bool(force),
             "projects_limit": projects_limit,
+            "project_filter": project_filter,
         }
         save_config(cfg)
     except Exception as e:
@@ -210,7 +234,7 @@ def run_daily_check(session_manager=None, punch_date: str = None, force: bool = 
     return result
 
 
-def _send_coverage_sms(uninsured: list[dict]) -> dict:
+def _send_coverage_sms(uninsured: list[dict], punch_date: str = None) -> dict:
     """发送覆盖检查提醒短信（按项目 → 项目经理手机，每个项目一条）
 
     路由规则（按用户最新要求）：
@@ -219,67 +243,114 @@ def _send_coverage_sms(uninsured: list[dict]) -> dict:
        「${project}项目上有黄希明等4人打卡上班未参保，请及时购买。详情请查看邮箱。」）。
     2) **不向固定手机号发送汇总短信**：汇总通知仅通过邮件（_send_coverage_email）
        路由至信息提醒配置的固定收件人邮箱。
+
+    **重复发送保护（强制）**：
+    - per-phone dedup：每个手机号在同一个 punch_date 下最多收到一条 SMS。
+    - 即使 force=True 也不绕过此保护（force 只绕过"今日已发送"的全流程跳过）。
+    - 状态写入 .reminder_config.json 的 daily_sms_sent_today 字段。
+    - 仅在切换 punch_date（跨天）或换手机号（不同经理）时才会再次发送。
+    - 这是防止生产+测试双重触发的最后一道防线，杜绝「7条重复」类事故。
+
     短信功能未启用或未配置凭证时跳过；无项目经理手机时跳过（汇总通过邮件兜底）。
     """
     from insurance_agent.tools.insurance_reminder import build_sms_messages
     from insurance_agent.tools.sms_sender import send_sms
+
+    if punch_date is None:
+        punch_date = datetime.now().strftime("%Y-%m-%d")
 
     config = load_config()
     sms_config = config.get("sms", {})
     if not sms_config.get("enabled", False):
         return {"success": False, "message": "短信通知已禁用"}
 
-    # 按项目分组无保险人员
-    by_proj: dict[str, list[dict]] = {}
-    for p in uninsured:
-        proj = (p.get("project_name") or "").strip() or "未知项目"
-        by_proj.setdefault(proj, []).append(p)
+    # 加载今日已发送过 SMS 的手机号集合（per-phone dedup）
+    sent_state = config.get("daily_sms_sent_today") or {}
+    already_sent: set[str] = (
+        set(sent_state.get("phones", []))
+        if sent_state.get("punch_date") == punch_date
+        else set()
+    )
 
-    # 构建 项目 -> 项目经理(姓名/手机/邮箱) 映射（取首个含经理信息的记录，
-    # 即便部分打卡记录该项目经理字段为空，也能通过同项目其它记录补全）
+    # 一次性构建所有项目的短信模板变量（build_sms_messages 内部已按项目分组，每项目 1 条）
+    messages_by_project: dict[str, dict] = {
+        m["project"]: m for m in build_sms_messages(uninsured, "project_name")
+    }
+    if not messages_by_project:
+        return {"success": True, "message": "无需发送短信（无可构建的模板变量）"}
+
+    # 构建 项目 -> 项目经理 映射（首个含手机号的记录即可补全该项目的经理信息）
     proj_manager: dict[str, dict] = {}
     for p in uninsured:
         proj = (p.get("project_name") or "").strip() or "未知项目"
-        if proj not in proj_manager and (p.get("manager_phone") or p.get("manager_email")):
+        if proj not in proj_manager and p.get("manager_phone"):
             proj_manager[proj] = {
                 "name": p.get("project_manager", "") or "",
                 "phone": p.get("manager_phone", "") or "",
                 "email": p.get("manager_email", "") or "",
             }
 
-    results = []
+    results: list[dict] = []
+    newly_sent: list[str] = []
 
-    # 仅按项目 → 项目经理本人手机发送聚合短信（每个项目一条）
-    for proj, persons in by_proj.items():
+    for proj, msg_vars in messages_by_project.items():
         mgr = proj_manager.get(proj)
         if not mgr or not mgr["phone"]:
-            continue  # 无经理手机的人员由邮件（汇总通道）兜底
-        messages = build_sms_messages(persons, "project_name")
-        if not messages:
+            # 无经理手机的人员由邮件（汇总通道）兜底
+            continue
+        phone = mgr["phone"]
+        # per-phone dedup：同一天同一手机号已发送过则跳过（不论 force）
+        if phone in already_sent:
+            results.append({
+                "target": f"{mgr['name'] or '未知经理'}({phone})",
+                "type": "manager",
+                "skipped": True,
+                "message": f"{punch_date} 该手机号已发送过提醒，跳过（per-phone dedup）",
+            })
             continue
         cfg = dict(sms_config)
-        cfg["phone_numbers"] = [mgr["phone"]]
-        r = send_sms(cfg, messages)
-        r["target"] = f"{mgr['name'] or '未知经理'}({mgr['phone']})"
+        cfg["phone_numbers"] = [phone]
+        r = send_sms(cfg, [msg_vars])
+        r["target"] = f"{mgr['name'] or '未知经理'}({phone})"
         r["type"] = "manager"
         results.append(r)
+        if r.get("success"):
+            newly_sent.append(phone)
+
+    # 持久化本次发送的手机号集合，用于下次 per-phone dedup
+    if newly_sent:
+        merged = list(already_sent | set(newly_sent))
+        config["daily_sms_sent_today"] = {
+            "punch_date": punch_date,
+            "phones": merged,
+            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        try:
+            save_config(config)
+        except Exception as e:
+            logger.warning("保存 daily_sms_sent_today 失败（不影响本次发送）: %s", e)
 
     sent = sum(1 for r in results if r.get("success"))
+    skipped = sum(1 for r in results if r.get("skipped"))
     if not results:
         return {"success": True, "message": "无需发送短信（无项目经理手机可发送）"}
-    if sent == 0:
+    if sent == 0 and skipped == 0:
         return {"success": False, "message": "；".join(r.get("message", "") for r in results), "details": results}
-    msg = f"已向 {len(results)} 个项目的项目经理发送聚合短信"
+    msg = f"短信：成功 {sent} 条" + (f"，跳过 {skipped} 条（已发过）" if skipped else "")
     return {"success": True, "message": msg, "details": results}
 
 
-def _send_coverage_email(check_result, punch_date, email_config, uninsured) -> dict:
+def _send_coverage_email(check_result, punch_date, email_config, uninsured, send_aggregate: bool = True) -> dict:
     """发送覆盖检查提醒邮件（双通道路由）
 
     路由规则（按用户要求）：
     1) 每位项目经理：仅收到「自己项目上」打卡却无正常保险的人员邮件（按 manager_email 分组）。
     2) 汇总：所有无正常保险人员汇总发送至「信息提醒配置」中的固定收件邮箱。
     两个通道独立发送，任一失败不影响另一通道。
+
+    Args:
+        send_aggregate: 是否发送汇总邮件。测试模式（projects_limit / project_filter）下
+                        应设为 False，避免打扰固定收件人。
     """
     import smtplib
     from email.mime.multipart import MIMEMultipart
@@ -323,8 +394,8 @@ def _send_coverage_email(check_result, punch_date, email_config, uninsured) -> d
             except Exception as e:
                 results.append({"target": em, "type": "manager", "success": False, "message": f"失败:{e}"})
 
-        # 通道2：汇总至固定收件人
-        if fixed_recipients:
+        # 通道2：汇总至固定收件人（测试模式下跳过，避免打扰固定收件人）
+        if send_aggregate and fixed_recipients:
             subject = f"⚠️ 保险购买提醒（汇总）— {punch_date} 打卡 {len(uninsured)} 人无正常保单"
             try:
                 msg = MIMEMultipart("alternative")
