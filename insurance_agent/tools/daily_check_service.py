@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 
 from insurance_agent.tools import coverage_check
-from insurance_agent.tools.insurance_reminder import load_config, send_reminder_email
+from insurance_agent.tools.insurance_reminder import load_config, save_config, send_reminder_email
 
 logger = logging.getLogger(__name__)
 
@@ -77,18 +77,41 @@ def build_coverage_email_html(persons: list[dict], punch_date: str, scope_label:
     """
 
 
-def run_daily_check(session_manager=None, punch_date: str = None) -> dict:
+def run_daily_check(session_manager=None, punch_date: str = None, force: bool = False) -> dict:
     """执行每日打卡+保险覆盖检查（同步 → 对比 → 提醒）
 
     Args:
         session_manager: SessionManager 实例（用于同步打卡数据）
         punch_date: 打卡日期（默认今天）
+        force: 强制重发，绕过"今日已发送过则跳过"的去重保护
 
     Returns:
         完整执行结果
     """
     if punch_date is None:
         punch_date = datetime.now().strftime("%Y-%m-%d")
+
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # 今日发送去重：避免同一天内多次手动/自动触发造成重复发送给经理
+    # 调度器自身已按"日期"去重（scheduler._last_run_dates），这里再加一层
+    # 防护覆盖手动重复点击、debug 多次调用等场景。force=True 可绕过。
+    if not force and punch_date == today:
+        try:
+            cfg = load_config()
+            last_send_date = (cfg.get("last_daily_check") or {}).get("punch_date")
+            if last_send_date == today:
+                result = {
+                    "punch_date": punch_date,
+                    "check_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "skipped": True,
+                    "skip_reason": f"今日（{today}）已发送过保险覆盖检查提醒，跳过重复发送以避免打扰经理",
+                    "last_check": cfg.get("last_daily_check"),
+                }
+                logger.info("run_daily_check: 今日已发送过，跳过（force=%s）", force)
+                return result
+        except Exception as e:
+            logger.warning("读取 last_daily_check 去重状态失败: %s", e)
 
     result = {
         "punch_date": punch_date,
@@ -144,6 +167,23 @@ def run_daily_check(session_manager=None, punch_date: str = None) -> dict:
         result["sms"] = {"success": True, "message": "无异常人员，无需短信提醒"}
 
     result["success"] = True
+
+    # 记录本次执行（用于"今日已发送过则跳过"的去重保护）
+    try:
+        cfg = load_config()
+        cfg["last_daily_check"] = {
+            "punch_date": punch_date,
+            "check_time": result["check_time"],
+            "total_punch": (result.get("coverage") or {}).get("total_punch"),
+            "uninsured": (result.get("coverage") or {}).get("uninsured"),
+            "email_success": (result.get("email") or {}).get("success"),
+            "sms_success": (result.get("sms") or {}).get("success"),
+            "force": bool(force),
+        }
+        save_config(cfg)
+    except Exception as e:
+        logger.warning("保存 last_daily_check 失败: %s", e)
+
     return result
 
 
