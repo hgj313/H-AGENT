@@ -904,15 +904,16 @@ async def export_uninsured():
 
 
 @app.post("/api/daily-check")
-async def daily_check(skip_sync: bool = False, force: bool = False):
+async def daily_check(skip_sync: bool = False, force: bool = False, projects_limit: int = None):
     """手动执行每日检查（同步打卡 → 覆盖对比 → 邮件提醒）
 
     skip_sync=true 时不重新同步打卡数据，直接使用数据库现有记录（便于用测试联系人触发验证）。
     force=true 时跳过「今日已发送过则跳过」的保护，强制重发（用于测试）。
+    projects_limit=N 时只处理前 N 个项目（短信和邮件都只涉及这些项目），用于测试单条短信/单封邮件的发送。
     """
     try:
         sm = None if skip_sync else _session_manager
-        result = run_daily_check(session_manager=sm, force=force)
+        result = run_daily_check(session_manager=sm, force=force, projects_limit=projects_limit)
         return JSONResponse(result)
     except Exception as e:
         traceback.print_exc()

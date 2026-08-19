@@ -77,13 +77,15 @@ def build_coverage_email_html(persons: list[dict], punch_date: str, scope_label:
     """
 
 
-def run_daily_check(session_manager=None, punch_date: str = None, force: bool = False) -> dict:
+def run_daily_check(session_manager=None, punch_date: str = None, force: bool = False, projects_limit: int = None) -> dict:
     """执行每日打卡+保险覆盖检查（同步 → 对比 → 提醒）
 
     Args:
         session_manager: SessionManager 实例（用于同步打卡数据）
         punch_date: 打卡日期（默认今天）
         force: 强制重发，绕过"今日已发送过则跳过"的去重保护
+        projects_limit: 测试用：只处理前 N 个项目的人员（None 或 0 = 不限制）。
+                       短信和邮件都只涉及这 N 个项目，不会给每个项目都发一遍。
 
     Returns:
         完整执行结果
@@ -147,9 +149,29 @@ def run_daily_check(session_manager=None, punch_date: str = None, force: bool = 
     coverage = coverage_check.check_insurance_coverage(punch_date)
     result["coverage"] = coverage
 
-    # 3. 触发邮件提醒
-    uninsured = coverage.get("uninsured_list", [])
+    # 2.5 测试模式：限制只处理前 N 个项目的人员
+    full_uninsured = coverage.get("uninsured_list", []) or []
+    uninsured = full_uninsured
+    if projects_limit and projects_limit > 0:
+        # 按 project_name 去重取前 N 个项目
+        seen_projects: list[str] = []
+        limited: list[dict] = []
+        for p in full_uninsured:
+            proj = (p.get("project_name") or "").strip() or "未知项目"
+            if proj not in seen_projects:
+                if len(seen_projects) >= projects_limit:
+                    continue
+                seen_projects.append(proj)
+            limited.append(p)
+        result["projects_limit"] = projects_limit
+        result["limited_projects"] = seen_projects
+        uninsured = limited
+        logger.info(
+            "run_daily_check: 测试模式 projects_limit=%s，实际处理项目=%s（%s 人/%s 总项目）",
+            projects_limit, seen_projects, len(uninsured), len({(p.get('project_name') or '').strip() for p in full_uninsured}),
+        )
 
+    # 3. 触发邮件提醒
     if uninsured:
         email_config = load_config().get("email", {})
         if email_config.get("enabled", True):
@@ -179,6 +201,7 @@ def run_daily_check(session_manager=None, punch_date: str = None, force: bool = 
             "email_success": (result.get("email") or {}).get("success"),
             "sms_success": (result.get("sms") or {}).get("success"),
             "force": bool(force),
+            "projects_limit": projects_limit,
         }
         save_config(cfg)
     except Exception as e:

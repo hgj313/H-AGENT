@@ -931,8 +931,8 @@
                     <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:#718096;margin-left:6px;">
                         <input type="checkbox" id="chkSkipSync"> 使用现有数据（不重新同步）
                     </label>
-                    <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:#e53e3e;margin-left:6px;" title="勾选后将忽略今日已发送过的去重保护，强制重发短信和邮件">
-                        <input type="checkbox" id="chkForceDaily"> 强制重发（忽略今日去重）
+                    <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:#e53e3e;margin-left:6px;" title="0=全部（生产）；≥1=测试模式，仅发送前 N 个项目的数据，自动忽略今日去重（force=true）">
+                        测试项目数 <input type="number" id="numProjectsLimit" min="0" max="99" value="0" style="width:60px;padding:2px 6px;border:1px solid #feb2b2;border-radius:4px;color:#e53e3e;font-weight:bold;" placeholder="0">
                     </label>
                 </div>
                 <div id="punchStatus" style="margin-top:12px;text-align:center;font-size:14px;"></div>
@@ -1952,10 +1952,13 @@
 
             try {
                 const skipSync = document.getElementById('chkSkipSync')?.checked;
-                const force = document.getElementById('chkForceDaily')?.checked;
+                const projLimit = parseInt(document.getElementById('numProjectsLimit')?.value || '0', 10);
                 const params = [];
                 if (skipSync) params.push('skip_sync=true');
-                if (force) params.push('force=true');
+                if (projLimit > 0) {
+                    params.push('projects_limit=' + projLimit);
+                    params.push('force=true');  // 测试模式隐含 force
+                }
                 const qs = params.length ? `?${params.join('&')}` : '';
                 const resp = await fetch(`${apiBase}/api/daily-check${qs}`, { method: 'POST' });
                 const data = await resp.json();
@@ -1963,11 +1966,15 @@
                     const cov = data.coverage || {};
                     updateCoverageStats(cov);
                     renderAbnormal(cov);
+                    let extra = '';
+                    if (data.limited_projects) {
+                        extra = `（测试模式：仅发送项目 ${data.limited_projects.join(' / ')}）`;
+                    }
                     const emailMsg = data.email ? data.email.message : '';
-                    status.innerHTML = `<span style="color:#48bb78;">✅ 每日检查完成。${emailMsg}</span>`;
+                    status.innerHTML = `<span style="color:#48bb78;">✅ 每日检查完成。${emailMsg}${extra}</span>`;
                     loadPunchRecords();
                 } else if (data.skipped) {
-                    status.innerHTML = `<span style="color:#ed8936;">⚠️ ${data.skip_reason || '今日已发送过，已跳过'}。如需重新发送请勾选「强制重发」。</span>`;
+                    status.innerHTML = `<span style="color:#ed8936;">⚠️ ${data.skip_reason || '今日已发送过，已跳过'}。如需重新发送请在「测试项目数」填写 ≥1。</span>`;
                 } else {
                     status.innerHTML = `<span style="color:#e53e3e;">❌ 执行失败: ${data.error || data.detail || '未知错误'}</span>`;
                 }
