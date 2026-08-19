@@ -1629,13 +1629,8 @@
                 const resp = await fetch(`${apiBase}/api/reminder/check-expiry`, { method: 'POST' });
                 const data = await resp.json();
                 if (data.success) {
-                    let smsText = '';
-                    if (data.sms && data.sms.success) {
-                        smsText = `；短信已发送 ${data.sms.sent_count || ''} 条`;
-                    } else if (data.sms) {
-                        smsText = `；短信未发送（${data.sms.message || '未启用'}）`;
-                    }
-                    status.innerHTML = `<span style="color:#48bb78;">✅ ${data.message}${smsText}</span>`;
+                    // 到期提醒按要求仅发邮件，短信状态不再展示
+                    status.innerHTML = `<span style="color:#48bb78;">✅ ${data.message}</span>`;
                 } else if (data.expiring_count === 0) {
                     status.innerHTML = `<span style="color:#48bb78;">✅ ${data.message}</span>`;
                 } else {

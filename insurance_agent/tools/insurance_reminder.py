@@ -24,8 +24,6 @@ from typing import Optional
 
 import openpyxl
 
-from insurance_agent.tools.sms_sender import send_sms
-
 # ============ 提醒文案默认模板（均可在前端「信息提醒配置」覆盖，后台不写死）============
 # 变量占位符：${project}/${names}/${count}（短信）、${target_date}/${total}/${days_text}（邮件）
 SMS_TEMPLATE = "${project}项目上有${names}等${count}人打卡上班却无保险，请及时购买。详情请查看邮箱。"
@@ -165,18 +163,6 @@ def build_sms_messages(uninsured_list: list[dict], key_field: str = "project_nam
             "count": str(total),
         })
     return messages
-
-
-def build_expiry_sms_messages(persons: list[dict], max_names: int = SMS_MAX_NAMES) -> list[dict]:
-    """从即将到期人员列表构建短信模板变量（按所属公司聚合，每公司一条）
-
-    与打卡无保险提醒共用 build_sms_messages：按 company 分组，每公司一条
-    聚合短信（names = 第一人姓名，count = 该公司总人数）。单姓名符合阿里云
-    「个人姓名」变量规范，可直接发送，无需修改短信模板。
-    """
-    if not persons:
-        return []
-    return build_sms_messages(persons, key_field="company", max_names=max_names)
 
 
 def load_config(config_path: str = CONFIG_PATH) -> dict:
@@ -633,14 +619,16 @@ def _send_expiry_email(
 def run_expiry_check(ahead_days: Optional[int] = None, config: Optional[dict] = None) -> dict:
     """执行一次到期提醒检查（定时任务回调入口）
 
-    查询「ahead_days 天内」即将到期的人员保险，如有则发送邮件提醒续保。
+    查询「ahead_days 天内」即将到期的人员保险，如有则发送**邮件**提醒续保。
+    按用户最新要求：到期提醒**仅发邮件**到��息提醒配置中的固定收件人邮箱，
+    **不发送手机短信**。
 
     Args:
         ahead_days: 提前天数（默认从配置 expiry_ahead_days 读取）
         config: 提醒配置（默认从配置文件读取）
 
     Returns:
-        dict: 执行结果
+        dict: 执行结果（不再含 sms 字段）
     """
     if config is None:
         config = load_config()
@@ -667,7 +655,7 @@ def run_expiry_check(ahead_days: Optional[int] = None, config: Optional[dict] = 
     if not expiring:
         result["success"] = True
         result["message"] = f"{days_text}（截至 {deadline}）无即将到期人员，无需提醒"
-        result["email"] = {"success": True, "message": "无即将到期人员"}
+        result["email"] = {"success": True, "message": "无即���到期人员"}
         return result
 
     if not email_config.get("enabled", True):
@@ -681,26 +669,14 @@ def run_expiry_check(ahead_days: Optional[int] = None, config: Optional[dict] = 
     result["success"] = email_result.get("success", False)
     result["message"] = email_result.get("message", "")
 
-    # 短信提醒：与打卡无保险提醒共用同一套短信配置（由 sms.enabled 控制开关）
-    sms_config = config.get("sms", {})
-    sms_result = {"success": False, "message": "短信通知未启用"}
-    if sms_config.get("enabled", False):
-        sms_messages = build_expiry_sms_messages(expiring)
-        if sms_messages:
-            sms_result = send_sms(sms_config, sms_messages)
-        else:
-            sms_result = {"success": True, "message": "无短信内容可发送"}
-    result["sms"] = sms_result
-
-    # 保存执行记录
+    # 保存执行记录（仅含邮件结果；到期提醒按要求不发短信）
     config["last_expiry_check"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     config["last_expiry_result"] = {
         "ahead_days": ahead_days,
         "target_date": deadline,
         "expiring_count": len(expiring),
         "email_sent": email_result.get("success", False),
-        "sms_sent": sms_result.get("success", False),
-        "sms_message": sms_result.get("message", ""),
+        "email_message": email_result.get("message", ""),
     }
     save_config(config)
 

@@ -148,17 +148,15 @@ def run_daily_check(session_manager=None, punch_date: str = None) -> dict:
 
 
 def _send_coverage_sms(uninsured: list[dict]) -> dict:
-    """发送覆盖检查提醒短信（双通道路由，按项目聚合成一条）
+    """发送覆盖检查提醒短信（按项目 → 项目经理手机，每个项目一条）
 
-    路由规则（按用户要求）：
+    路由规则（按用户最新要求）：
     1) 每位项目经理手机：仅收到「自己项目上」打卡却无正常保险的人员，且汇总为
        **一条**短信（names = 该组第一人姓名，count = 总人数，模板渲染为
-       「${project}项目上有黄希明等4人打卡上班却无保险...」）。
-    2) 汇总：所有无正常保险人员按项目聚合后，逐项目发送汇总短信至「信息提醒
-       配置」中的固定手机号。
-    每个项目只发一条短信；names 为单一真实姓名，符合阿里云「个人姓名」变量
-    规范，无需修改短信模板。无项目经理手机的项目由固定收件人汇总兜底。
-    短信功能未启用或未配置凭证时跳过。
+       「${project}项目上有黄希明等4人打卡上班未参保，请及时购买。详情请查看邮箱。」）。
+    2) **不向固定手机号发送汇总短信**：汇总通知仅通过邮件（_send_coverage_email）
+       路由至信息提醒配置的固定收件人邮箱。
+    短信功能未启用或未配置凭证时跳过；无项目经理手机时跳过（汇总通过邮件兜底）。
     """
     from insurance_agent.tools.insurance_reminder import build_sms_messages
     from insurance_agent.tools.sms_sender import send_sms
@@ -167,10 +165,6 @@ def _send_coverage_sms(uninsured: list[dict]) -> dict:
     sms_config = config.get("sms", {})
     if not sms_config.get("enabled", False):
         return {"success": False, "message": "短信通知已禁用"}
-
-    fixed_phones = sms_config.get("phone_numbers", []) or []
-    if isinstance(fixed_phones, str):
-        fixed_phones = [p.strip() for p in fixed_phones.split(",") if p.strip()]
 
     # 按项目分组无保险人员
     by_proj: dict[str, list[dict]] = {}
@@ -192,11 +186,11 @@ def _send_coverage_sms(uninsured: list[dict]) -> dict:
 
     results = []
 
-    # 通道1：按项目 → 项目经理本人手机（每个项目一条聚合短信）
+    # 仅按项目 → 项目经理本人手机发送聚合短信（每个项目一条）
     for proj, persons in by_proj.items():
         mgr = proj_manager.get(proj)
         if not mgr or not mgr["phone"]:
-            continue  # 无经理手机，交由固定收件人汇总兜底
+            continue  # 无经理手机的人员由邮件（汇总通道）兜底
         messages = build_sms_messages(persons, "project_name")
         if not messages:
             continue
@@ -207,25 +201,12 @@ def _send_coverage_sms(uninsured: list[dict]) -> dict:
         r["type"] = "manager"
         results.append(r)
 
-    # 通道2：汇总至固定手机号（每个项目一条聚合短信）
-    if fixed_phones:
-        for proj, persons in by_proj.items():
-            messages = build_sms_messages(persons, "project_name")
-            if not messages:
-                continue
-            cfg = dict(sms_config)
-            cfg["phone_numbers"] = fixed_phones
-            r = send_sms(cfg, messages)
-            r["target"] = ",".join(fixed_phones)
-            r["type"] = "aggregate"
-            results.append(r)
-
     sent = sum(1 for r in results if r.get("success"))
     if not results:
-        return {"success": True, "message": "无需发送短信（无项目经理手机且无固定收件人）"}
+        return {"success": True, "message": "无需发送短信（无项目经理手机可发送）"}
     if sent == 0:
         return {"success": False, "message": "；".join(r.get("message", "") for r in results), "details": results}
-    msg = f"已向 {len([m for m in proj_manager.values() if m['phone']])} 位项目经理逐项目发送聚合短信，并向 {len(fixed_phones)} 个固定手机号逐项目发送汇总短信"
+    msg = f"已向 {len(results)} 个项目的项目经理发送聚合短信"
     return {"success": True, "message": msg, "details": results}
 
 
