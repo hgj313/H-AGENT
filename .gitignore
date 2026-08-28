@@ -24,3 +24,25 @@ extraction_results.json
 # 敏感/外部资料
 inputs/
 test_pdfs/
+
+# 环境变量注入（含 MQ 密钥，禁止提交）
+.env
+mq_bridge_dlq.jsonl
+
+# 飞书 webhook 配置（Bearer Token 敏感，禁止提交）
+.feishu_webhook.json
+feishu_webhook_dlq.jsonl
+feishu_webhook_pusher.log
+
+# 通知发送审计日志（运行产物，可选：用户希望跟踪历史，暂不排除）
+# notification_audit.jsonl
+
+# Cloudflare Tunnel 二进制（本机运行用，勿提交）
+cloudflared.exe
+cloudflared-config.yml
+
+# Cloudflare Tunnel 运行时日志（每次启动生成）
+tunnel.log
+tunnel_url.txt
+tunnel_stdout.log
+tunnel_stderr.log

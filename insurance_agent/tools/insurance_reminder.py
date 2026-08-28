@@ -37,7 +37,7 @@ SMS_MAX_NAMES = 3
 EMAIL_SUBJECT_DEFAULT = "⚠️ 保险到期提醒 — ${target_date} 到期 ${total} 人"
 EMAIL_TITLE_DEFAULT = "⚠️ 保险到期提醒"
 EMAIL_SUBTITLE_DEFAULT = "以下人员保险将于 ${target_date} 到期，请及时处理续保"
-EMAIL_FOOTER_DEFAULT = "本邮件由保险单识别系统自动发送"
+EMAIL_FOOTER_DEFAULT = "本邮件由保险管理AI助手自动发送"
 
 EXPIRY_SUBJECT_DEFAULT = "⏰ 保险即将到期提醒 — ${days_text}到期 ${total} 人，请及时续保"
 EXPIRY_TITLE_DEFAULT = "⏰ 保险即将到期提醒"
@@ -88,6 +88,7 @@ DEFAULT_CONFIG = {
 
 # 数据源路径（统一路径配置，支持 Docker 部署环境变量覆盖）
 from insurance_agent.infrastructure.paths import PROJECT_ROOT, REMINDER_CONFIG_PATH
+from insurance_agent.tools.notification_audit import log_send
 CONFIG_PATH = REMINDER_CONFIG_PATH
 EXCEL_PATH = os.path.join(PROJECT_ROOT, "最新保险数据下载模板.xlsx")
 JSON_PATH = os.path.join(PROJECT_ROOT, "extraction_results.json")
@@ -377,12 +378,39 @@ def send_reminder_email(
         server.login(sender, password)
         server.sendmail(sender, recipients, msg.as_string())
         server.quit()
+        log_send(
+            channel="expiry_reminder", kind="email", to=recipients,
+            person_count=len(persons),
+            person_names=[p.get("name", "") for p in persons],
+            subject=subject, success=True,
+            result=f"已发送至 {len(recipients)} 个收件人，共 {len(persons)} 人到期",
+            extra={"target_date": target_date},
+        )
         return {"success": True, "message": f"已发送提醒邮件到 {', '.join(recipients)}，{len(persons)} 人到期"}
     except smtplib.SMTPAuthenticationError:
+        log_send(
+            channel="expiry_reminder", kind="email", to=recipients,
+            person_count=len(persons),
+            person_names=[p.get("name", "") for p in persons],
+            subject=subject, success=False, result="SMTP 认证失败",
+        )
         return {"success": False, "message": f"SMTP认证失败，请检查授权码是否正确"}
     except smtplib.SMTPConnectError:
+        log_send(
+            channel="expiry_reminder", kind="email", to=recipients,
+            person_count=len(persons),
+            person_names=[p.get("name", "") for p in persons],
+            subject=subject, success=False, result=f"无法连接 SMTP 服务器 {smtp_host}:{smtp_port}",
+        )
         return {"success": False, "message": f"无法连接SMTP服务器 {smtp_host}:{smtp_port}"}
     except Exception as e:
+        log_send(
+            channel="expiry_reminder", kind="email", to=recipients,
+            person_count=len(persons),
+            person_names=[p.get("name", "") for p in persons],
+            subject=subject, success=False, result="SMTP 异常",
+            error=str(e),
+        )
         return {"success": False, "message": f"邮件发送失败: {e}"}
 
 
@@ -607,12 +635,43 @@ def _send_expiry_email(
         server.login(sender, password)
         server.sendmail(sender, recipients, msg.as_string())
         server.quit()
+        log_send(
+            channel="expiry_reminder", kind="email", to=recipients,
+            person_count=len(persons),
+            person_names=[p.get("name", "") for p in persons],
+            subject=subject, success=True,
+            result=f"已发送至 {len(recipients)} 个收件人，共 {len(persons)} 人即将到期",
+            extra={"target_date": target_date, "ahead_days": ahead_days},
+        )
         return {"success": True, "message": f"已发送到期提醒邮件到 {', '.join(recipients)}，{len(persons)} 人即将到期"}
     except smtplib.SMTPAuthenticationError:
+        log_send(
+            channel="expiry_reminder", kind="email", to=recipients,
+            person_count=len(persons),
+            person_names=[p.get("name", "") for p in persons],
+            subject=subject, success=False, result="SMTP 认证失败",
+            extra={"target_date": target_date, "ahead_days": ahead_days},
+        )
         return {"success": False, "message": "SMTP认证失败，请检查授权码是否正确"}
     except smtplib.SMTPConnectError:
+        log_send(
+            channel="expiry_reminder", kind="email", to=recipients,
+            person_count=len(persons),
+            person_names=[p.get("name", "") for p in persons],
+            subject=subject, success=False,
+            result=f"无法连接 SMTP 服务器 {smtp_host}:{smtp_port}",
+            extra={"target_date": target_date, "ahead_days": ahead_days},
+        )
         return {"success": False, "message": f"无法连接SMTP服务器 {smtp_host}:{smtp_port}"}
     except Exception as e:
+        log_send(
+            channel="expiry_reminder", kind="email", to=recipients,
+            person_count=len(persons),
+            person_names=[p.get("name", "") for p in persons],
+            subject=subject, success=False, result="SMTP 异常",
+            error=str(e),
+            extra={"target_date": target_date, "ahead_days": ahead_days},
+        )
         return {"success": False, "message": f"邮件发送失败: {e}"}
 
 

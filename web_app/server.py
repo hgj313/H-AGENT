@@ -11,11 +11,12 @@ import os
 import sys
 import tempfile
 import traceback
+import ipaddress
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Any
 from urllib.parse import quote
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, Request, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from openpyxl import Workbook, load_workbook
@@ -53,9 +54,20 @@ from insurance_agent.tools.insurance_reminder import (
 )
 from insurance_agent.tools import coverage_check
 from insurance_agent.tools.daily_check_service import run_daily_check
+from insurance_agent.tools.uninsured_summary import run_uninsured_summary
+from insurance_agent.tools.daily_cleanup import run_daily_cleanup
+from insurance_agent.tools.feishu_webhook_pusher import (
+    init_pusher as init_feishu_pusher,
+    get_pusher as get_feishu_pusher,
+)
+from insurance_agent.tools.realtime_punch_consumer import (
+    start_realtime_consumer,
+    submit_punch_events,
+    get_status as get_realtime_status,
+)
 from insurance_agent.agents.policy_pipeline import create_pipeline, create_pipeline_state
 
-app = FastAPI(title="保险单识别系统", version="1.0.0")
+app = FastAPI(title="保险管理AI助手", version="1.0.0")
 
 # 静态文件
 app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")), name="static")
@@ -336,18 +348,218 @@ async def health():
     return {"status": "ok", "llm_available": _llm_client is not None}
 
 
+def _load_upload_token() -> str:
+    """从 .env 文件实时读取 UPLOAD_API_TOKEN（热加载，免重启）。
+
+    依次检查项目根 .env 与 H-AGENT/.env，命中即返回，避免依赖进程启动时的
+    os.environ 快照导致改完 .env 还要重启服务。
+    """
+    candidates = [
+        os.path.join(_BASE_DIR, ".env"),
+        os.path.join(_BASE_DIR, "H-AGENT", ".env"),
+    ]
+    for p in candidates:
+        if not os.path.exists(p):
+            continue
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("UPLOAD_API_TOKEN=") and not line.startswith("UPLOAD_API_TOKEN=#"):
+                        val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                        if val:
+                            return val
+        except Exception:
+            continue
+    return os.environ.get("UPLOAD_API_TOKEN", "")
+
+
+def _require_upload_auth(request: Request):
+    """上传鉴权：
+    - 本机（客户端 IP = 127.0.0.1）直接放行，方便浏览器在 localhost:8765 直传；
+    - 同一局域网 PC（客户端 IP = RFC1918 私有地址 10/8、172.16/12、192.168/16）也直接放行，
+      让同事浏览器经 LAN 访问 http://192.168.x.x:8765/ 上传 PDF 时无需手动带 token；
+    - 公网来源（飞书 webhook / Cloudflare Tunnel 等）必须携带 Authorization: Bearer <UPLOAD_API_TOKEN>，
+      否则 401/403 拒绝，避免保单 PDF 被任意人往系统里塞。
+    """
+    client_ip = _client_ip(request)
+    try:
+        ip = ipaddress.ip_address(client_ip)
+        if ip.is_loopback or ip.is_private:
+            return
+    except ValueError:
+        pass
+    # 每次请求热读 .env 文件，写入 token 后无需重启服务即可生效
+    token = _load_upload_token()
+    if not token:
+        raise HTTPException(status_code=403, detail="外部上传未授权：请在 .env 配置 UPLOAD_API_TOKEN")
+    auth = request.headers.get("authorization", "")
+    if auth != f"Bearer {token}":
+        raise HTTPException(status_code=401, detail="上传令牌无效")
+
+
+def _load_allowed_ips():
+    """从 .env 实时读取 ALLOWED_IPS（公司网络白名单，CIDR 逗号分隔，热加载）。
+
+    为空表示未配置白名单（fail-open，不拦截），避免误配把自己锁在门外。
+    支持单 IP（203.0.113.7）与网段（203.0.113.0/24）混写。
+    """
+    candidates = [
+        os.path.join(_BASE_DIR, ".env"),
+        os.path.join(_BASE_DIR, "H-AGENT", ".env"),
+    ]
+    raw = ""
+    for p in candidates:
+        if not os.path.exists(p):
+            continue
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("ALLOWED_IPS=") and not line.startswith("ALLOWED_IPS=#"):
+                        raw = line.split("=", 1)[1].strip().strip('"').strip("'")
+                        break
+        except Exception:
+            continue
+        if raw:
+            break
+    if not raw:
+        raw = os.environ.get("ALLOWED_IPS", "")
+    nets = []
+    for item in raw.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            nets.append(ipaddress.ip_network(item, strict=False))
+        except ValueError:
+            continue
+    return nets
+
+
+def _ip_whitelist_enabled() -> bool:
+    """IP 白名单总开关。默认启用（True）；.env 设 IP_WHITELIST_ENABLED=false
+    可整体关闭白名单，使公网地址对所有人开放（所有人可访问）。
+
+    关闭后中间件直接放行，不再检查 ALLOWED_IPS。每次请求热读 .env，改完即时生效。
+    """
+    candidates = [
+        os.path.join(_BASE_DIR, ".env"),
+        os.path.join(_BASE_DIR, "H-AGENT", ".env"),
+    ]
+    for p in candidates:
+        if not os.path.exists(p):
+            continue
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("IP_WHITELIST_ENABLED=") and not line.startswith("IP_WHITELIST_ENABLED=#"):
+                        val = line.split("=", 1)[1].strip().lower()
+                        return val not in ("false", "0", "no", "off")
+        except Exception:
+            continue
+    return True
+
+
+def _client_ip(request: Request) -> str:
+    """取真实访客 IP。Cloudflare Tunnel 会注入 CF-Connecting-IP；
+    本机直连则回退到 X-Forwarded-For / X-Real-IP / socket 客户端地址。"""
+    cf = request.headers.get("CF-Connecting-IP")
+    if cf:
+        return cf.strip().split(",")[0].strip()
+    xff = request.headers.get("X-Forwarded-For")
+    if xff:
+        return xff.split(",")[0].strip()
+    xr = request.headers.get("X-Real-IP")
+    if xr:
+        return xr.strip()
+    return request.client.host if request.client else "127.0.0.1"
+
+
+@app.middleware("http")
+async def ip_allowlist_middleware(request: Request, call_next):
+    """公司网络 IP 白名单：仅允许「本机」+「白名单内 IP」访问 Web 控制台与普通接口。
+
+    - 上传接口 /api/upload 保持令牌鉴权、不限 IP（飞书 webhook 来自飞书云端，
+      不在公司网段，靠 UPLOAD_API_TOKEN 保护即可，否则飞书自动化会被一起挡掉）。
+    - 白名单未配置（ALLOWED_IPS 为空）时 fail-open，不拦截，避免误锁自己。
+    """
+    client = _client_ip(request)
+    path = request.url.path
+
+    # 本机始终放行：控制台在 PC 本地 127.0.0.1:8765 直连不受影响
+    try:
+        if client in ("127.0.0.1", "::1") or ipaddress.ip_address(client).is_loopback:
+            return await call_next(request)
+    except ValueError:
+        pass
+
+    # 上传接口：令牌鉴权即可，跳过 IP 白名单（飞书云端调用）
+    if path.startswith("/api/upload"):
+        return await call_next(request)
+
+    # 健康检查保持开放，便于隧道/监控探活
+    if path == "/api/health":
+        return await call_next(request)
+
+    # 白名单总开关：关闭时对所有外部访客放行（所有人可访问）
+    # 注意：/api/upload 的令牌鉴权独立于此开关，始终生效
+    if not _ip_whitelist_enabled():
+        return await call_next(request)
+
+    allowed = _load_allowed_ips()
+    if not allowed:
+        return await call_next(request)
+
+    try:
+        addr = ipaddress.ip_address(client)
+    except ValueError:
+        return JSONResponse(status_code=403, content={"detail": "Forbidden: 无法识别的客户端地址"})
+
+    if any(addr in net for net in allowed):
+        return await call_next(request)
+
+    return JSONResponse(
+        status_code=403,
+        content={"detail": "Forbidden: 仅限公司网络访问，当前 IP 不在白名单"},
+    )
+
+
+@app.get("/api/my-ip")
+async def my_ip(request: Request):
+    """诊断用：返回白名单中间件会看到的真实访客 IP（经 Cloudflare Tunnel 即 CF-Connecting-IP）。
+
+    在公司网络下打开此接口即可确认公司出口 IP，把该 IP 所在网段填入 .env 的
+    ALLOWED_IPS（CIDR，逗号分隔）后重启服务即生效。仅回显调用方自身 IP，无敏感信息。
+    """
+    return {
+        "client_ip": _client_ip(request),
+        "note": "将此 IP 所在网段填入 .env 的 ALLOWED_IPS（如 203.0.113.0/24），重启服务生效",
+    }
+
+
 @app.post("/api/upload")
-async def upload_files(files: list[UploadFile] = File(...)):
-    """上传多个 PDF 文件并提取被保人员信息"""
+async def upload_files(
+    request: Request,
+    files: list[UploadFile] = File(None),
+    file: UploadFile = File(None),
+):
+    """上传多个 PDF 文件并提取被保人员信息（兼容字段名 file / files）"""
     global _latest_results
 
-    if not files:
+    _require_upload_auth(request)
+
+    received = list(files or [])
+    if file is not None:
+        received.append(file)
+    if not received:
         raise HTTPException(status_code=400, detail="未上传文件")
 
     saved_paths = []
     tmp_dir = tempfile.mkdtemp(prefix="insurance_upload_")
 
-    for f in files:
+    for f in received:
         raw_name = f.filename or ""
         filename = _fix_filename(raw_name)
         if not filename.lower().endswith(".pdf"):
@@ -508,20 +720,82 @@ async def download_xlsx():
 
 @app.get("/api/policy-library")
 async def get_policy_library():
-    """获取保单文件库状态"""
+    """获取保单文件库状态（合并索引元数据 + 文件系统 mtime/size）"""
     records = []
-    for r in _policy_library.records:
+    # 用 dict 按 file_name 索引索引元数据；文件系统 mtime 优先用于「上传日期」展示
+    meta_by_name = {r.file_name: r for r in _policy_library.records}
+    base_dir = _policy_library.base_dir
+    try:
+        fs_files = os.listdir(base_dir)
+    except Exception:
+        fs_files = []
+    # 文件系统有的所有 PDF（即使索引里没有也展示，例如手工复制进去的）
+    all_names = set(meta_by_name.keys()) | {f for f in fs_files if f.lower().endswith(".pdf")}
+    for name in sorted(all_names, key=lambda x: x.lower()):
+        full_path = os.path.join(base_dir, name)
+        meta = meta_by_name.get(name)
+        try:
+            stat_info = os.stat(full_path)
+            mtime_ts = int(stat_info.st_mtime)
+            size_bytes = stat_info.st_size
+        except OSError:
+            mtime_ts = 0
+            size_bytes = 0
         records.append({
-            "file_name": r.file_name,
-            "policy_type": r.policy_type,
-            "policy_number": r.policy_number,
-            "company": r.company,
-            "insurance_company": r.insurance_company,
-            "start_date": r.start_date,
-            "end_date": r.end_date,
-            "persons_count": r.persons_count,
+            "file_name": name,
+            "policy_type": meta.policy_type if meta else "",
+            "policy_number": meta.policy_number if meta else "",
+            "company": meta.company if meta else "",
+            "insurance_company": meta.insurance_company if meta else "",
+            "start_date": meta.start_date if meta else "",
+            "end_date": meta.end_date if meta else "",
+            "persons_count": meta.persons_count if meta else 0,
+            "upload_date_ts": mtime_ts,        # 文件 mtime，秒级时间戳
+            "size_bytes": size_bytes,
+            "in_index": meta is not None,
         })
-    return {"records": records, "total": len(records)}
+    # 按 mtime 降序（最新上传在前）
+    records.sort(key=lambda x: x["upload_date_ts"], reverse=True)
+    return {"records": records, "total": len(records), "base_dir": base_dir}
+
+
+@app.get("/api/policy-library/download/{filename}")
+async def download_policy_pdf(filename: str):
+    """从保单库下载指定 PDF（其他 PC 也能下载）。
+
+    安全约束：
+    - filename 必须仅含 basename（不允许路径分隔符 / `\\` / `..`），防目录穿越；
+    - 文件必须存在于 base_dir 下且以 .pdf 结尾；
+    - 中文文件名用 RFC 5987 filename* 编码，避免 Content-Disposition 乱码。
+    """
+    base_dir = _policy_library.base_dir
+    # 仅取 basename，丢弃任何路径前缀
+    safe_name = os.path.basename(filename)
+    if safe_name != filename or not safe_name or ".." in safe_name:
+        raise HTTPException(status_code=400, detail="非法文件名")
+    if not safe_name.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="仅支持下载 PDF 文件")
+    full_path = os.path.join(base_dir, safe_name)
+    # 二次校验：解析后的绝对路径必须在 base_dir 之下
+    try:
+        real_base = os.path.realpath(base_dir)
+        real_path = os.path.realpath(full_path)
+        if not real_path.startswith(real_base + os.sep) and real_path != real_base:
+            raise HTTPException(status_code=400, detail="非法路径")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=400, detail="路径校验失败")
+    if not os.path.exists(full_path):
+        raise HTTPException(status_code=404, detail=f"文件不存在: {safe_name}")
+    # 用 FileResponse 让浏览器直接弹出下载（attachment 触发下载而非预览）
+    encoded_filename = quote(safe_name)
+    return FileResponse(
+        full_path,
+        media_type="application/pdf",
+        filename=safe_name,
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"},
+    )
 
 
 @app.get("/")
@@ -758,14 +1032,30 @@ async def get_punch_records(punch_date: str = None):
 
     Args:
         punch_date: 打卡日期（默认今天）
+
+    测试模式：当 ``.reminder_config.json`` 的 ``punch_table_for_sms`` 字段不为空且
+    不等于 ``punch_records`` 时，从对应副本表读取（默认仍读生产表）。
     """
     if punch_date is None:
         punch_date = datetime.now().strftime("%Y-%m-%d")
-    records = db.get_punch_records(punch_date, limit=10000)
+    punch_table = "punch_records"
+    try:
+        cfg_path = os.path.join(os.path.dirname(__file__), "..", ".reminder_config.json")
+        if os.path.exists(cfg_path):
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg_table = (json.load(f).get("punch_table_for_sms") or "").strip()
+            if cfg_table and cfg_table != "punch_records":
+                if cfg_table == "punch_records_test" or cfg_table.startswith("punch_records_backup_"):
+                    punch_table = cfg_table
+    except Exception as e:  # noqa: BLE001
+        print(f"[punch/records] read punch_table_for_sms failed: {e}", flush=True)
+
+    records = db.get_punch_records(punch_date, limit=10000, table=punch_table)
     return JSONResponse({
         "success": True,
         "punch_date": punch_date,
         "total": len(records),
+        "punch_table": punch_table,
         "records": records,
     })
 
@@ -773,7 +1063,7 @@ async def get_punch_records(punch_date: str = None):
 @app.post("/api/punch/sync")
 async def sync_punch():
     """手动同步今日打卡数据"""
-    # 打卡同步功能开关：关闭后禁止从 ERP 拉取打卡数据
+    # 打卡同步功能��关：关闭后禁止从 ERP 拉取打卡数据
     sched_cfg = scheduler_mod.load_scheduler_config()
     if not sched_cfg.get("punch_sync_enabled", True):
         return JSONResponse({
@@ -787,6 +1077,14 @@ async def sync_punch():
         result = coverage_check.sync_punch_data(_session_manager, punch_date)
         return JSONResponse(result)
     except Exception as e:
+        # "attempt to write a readonly database" 是沙箱环境特有（watchdog 子进程
+        # 继承 pythonw token），不影响生产 Windows 桌面。统一返回 200 让前端能解析。
+        if "readonly database" in str(e):
+            return JSONResponse({
+                "success": False,
+                "readonly_db": True,
+                "error": "数据库写入权限受限（沙箱环境特征），生产 Windows 不受影响。",
+            })
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"同步失败: {e}")
 
@@ -815,10 +1113,26 @@ async def update_punch_record(record_id: int, body: dict):
 
 @app.post("/api/punch/check")
 async def check_coverage():
-    """检查打卡人员保险覆盖情况"""
+    """检查打卡人员保险覆盖情况
+
+    测试模式：``.reminder_config.json`` 的 ``punch_table_for_sms`` 字段不为空且
+    不等于 ``punch_records`` 时，从对应副本表读取经理联系方式（默认仍读生产表）。
+    """
     punch_date = datetime.now().strftime("%Y-%m-%d")
+    punch_table = "punch_records"
     try:
-        result = coverage_check.check_insurance_coverage(punch_date)
+        cfg_path = os.path.join(os.path.dirname(__file__), "..", ".reminder_config.json")
+        if os.path.exists(cfg_path):
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg_table = (json.load(f).get("punch_table_for_sms") or "").strip()
+            if cfg_table and cfg_table != "punch_records":
+                if cfg_table == "punch_records_test" or cfg_table.startswith("punch_records_backup_"):
+                    punch_table = cfg_table
+    except Exception as e:  # noqa: BLE001
+        print(f"[punch/check] read punch_table_for_sms failed: {e}", flush=True)
+    try:
+        result = coverage_check.check_insurance_coverage(punch_date, punch_table=punch_table)
+        result["punch_table"] = punch_table
         return JSONResponse(result)
     except Exception as e:
         traceback.print_exc()
@@ -827,9 +1141,24 @@ async def check_coverage():
 
 @app.get("/api/punch/export-uninsured")
 async def export_uninsured():
-    """导出无正常保单人员清单为 Excel"""
+    """导出无正常保单人员清单为 Excel
+
+    测试模式：``.reminder_config.json`` 的 ``punch_table_for_sms`` 字段决定是否
+    从副本表读取经理联系方式（默认仍读生产表）。
+    """
     punch_date = datetime.now().strftime("%Y-%m-%d")
-    result = coverage_check.check_insurance_coverage(punch_date)
+    punch_table = "punch_records"
+    try:
+        cfg_path = os.path.join(os.path.dirname(__file__), "..", ".reminder_config.json")
+        if os.path.exists(cfg_path):
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg_table = (json.load(f).get("punch_table_for_sms") or "").strip()
+            if cfg_table and cfg_table != "punch_records":
+                if cfg_table == "punch_records_test" or cfg_table.startswith("punch_records_backup_"):
+                    punch_table = cfg_table
+    except Exception as e:  # noqa: BLE001
+        print(f"[punch/export-uninsured] read punch_table_for_sms failed: {e}", flush=True)
+    result = coverage_check.check_insurance_coverage(punch_date, punch_table=punch_table)
     uninsured = result.get("uninsured_list", [])
 
     if not uninsured:
@@ -904,21 +1233,243 @@ async def export_uninsured():
 
 
 @app.post("/api/daily-check")
-async def daily_check(skip_sync: bool = False, force: bool = False, projects_limit: int = None, project_filter: str = None):
-    """手动执行每日检查（同步打卡 → 覆盖对比 → 邮件提醒）
+async def daily_check(force: bool = False):
+    """发送提醒信息：给对应项目的项目经理推送「打卡但无正常保单」的人员数据短信和邮件。
 
-    skip_sync=true 时不重新同步打卡数据，直接使用数据库现有记录（便于用测试联系人触发验证）。
-    force=true 时跳过「今日已发送过则跳过」的保护，强制重发（用于测试）。
-    projects_limit=N 时只处理前 N 个项目（短信和邮件都只涉及这些项目），用于测试单条短信/单封邮件的发送。
-    project_filter=项目名 时只处理该项目的人员（支持精确匹配与子串匹配），与 projects_limit 互斥。
+    流程：同步打卡 → 保险覆盖对比 → 每经理一封邮件 + 每经理一条短信 + 汇总邮件到固定收件人。
+    force=true 时跳过「今日已发送过则跳过」的保护，强制重发（仅调试用）。
     """
     try:
-        sm = None if skip_sync else _session_manager
-        result = run_daily_check(session_manager=sm, force=force, projects_limit=projects_limit, project_filter=project_filter)
+        result = run_daily_check(
+            session_manager=_session_manager,
+            force=force,
+        )
         return JSONResponse(result)
     except Exception as e:
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"每日检查失败: {e}")
+        raise HTTPException(status_code=500, detail=f"发送提醒信息失败: {e}")
+
+
+# ==================== 实时打卡事件接入（MQ 桥接 / HTTP 适配） ====================
+
+class PunchEventItem(BaseModel):
+    """单条打卡事件（兼容 ERP 驼峰/蛇形命名，后台自动规范化）"""
+    id: Optional[Any] = None
+    erp_id: Optional[Any] = None
+    memberId: Optional[Any] = None
+    member_id: Optional[Any] = None
+    memberName: Optional[Any] = None
+    member_name: Optional[Any] = None
+    name: Optional[Any] = None
+    identificationNumber: Optional[Any] = None
+    identification_number: Optional[Any] = None
+    id_number: Optional[Any] = None
+    age: Optional[Any] = None
+    projectName: Optional[Any] = None
+    project_name: Optional[Any] = None
+    teamName: Optional[Any] = None
+    team_name: Optional[Any] = None
+    supplierName: Optional[Any] = None
+    supplier_name: Optional[Any] = None
+    categoryName: Optional[Any] = None
+    category_name: Optional[Any] = None
+    examinationStatusName: Optional[Any] = None
+    examination_status: Optional[Any] = None
+    telephone: Optional[Any] = None
+    phone: Optional[Any] = None
+
+
+class PunchEventsBody(BaseModel):
+    """批量打卡事件入参。
+
+    ERP（或 MQ 桥接程序）每次推送可包含多条（瞬时多台打卡机同时打卡）。
+    source 仅作日志标记。
+    """
+    events: Optional[list] = None
+    event: Optional[dict] = None
+    source: Optional[str] = "erp"
+
+
+@app.post("/api/punch/events")
+async def ingest_punch_events(body: PunchEventsBody):
+    """接收 ERP 实时打卡事件（MQ 异步推送的 HTTP 适配入口）
+
+    ERP 团队建议用「现有 MQ 消息队列异步推送」。落地方式：
+    - 生产环境：在 ERP/MQ 侧部署一个轻量桥接程序订阅 MQ 主题，把消息转调本接口；
+      或未来在智能体进程内直接订阅 MQ，调用 submit_punch_events 即可（下游逻辑复用）。
+    - 本接口立即把事件放入进程内队列并返回，不阻塞 ERP 推送方；真正的入库、
+      保险核对、通知由后台消费者线程按滑动窗口批处理，天然抗突发流量。
+
+    返回：{"accepted": n, "queued": true}
+    """
+    events = []
+    if body.events:
+        events.extend(body.events)
+    if body.event:
+        events.append(body.event)
+    if not events:
+        raise HTTPException(status_code=400, detail="events 与 event 不能同时为空")
+    try:
+        n = submit_punch_events(events)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"事件入队失败: {e}")
+    return JSONResponse({"accepted": n, "queued": True, "source": body.source or "erp"})
+
+
+@app.get("/api/realtime/status")
+async def realtime_status():
+    """实时消费者运行态（队列积压、批次数、经理缓存、错误数等）"""
+    try:
+        return JSONResponse(get_realtime_status())
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"查询失败: {e}")
+
+
+# ==================== 飞书多维表格 Webhook 集成 ====================
+
+@app.get("/api/feishu-webhook/status")
+async def feishu_webhook_status():
+    """获取飞书 webhook pusher 状态（Token 自动脱敏）。"""
+    p = get_feishu_pusher()
+    if p is None:
+        return JSONResponse({"initialized": False, "message": "pusher 未初始化（重启服务生效）"})
+    return JSONResponse({"initialized": True, **p.get_status(mask_token=True)})
+
+
+@app.post("/api/feishu-webhook/reload")
+async def feishu_webhook_reload():
+    """热加载 .feishu_webhook.json（编辑 Token/URL 后无需重启）。"""
+    p = get_feishu_pusher()
+    if p is None:
+        raise HTTPException(status_code=503, detail="pusher 未初始化")
+    cfg = p.reload_config()
+    token = cfg.get("bearer_token", "")
+    masked = (token[:4] + "***" + token[-4:]) if len(token) > 8 else "***"
+    return JSONResponse({"ok": True, "enabled": cfg.get("enabled"), "token_preview": masked})
+
+
+@app.post("/api/feishu-webhook/test")
+async def feishu_webhook_test():
+    """发送一条测试数据到飞书 webhook（用占位人员数据），便于验证 Token/IP/字段映射。"""
+    from insurance_agent.tools.feishu_webhook_pusher import push_uninsured_person
+    test_record = {
+        "name": "测试-飞书推送",
+        "id_number": "TEST_PING_NO_REALTIME_ID",
+        "project_name": "测试项目-请忽略",
+        "team_name": "测试班组",
+        "supplier_name": "测试劳务公司",
+        "category_name": "测试工种",
+        "project_manager": "测试经理",
+        "manager_phone": "13800000000",
+        "manager_email": "test@example.com",
+        "punch_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "punch_date": datetime.now().strftime("%Y-%m-%d"),
+        "source": "test",
+    }
+    enqueued = push_uninsured_person(test_record, source="test")
+    return JSONResponse({
+        "ok": enqueued,
+        "message": "已入队，worker 异步推送" if enqueued else "未入队（请检查 .feishu_webhook.json 中 enabled=true 且 token 已替换）",
+        "record": test_record,
+    })
+
+
+@app.post("/api/summary/trigger")
+async def summary_trigger(period: str = "morning", force: bool = True):
+    """手动触发未参保人员汇总（用于测试 + 紧急补发）。
+
+    Args:
+        period: "morning" 或 "afternoon"（仅用于邮件标题区分）
+        force: True=绕过 scheduler 同日去重，强制发送
+    """
+    if period not in ("morning", "afternoon"):
+        raise HTTPException(status_code=400, detail="period 必须是 morning 或 afternoon")
+    try:
+        result = run_uninsured_summary(
+            session_manager=_session_manager,
+            period=period,
+            force=force,
+        )
+        return JSONResponse(result)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"汇总发送失败: {e}")
+
+
+# ==================== 通知发送审计日志 ====================
+
+@app.get("/api/audit/notifications")
+async def get_audit_notifications(
+    limit: int = 200,
+    channel: Optional[str] = None,
+    kind: Optional[str] = None,
+    date: Optional[str] = None,
+    only_failures: bool = False,
+):
+    """读取通知发送审计日志（打卡无保险提醒的所有短信/邮件发送记录）。
+
+    Args:
+        limit: 返回的最大记录数（默认 200，新→旧）
+        channel: realtime / daily_check / summary_morning / summary_afternoon / expiry_reminder
+        kind: sms / email
+        date: 仅查指定日期 YYYY-MM-DD（默认全部）
+        only_failures: True=仅看失败记录
+    """
+    from insurance_agent.tools.notification_audit import read_audit, stats_today
+    date_from = (date + " 00:00:00") if date else None
+    date_to = (date + " 23:59:59") if date else None
+    rows = read_audit(
+        limit=limit, channel=channel, kind=kind,
+        date_from=date_from, date_to=date_to,
+        only_failures=only_failures,
+    )
+    stats = stats_today()
+    return JSONResponse({
+        "ok": True,
+        "total": len(rows),
+        "stats_today": stats,
+        "items": rows,
+    })
+
+
+@app.post("/api/audit/notifications/clear")
+async def clear_audit_notifications(older_than_days: int = 0):
+    """清理通知审计日志。
+
+    Args:
+        older_than_days: 0=清空全部；>0=仅清理 N 天前的
+    """
+    from insurance_agent.tools.notification_audit import clear_audit
+    n = clear_audit(older_than_days)
+    return JSONResponse({"ok": True, "deleted": n})
+
+
+@app.get("/api/audit/notifications/export")
+async def export_audit_notifications(limit: int = 1000):
+    """导出审计日志为 CSV（便于下载分析）。"""
+    from insurance_agent.tools.notification_audit import read_audit
+    import csv
+    import io
+
+    rows = read_audit(limit=limit)
+    buf = io.StringIO()
+    if rows:
+        writer = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        for r in rows:
+            row_out = dict(r)
+            # list 字段转字符串，避免 CSV 单元格报错
+            for k, v in row_out.items():
+                if isinstance(v, list):
+                    row_out[k] = ";".join(str(x) for x in v)
+            writer.writerow(row_out)
+    csv_text = buf.getvalue()
+    return JSONResponse({
+        "ok": True,
+        "count": len(rows),
+        "csv": csv_text,
+    })
 
 
 # ==================== 定时任务配置 ====================
@@ -986,15 +1537,21 @@ def _personnel_to_row(p: dict) -> dict:
 @app.get("/api/personnel")
 async def get_personnel():
     """查询全部保单人员数据"""
-    # 先刷新到期状态：已到起止日期的自动标记为失效
-    db.refresh_expired_status()
-    persons = db.get_insurance_personnel()
-    rows = [_personnel_to_row(p) for p in persons]
-    return JSONResponse({
-        "success": True,
-        "total": len(rows),
-        "records": rows,
-    })
+    try:
+        # 先刷新到期状态：已到起止日期的自动标记为失效
+        db.refresh_expired_status()
+        persons = db.get_insurance_personnel()
+        rows = [_personnel_to_row(p) for p in persons]
+        return JSONResponse({
+            "success": True,
+            "total": len(rows),
+            "records": rows,
+        })
+    except Exception as e:  # noqa: BLE001
+        import traceback as _tb
+        print("[api/personnel] ERROR:", e, flush=True)
+        _tb.print_exc()
+        raise
 
 
 def _parse_personnel_excel(content: bytes) -> list[dict]:
@@ -1297,6 +1854,13 @@ async def startup_event():
     """服务启动时启动会话续期 + 定时任务调度器"""
     _session_manager.start()
 
+    # 飞书多维表格 webhook 推送器（启动时初始化单例，自动从 .feishu_webhook.json 读取配置）
+    try:
+        init_feishu_pusher()
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        logger.warning("飞书 webhook pusher 初始化失败（不影响其他功能）: %s", e)
+
     # 任务1：每日打卡检查（同步打卡 → 覆盖对比 → 邮件/短信提醒）
     def daily_task():
         return run_daily_check(session_manager=_session_manager)
@@ -1307,10 +1871,32 @@ async def startup_event():
         ahead_days = cfg.get("expiry_ahead_days", 3)
         return run_expiry_check(ahead_days=ahead_days)
 
+    # 任务3：未参保人员汇总（上午 09:00）→ 给保险管理人员汇总邮件
+    def morning_summary_task():
+        return run_uninsured_summary(session_manager=_session_manager, period="morning")
+
+    # 任务4：未参保人员汇总（下午 16:30）→ 给保险管理人员再次汇总（含上午已发过的）
+    def afternoon_summary_task():
+        return run_uninsured_summary(session_manager=_session_manager, period="afternoon")
+
+    # 任务5：打卡数据清理（每日 00:00 午夜）→ 删除昨日及更早的 punch_records
+    def daily_cleanup_task():
+        return run_daily_cleanup(days_to_keep=1)
+
     scheduler_mod.create_scheduler()
     scheduler_mod.get_scheduler().add_task("daily_check", daily_task, "sync_time")
     scheduler_mod.get_scheduler().add_task("expiry_reminder", expiry_task, "expiry_time")
+    scheduler_mod.get_scheduler().add_task("morning_summary", morning_summary_task, "summary_morning_time")
+    scheduler_mod.get_scheduler().add_task("afternoon_summary", afternoon_summary_task, "summary_afternoon_time")
+    scheduler_mod.get_scheduler().add_task("daily_cleanup", daily_cleanup_task, "cleanup_time")
     scheduler_mod.get_scheduler().start()
+
+    # 实时打卡事件消费者：ERP 每推送一条打卡，秒级核对保险并通知项目经理/保险管理人员
+    try:
+        start_realtime_consumer(session_manager=_session_manager)
+    except Exception as e:  # noqa: BLE001
+        traceback.print_exc()
+        logger.warning("实时消费者启动失败（不影响其他功能）: %s", e)
 
 
 @app.on_event("shutdown")
@@ -1378,10 +1964,73 @@ async def run_pipeline():
 
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=8765,
-        workers=1,
+    import os as _os
+    import sys as _sys
+
+    # 单实例端口锁：OS 级原子创建，确保全局只有一个 server 能绑定 8765。
+    # 多 watchdog（venv/uv）可能同时拉起多个 server 进程，抢不到锁的立即退出，
+    # 避免「地址已被占用」崩溃循环；持有锁的 server 常驻服务。
+    _PORT_LOCK = _os.path.join(
+        _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+        ".server.port.lock",
     )
+    try:
+        _port_lock_fd = _os.open(
+            _PORT_LOCK, _os.O_CREAT | _os.O_EXCL | _os.O_RDWR
+        )
+        _os.write(_port_lock_fd, str(_os.getpid()).encode("utf-8"))
+    except FileExistsError:
+        # 锁已存在：检查持有者是否真的"是"我们的 python server。
+        # 必须同时满足：①OpenProcess 拿到句柄 ②QueryFullProcessImageNameW 是 python.exe/pythonw.exe。
+        # 否则视为死锁或 PID 复用（被别的进程接管了），清理后重试。
+        _lock_is_valid = False
+        try:
+            _old = int(open(_PORT_LOCK, "r", encoding="utf-8").read().strip())
+            import ctypes as _ctypes
+            _h = _ctypes.windll.kernel32.OpenProcess(0x1000, False, _old)
+            if _h:
+                try:
+                    _img_buf = _ctypes.create_unicode_buffer(512)
+                    _img_sz = _ctypes.c_uint(_ctypes.sizeof(_img_buf))
+                    if _ctypes.windll.kernel32.QueryFullProcessImageNameW(
+                        _h, 0, _img_buf, _ctypes.byref(_img_sz)
+                    ):
+                        _img = _img_buf.value.lower()
+                        if _img.endswith("\\python.exe") or _img.endswith("\\pythonw.exe"):
+                            _lock_is_valid = True
+                finally:
+                    _ctypes.windll.kernel32.CloseHandle(_h)
+            if _lock_is_valid:
+                print(f"[port-lock] 8765 已被 PID {_old} (python) 占用，本 server 退出。")
+                _sys.exit(0)
+            print(f"[port-lock] 锁指向 PID {_old} 但它不是 python 进程（PID 已死或被复用），清理锁后重试...")
+        except Exception as e:
+            print(f"[port-lock] 锁检查异常 {e}，清理锁后重试...")
+        try:
+            _os.remove(_PORT_LOCK)
+            _port_lock_fd = _os.open(
+                _PORT_LOCK, _os.O_CREAT | _os.O_EXCL | _os.O_RDWR
+            )
+            _os.write(_port_lock_fd, str(_os.getpid()).encode("utf-8"))
+        except Exception:
+            print("[port-lock] 端口锁获取失败，本 server 退出。")
+            _sys.exit(0)
+
+    import uvicorn
+    try:
+        uvicorn.run(
+            app,
+            host="0.0.0.0",  # bind all interfaces: allow LAN access (was 127.0.0.1)
+            port=8765,
+            workers=1,
+        )
+    finally:
+        try:
+            _os.close(_port_lock_fd)
+        except Exception:
+            pass
+        try:
+            if _os.path.exists(_PORT_LOCK):
+                _os.remove(_PORT_LOCK)
+        except Exception:
+            pass

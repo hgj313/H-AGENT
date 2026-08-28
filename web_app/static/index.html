@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>保险单识别系统</title>
+    <title>保险管理AI助手</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -14,50 +14,186 @@
             color: #333;
         }
 
-        .header {
+        /* App Layout: 左菜单 + 右主区域 */
+        .app-layout {
+            display: flex;
+            min-height: 100vh;
+            background: #f0f2f5;
+        }
+
+        .sidebar {
+            width: 240px;
+            flex-shrink: 0;
+            background: white;
+            border-right: 1px solid #e2e8f0;
+            display: flex;
+            flex-direction: column;
+            position: sticky;
+            top: 0;
+            height: 100vh;
+            box-shadow: 1px 0 4px rgba(0,0,0,0.02);
+        }
+
+        .sidebar-header {
+            padding: 22px 20px;
+            border-bottom: 1px solid #edf2f7;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .sidebar-header .logo {
+            width: 40px;
+            height: 40px;
+            border-radius: 10px;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
-            padding: 20px 40px;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
-        }
-
-        .header h1 { font-size: 24px; font-weight: 600; }
-        .header p { font-size: 13px; opacity: 0.85; margin-top: 4px; }
-
-        /* Tab Navigation */
-        .tab-nav {
+            font-size: 22px;
             display: flex;
-            gap: 0;
-            background: white;
-            border-radius: 12px 12px 0 0;
-            overflow: hidden;
-            box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 2px 8px rgba(102, 126, 234, 0.35);
         }
 
-        .tab-btn {
+        .sidebar-header .logo-text .title {
+            font-size: 15px;
+            font-weight: 600;
+            color: #1a202c;
+            line-height: 1.2;
+        }
+
+        .sidebar-header .logo-text .subtitle {
+            font-size: 11px;
+            color: #a0aec0;
+            margin-top: 3px;
+        }
+
+        .menu {
             flex: 1;
-            padding: 14px 24px;
+            padding: 14px 10px;
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+            overflow-y: auto;
+        }
+
+        .menu-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 11px 14px;
             border: none;
-            background: #f8f9fa;
-            color: #667;
+            background: transparent;
+            color: #4a5568;
             font-size: 14px;
             font-weight: 500;
             cursor: pointer;
-            transition: all 0.2s;
+            border-radius: 8px;
+            transition: all 0.15s;
+            text-align: left;
             font-family: inherit;
-            border-bottom: 3px solid transparent;
+            width: 100%;
         }
 
-        .tab-btn:hover { background: #f0f4ff; color: #667eea; }
-        .tab-btn.active {
-            background: white;
+        .menu-item:hover {
+            background: #f7fafc;
             color: #667eea;
-            border-bottom-color: #667eea;
+        }
+
+        .menu-item.active {
+            background: linear-gradient(90deg, #eef2ff 0%, #f5f7ff 100%);
+            color: #667eea;
             font-weight: 600;
+            box-shadow: inset 3px 0 0 #667eea;
+        }
+
+        .menu-item .icon {
+            font-size: 18px;
+            width: 22px;
+            text-align: center;
+            flex-shrink: 0;
+        }
+
+        .menu-item .label {
+            flex: 1;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .sidebar-footer {
+            padding: 14px 20px;
+            border-top: 1px solid #edf2f7;
+            font-size: 12px;
+            color: #718096;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #48bb78;
+            box-shadow: 0 0 0 0 rgba(72, 187, 120, 0.5);
+            animation: pulse 2s infinite;
+            flex-shrink: 0;
+        }
+
+        .status-dot.offline { background: #f56565; animation: none; box-shadow: none; }
+
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(72, 187, 120, 0.45); }
+            70% { box-shadow: 0 0 0 6px rgba(72, 187, 120, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(72, 187, 120, 0); }
+        }
+
+        .main-content {
+            flex: 1;
+            min-width: 0;
+            padding: 20px 28px 32px;
+            overflow-x: auto;
+        }
+
+        .page-header {
+            background: white;
+            padding: 18px 24px;
+            border-radius: 10px;
+            margin-bottom: 18px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+
+        .page-header h1 {
+            font-size: 20px;
+            color: #1a202c;
+            font-weight: 600;
+            margin: 0;
+        }
+
+        .page-meta {
+            font-size: 13px;
+            color: #718096;
+            margin-top: 4px;
         }
 
         .tab-panel { display: none; }
         .tab-panel.active { display: block; }
+
+        /* 响应式：窄屏隐藏 sidebar 文字 label（保留图标） */
+        @media (max-width: 768px) {
+            .sidebar { width: 60px; }
+            .sidebar-header .logo-text,
+            .menu-item .label,
+            .sidebar-footer span { display: none; }
+            .menu-item { justify-content: center; padding: 12px 0; }
+            .main-content { padding: 16px; }
+        }
 
         /* Reminder Config UI */
         .reminder-form {
@@ -557,17 +693,49 @@
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>保险单识别系统</h1>
-    </div>
+    <div class="app-layout">
+        <!-- 左侧菜单 -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">📑</div>
+                <div class="logo-text">
+                    <div class="title">保险管理 AI 助手</div>
+                    <div class="subtitle">v1.0 · 本机部署</div>
+                </div>
+            </div>
+            <nav class="menu">
+                <button class="menu-item active" data-tab="policy" onclick="switchTab('policy')">
+                    <span class="icon">📄</span>
+                    <span class="label">保单识别</span>
+                </button>
+                <button class="menu-item" data-tab="library" onclick="switchTab('library')">
+                    <span class="icon">🗂️</span>
+                    <span class="label">保单库</span>
+                </button>
+                <button class="menu-item" data-tab="punch" onclick="switchTab('punch')">
+                    <span class="icon">✅</span>
+                    <span class="label">今日打卡数据</span>
+                </button>
+                <button class="menu-item" data-tab="reminder" onclick="switchTab('reminder')">
+                    <span class="icon">⚙️</span>
+                    <span class="label">信息提醒配置</span>
+                </button>
+            </nav>
+            <div class="sidebar-footer">
+                <div class="status-dot" id="statusDot"></div>
+                <span id="statusText">服务运行中</span>
+            </div>
+        </aside>
 
-    <div class="container">
-        <!-- Tab Navigation -->
-        <div class="tab-nav">
-            <button class="tab-btn active" onclick="switchTab('policy')">📄 保单识别</button>
-            <button class="tab-btn" onclick="switchTab('punch')">✅ 今日打卡数据</button>
-            <button class="tab-btn" onclick="switchTab('reminder')">⚙️ 信息提醒配置</button>
-        </div>
+        <!-- 主内容区 -->
+        <main class="main-content">
+            <div class="page-header">
+                <div>
+                    <h1 id="pageTitle">保单识别</h1>
+                    <div class="page-meta" id="pageMeta">上传 PDF 保单，自动提取被保人员信息</div>
+                </div>
+                <div id="pageActions" style="font-size:13px;color:#718096;"></div>
+            </div>
 
         <!-- Tab: 保单识别 -->
         <div class="tab-panel active" id="tabPolicy">
@@ -744,6 +912,40 @@
         </div>
         </div><!-- end tabPolicy -->
 
+        <!-- Tab: 保单库 -->
+        <div class="tab-panel" id="tabLibrary">
+            <div class="upload-card">
+                <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:12px;">
+                    <h3 style="font-size:16px;color:#4a5568;margin:0;">🗂️ 保单文件库</h3>
+                    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                        <input type="text" id="librarySearch" placeholder="按文件名/公司/保单号过滤"
+                               oninput="filterLibraryRows()"
+                               style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:13px;min-width:220px;">
+                        <button onclick="loadLibrary(true)" style="padding:6px 12px;border:none;background:#667eea;color:white;border-radius:6px;cursor:pointer;font-size:13px;">
+                            🔄 刷新
+                        </button>
+                    </div>
+                </div>
+                <div id="librarySummary" style="font-size:13px;color:#718096;margin-bottom:8px;">点击「刷新」加载保单库…</div>
+                <div id="libraryTableWrap" style="max-height:520px;overflow:auto;border:1px solid #e2e8f0;border-radius:6px;">
+                    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+                        <thead>
+                            <tr style="background:#f7fafc;position:sticky;top:0;z-index:1;">
+                                <th style="padding:10px;text-align:left;border-bottom:1px solid #e2e8f0;">文件名</th>
+                                <th style="padding:10px;text-align:left;border-bottom:1px solid #e2e8f0;">上传日期</th>
+                                <th style="padding:10px;text-align:right;border-bottom:1px solid #e2e8f0;">大小</th>
+                                <th style="padding:10px;text-align:left;border-bottom:1px solid #e2e8f0;">类型/保单号/公司</th>
+                                <th style="padding:10px;text-align:center;border-bottom:1px solid #e2e8f0;width:120px;">操作</th>
+                            </tr>
+                        </thead>
+                        <tbody id="libraryTbody">
+                            <tr><td colspan="5" style="padding:30px;text-align:center;color:#999;">未加载</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div><!-- end tabLibrary -->
+
         <!-- Tab: 信息提醒配置 -->
         <div class="tab-panel" id="tabReminder">
         <!-- Email Config -->
@@ -787,7 +989,7 @@
                 </div>
                 <div class="form-group">
                     <label>邮件页脚说明</label>
-                    <input type="text" id="cfgEmailFooter" placeholder="本邮件由保险单识别系统自动发送">
+                    <input type="text" id="cfgEmailFooter" placeholder="本邮件由保险管理AI助手自动发送">
                 </div>
                 <div class="form-group" style="justify-content:flex-end;">
                     <label>&nbsp;</label>
@@ -856,6 +1058,9 @@
 
         <!-- Check Settings -->
         <div class="upload-card">
+            <div id="schedulerStatusBanner" style="display:none;margin-bottom:12px;padding:10px 14px;border-radius:6px;background:#fef2f2;border:1px solid #fc8185c6;color:#9b2c2c;font-size:13px;line-height:1.5;">
+                ⚠️ <b>定时任务总开关已关闭</b>，到期提醒不会自动跑。请到下方「⏰ 定时任务配置」卡片开启总开关。
+            </div>
             <h3 style="font-size:16px;margin-bottom:16px;color:#4a5568;">⏱️ 到期提醒检查设置</h3>
             <div class="reminder-form">
                 <div class="form-group">
@@ -927,16 +1132,7 @@
                     <button class="btn btn-primary" id="btnSyncPunch" onclick="syncPunchData()">🔄 同步今日打卡</button>
                     <button class="btn btn-primary" id="btnCheckCoverage" onclick="checkCoverage()" style="background:#ed8936;">🔍 检查保险覆盖</button>
                     <button class="btn btn-primary" id="btnExportUninsured" onclick="exportUninsured()" style="background:#e53e3e;">⬇️ 导出无保险人员清单</button>
-                    <button class="btn btn-primary" id="btnDailyCheck" onclick="runDailyCheck()" style="background:#805ad5;">🚀 执行每日检查</button>
-                    <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:#718096;margin-left:6px;">
-                        <input type="checkbox" id="chkSkipSync"> 使用现有数据（不重新同步）
-                    </label>
-                    <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:#e53e3e;margin-left:6px;" title="0=全部（生产）；≥1=测试模式，仅发送前 N 个项目的数据，自动忽略今日去重（force=true）">
-                        测试项目数 <input type="number" id="numProjectsLimit" min="0" max="99" value="0" style="width:60px;padding:2px 6px;border:1px solid #feb2b2;border-radius:4px;color:#e53e3e;font-weight:bold;" placeholder="0">
-                    </label>
-                    <label style="display:inline-flex;align-items:center;gap:4px;font-size:12px;color:#e53e3e;margin-left:6px;" title="填写项目名（含子串匹配），只发送该项目的数据，忽略今日去重">
-                        指定项目 <input type="text" id="txtProjectFilter" placeholder="留空=按项目数；填项目名=只发该项目" style="width:240px;padding:2px 6px;border:1px solid #feb2b2;border-radius:4px;color:#e53e3e;">
-                    </label>
+                    <button class="btn btn-primary" id="btnDailyCheck" onclick="runDailyCheck()" style="background:#805ad5;">📨 发送提醒信息</button>
                 </div>
                 <div id="punchStatus" style="margin-top:12px;text-align:center;font-size:14px;"></div>
             </div>
@@ -995,10 +1191,11 @@
                                 <th style="padding:8px;border:1px solid #e2e8f0;">班组</th>
                                 <th style="padding:8px;border:1px solid #e2e8f0;">劳务公司</th>
                                 <th style="padding:8px;border:1px solid #e2e8f0;">劳务分类</th>
+                                <th style="padding:8px;border:1px solid #e2e8f0;">打卡时间</th>
                             </tr>
                         </thead>
                         <tbody id="punchTableBody">
-                            <tr><td colspan="9" style="text-align:center;color:#999;padding:20px;">暂无数据，请先同步今日打卡</td></tr>
+                            <tr><td colspan="10" style="text-align:center;color:#999;padding:20px;">暂无数据，请先同步今日打卡</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -1011,7 +1208,8 @@
             </div>
         </div><!-- end tabPunch -->
 
-    </div>
+        </div>
+    </main>
 
     <script>
         let selectedFiles = [];
@@ -1261,25 +1459,135 @@
 
         // ========== 信息提醒配置 ==========
 
+        // 各 tab 的标题/描述（顶部 page-header 动态切换）
+        const TAB_META = {
+            policy:   { title: '保单识别',       desc: '上传 PDF 保单，自动提取被保人员信息' },
+            library:  { title: '保单库',         desc: '管理本地已归档的保单 PDF 文件，可上传下载' },
+            punch:    { title: '今日打卡数据',   desc: '查看今日项目人员打卡情况 + 覆盖检查' },
+            reminder: { title: '信息提醒配置',   desc: '邮件 / 短信通道、保险到期提醒设置' },
+        };
+        const TAB_ORDER = ['policy', 'library', 'punch', 'reminder'];
+
         function switchTab(tab) {
-            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.menu-item').forEach(b => b.classList.remove('active'));
             document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
 
-            const btns = document.querySelectorAll('.tab-btn');
-            if (tab === 'policy') {
-                btns[0].classList.add('active');
-                document.getElementById('tabPolicy').classList.add('active');
-                loadPersonnel();
-            } else if (tab === 'punch') {
-                btns[1].classList.add('active');
-                document.getElementById('tabPunch').classList.add('active');
-                loadSchedulerConfig();
-                loadPunchRecords();
-            } else if (tab === 'reminder') {
-                btns[2].classList.add('active');
-                document.getElementById('tabReminder').classList.add('active');
-                loadReminderConfig();
+            const items = document.querySelectorAll('.menu-item');
+            const idx = TAB_ORDER.indexOf(tab);
+            if (idx >= 0) items[idx].classList.add('active');
+
+            // tab name → element id (policy → tabPolicy)
+            const panelId = 'tab' + tab.charAt(0).toUpperCase() + tab.slice(1);
+            const panel = document.getElementById(panelId);
+            if (panel) panel.classList.add('active');
+
+            // 顶部标题/描述动态切换
+            const meta = TAB_META[tab];
+            if (meta) {
+                document.getElementById('pageTitle').textContent = meta.title;
+                document.getElementById('pageMeta').textContent = meta.desc;
             }
+
+            // 各 tab 数据加载
+            if (tab === 'policy') loadPersonnel();
+            else if (tab === 'library') loadLibrary(false);
+            else if (tab === 'punch') { loadSchedulerConfig(); loadPunchRecords(); }
+            else if (tab === 'reminder') loadReminderConfig();
+        }
+
+        // 服务健康状态（侧栏底部指示灯）：每 30s 探一次 /api/health
+        async function checkServiceHealth() {
+            const dot = document.getElementById('statusDot');
+            const txt = document.getElementById('statusText');
+            if (!dot || !txt) return;
+            try {
+                const apiBase = getApiBase();
+                const r = await fetch(`${apiBase}/api/health`, { cache: 'no-store' });
+                if (r.ok) {
+                    dot.classList.remove('offline');
+                    txt.textContent = '服务运行中';
+                } else {
+                    dot.classList.add('offline');
+                    txt.textContent = `服务异常 HTTP ${r.status}`;
+                }
+            } catch (e) {
+                dot.classList.add('offline');
+                txt.textContent = '服务离线';
+            }
+        }
+        checkServiceHealth();
+        setInterval(checkServiceHealth, 30000);
+
+        // === 保单库 ===
+        let _libraryAllRows = [];   // 缓存最近一次加载的全量数据，供前端搜索过滤
+
+        function formatBytes(n) {
+            if (!n || n < 0) return '-';
+            if (n < 1024) return n + ' B';
+            if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+            if (n < 1024 * 1024 * 1024) return (n / 1024 / 1024).toFixed(2) + ' MB';
+            return (n / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+        }
+
+        function formatDateTime(ts) {
+            if (!ts) return '-';
+            const d = new Date(ts * 1000);
+            const pad = n => String(n).padStart(2, '0');
+            return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+        }
+
+        async function loadLibrary(forceReload) {
+            const apiBase = getApiBase();
+            try {
+                const resp = await fetch(`${apiBase}/api/policy-library`);
+                if (!resp.ok) {
+                    document.getElementById('librarySummary').textContent = `加载失败 (HTTP ${resp.status})`;
+                    return;
+                }
+                const data = await resp.json();
+                _libraryAllRows = data.records || [];
+                document.getElementById('librarySummary').textContent =
+                    `共 ${_libraryAllRows.length} 个保单文件 · 库路径：${data.base_dir || ''}`;
+                renderLibraryRows(_libraryAllRows);
+            } catch (e) {
+                document.getElementById('librarySummary').textContent = `加载异常：${e.message}`;
+            }
+        }
+
+        function renderLibraryRows(rows) {
+            const tbody = document.getElementById('libraryTbody');
+            if (!rows || rows.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" style="padding:30px;text-align:center;color:#999;">保单库为空，请先在「保单识别」上传 PDF</td></tr>';
+                return;
+            }
+            tbody.innerHTML = rows.map(r => {
+                const meta = [r.policy_type, r.policy_number, r.company].filter(Boolean).join(' / ');
+                // 行内 HTML 转义防 XSS
+                const fname = String(r.file_name).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+                const metaSafe = String(meta || '-').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+                const dlUrl = `${getApiBase()}/api/policy-library/download/${encodeURIComponent(r.file_name)}`;
+                const missingTag = r.in_index ? '' : '<span style="color:#dd6b20;font-size:11px;margin-left:6px;">未索引</span>';
+                return `<tr>
+                    <td style="padding:8px 10px;border-bottom:1px solid #edf2f7;word-break:break-all;">${fname}${missingTag}</td>
+                    <td style="padding:8px 10px;border-bottom:1px solid #edf2f7;white-space:nowrap;">${formatDateTime(r.upload_date_ts)}</td>
+                    <td style="padding:8px 10px;border-bottom:1px solid #edf2f7;text-align:right;">${formatBytes(r.size_bytes)}</td>
+                    <td style="padding:8px 10px;border-bottom:1px solid #edf2f7;">${metaSafe}</td>
+                    <td style="padding:8px 10px;border-bottom:1px solid #edf2f7;text-align:center;">
+                        <a href="${dlUrl}" download="${fname}" style="display:inline-block;padding:4px 10px;background:#48bb78;color:white;border-radius:4px;text-decoration:none;font-size:12px;">⬇ 下载</a>
+                    </td>
+                </tr>`;
+            }).join('');
+        }
+
+        function filterLibraryRows() {
+            const q = (document.getElementById('librarySearch').value || '').toLowerCase().trim();
+            if (!q) { renderLibraryRows(_libraryAllRows); return; }
+            const filtered = _libraryAllRows.filter(r => {
+                const hay = [r.file_name, r.company, r.policy_number, r.insurance_company, r.policy_type]
+                    .filter(Boolean).join(' ').toLowerCase();
+                return hay.includes(q);
+            });
+            renderLibraryRows(filtered);
         }
 
         async function loadReminderConfig() {
@@ -1345,6 +1653,9 @@
                         document.getElementById('expiryCheckTime').value = schedData.expiry_time || '09:00';
                         document.getElementById('expiryAheadDays').value = schedData.expiry_ahead_days ?? 3;
                         updateExpiryToggle(schedData.expiry_enabled !== false);
+                        // 总开关被关时显示横幅提醒（避免「到期提醒已启用」误判以为会自动跑）
+                        const banner = document.getElementById('schedulerStatusBanner');
+                        if (banner) banner.style.display = schedData.enabled === false ? 'block' : 'none';
                     }
                 } catch (e) {
                     console.error('加载到期提醒配置失败:', e);
@@ -1803,7 +2114,7 @@
                 if (supFilter && r.supplier_name !== supFilter) return false;
                 if (catFilter && r.category_name !== catFilter) return false;
                 if (search) {
-                    const haystack = [r.member_name, r.identification_number, r.project_name, r.project_manager, r.manager_phone, r.manager_email, r.team_name, r.supplier_name, r.category_name]
+                    const haystack = [r.member_name, r.identification_number, r.project_name, r.project_manager, r.manager_phone, r.manager_email, r.team_name, r.supplier_name, r.category_name, r.punch_time]
                         .filter(Boolean).join(' ').toLowerCase();
                     if (!haystack.includes(search)) return false;
                 }
@@ -1828,6 +2139,7 @@
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r.team_name || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r.supplier_name || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r.category_name || ''}</td>
+                    <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r.punch_time || ''}</td>
                 </tr>
             `).join('');
         }
@@ -1846,6 +2158,8 @@
                 if (data.success) {
                     status.innerHTML = `<span style="color:#48bb78;">✅ 同步完成：共 ${data.total} 条，入库 ${data.stored} 条</span>`;
                     loadPunchRecords();
+                } else if (data.readonly_db) {
+                    status.innerHTML = `<span style="color:#ed8936;">⚠️ ${data.error}（生产 Windows 不受影响）</span>`;
                 } else {
                     status.innerHTML = `<span style="color:#e53e3e;">❌ 同步失败: ${data.error || data.detail || '未知错误'}</span>`;
                 }
@@ -1950,48 +2264,30 @@
             const btn = document.getElementById('btnDailyCheck');
             const status = document.getElementById('punchStatus');
             btn.disabled = true;
-            btn.textContent = '执行中...';
-            status.innerHTML = '<span class="spinner"></span> 正在执行每日检查（同步+对比+提醒）...';
+            btn.textContent = '发送中...';
+            status.innerHTML = '<span class="spinner"></span> 正在发送提醒信息（同步打卡 + 比对保单 + 推送短信/邮件）...';
 
             try {
-                const skipSync = document.getElementById('chkSkipSync')?.checked;
-                const projLimit = parseInt(document.getElementById('numProjectsLimit')?.value || '0', 10);
-                const projFilter = (document.getElementById('txtProjectFilter')?.value || '').trim();
-                const params = [];
-                if (skipSync) params.push('skip_sync=true');
-                if (projFilter) {
-                    params.push('project_filter=' + encodeURIComponent(projFilter));
-                    params.push('force=true');  // 指定项目测试模式隐含 force
-                } else if (projLimit > 0) {
-                    params.push('projects_limit=' + projLimit);
-                    params.push('force=true');  // 测试模式隐含 force
-                }
-                const qs = params.length ? `?${params.join('&')}` : '';
-                const resp = await fetch(`${apiBase}/api/daily-check${qs}`, { method: 'POST' });
+                const resp = await fetch(`${apiBase}/api/daily-check`, { method: 'POST' });
                 const data = await resp.json();
                 if (data.success) {
                     const cov = data.coverage || {};
                     updateCoverageStats(cov);
                     renderAbnormal(cov);
-                    let extra = '';
-                    if (data.limited_projects && data.limited_projects.length) {
-                        extra = `（测试模式：仅发送项目 ${data.limited_projects.join(' / ')}）`;
-                    } else if (data.skipped) {
-                        extra = '';
-                    }
                     const emailMsg = data.email ? data.email.message : '';
-                    status.innerHTML = `<span style="color:#48bb78;">✅ 每日检查完成。${emailMsg}${extra}</span>`;
+                    const smsMsg = data.sms ? data.sms.message : '';
+                    status.innerHTML = `<span style="color:#48bb78;">✅ 提醒信息已发送。${smsMsg ? '短信：' + smsMsg + '。' : ''}${emailMsg}</span>`;
                     loadPunchRecords();
                 } else if (data.skipped) {
-                    status.innerHTML = `<span style="color:#ed8936;">⚠️ ${data.skip_reason || '今日已发送过，已跳过'}。如需重新发送请填写「指定项目」或「测试项目数」≥1。</span>`;
+                    status.innerHTML = `<span style="color:#ed8936;">⚠️ ${data.skip_reason || '今日已发送过，已跳过'}</span>`;
                 } else {
-                    status.innerHTML = `<span style="color:#e53e3e;">❌ 执行失败: ${data.error || data.detail || '未知错误'}</span>`;
+                    status.innerHTML = `<span style="color:#e53e3e;">❌ 发送失败: ${data.error || data.detail || '未知错误'}</span>`;
                 }
             } catch (err) {
-                status.innerHTML = `<span style="color:#e53e3e;">❌ 执行失败: ${err.message}</span>`;
+                status.innerHTML = `<span style="color:#e53e3e;">❌ 发送失败: ${err.message}</span>`;
             } finally {
                 btn.disabled = false;
-                btn.textContent = '🚀 执行每日检查';
+                btn.textContent = '📨 发送提醒信息';
                 setTimeout(() => { status.innerHTML = ''; }, 8000);
             }
         }
