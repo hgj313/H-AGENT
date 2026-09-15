@@ -685,6 +685,20 @@
             color: #e53e3e;
         }
 
+        /* 日期异常警告样式 (2026-09-15 新增) */
+        .date-warn { background: #fff8e1 !important; border-left: 3px solid #f59e0b !important; }
+        .date-warn td { color: #92400e !important; }
+        .date-warn-icon { color: #f59e0b; font-weight: bold; margin-left: 4px; cursor: help; }
+        .date-warn-summary {
+            background: #fef3c7; border: 1px solid #fbbf24; color: #78350f;
+            padding: 10px 14px; border-radius: 6px; margin: 10px 0;
+            font-size: 13px; display: flex; align-items: center; gap: 10px;
+        }
+        .date-warn-summary .count-badge {
+            background: #f59e0b; color: white; padding: 2px 10px;
+            border-radius: 10px; font-weight: bold; font-size: 12px;
+        }
+
         /* Responsive */
         @media (max-width: 768px) {
             .summary-stats { grid-template-columns: repeat(2, 1fr); }
@@ -803,7 +817,7 @@
 
         <!-- 保单人员数据 -->
         <div class="upload-card">
-            <h3 style="font-size:16px;margin-bottom:12px;color:#4a5568;">📋 保单人员数据（共 <span id="personnelCount">0</span> 人）</h3>
+            <h3 style="font-size:16px;margin-bottom:12px;color:#4a5568;">📋 保单人员数据（共 <span id="personnelCount">0</span> 人 · <span id="personnelAnomalyCount" style="color:#f59e0b;">⚠ 日期异常 <span id="anomalyNum">0</span> 条</span>）</h3>
             <div class="btn-group" style="justify-content:flex-start;margin-bottom:12px;">
                 <button class="btn btn-primary" id="btnRefreshPersonnel" onclick="loadPersonnel()">🔄 刷新数据</button>
                 <button class="btn btn-primary" onclick="toggleManualAdd()" style="background:#48bb78;">➕ 手动添加</button>
@@ -884,6 +898,7 @@
                     <option value="正常">正常</option>
                     <option value="失效">失效</option>
                 </select>
+                <button class="btn btn-secondary" style="background:#fef3c7;border-color:#fbbf24;color:#78350f;font-size:12px;" onclick="filterDateAnomalies()">⚠ 仅日期异常</button>
                 <span class="filter-count" id="personnelFilterCount"></span>
             </div>
             <div style="overflow-x:auto;max-height:600px;overflow-y:auto;">
@@ -918,7 +933,7 @@
                 <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:12px;">
                     <h3 style="font-size:16px;color:#4a5568;margin:0;">🗂️ 保单文件库</h3>
                     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                        <input type="text" id="librarySearch" placeholder="按文件名/公司/保单号过滤"
+                        <input type="text" id="librarySearch" placeholder="输入保单号或批单号精确搜索"
                                oninput="filterLibraryRows()"
                                style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:13px;min-width:220px;">
                         <button onclick="loadLibrary(true)" style="padding:6px 12px;border:none;background:#667eea;color:white;border-radius:6px;cursor:pointer;font-size:13px;">
@@ -1362,6 +1377,17 @@
             }
         }
 
+        // 日期异常检测工具函数（2026-09-15 新增）
+        function checkDateAnomaly(p) {
+            const issues = [];
+            const sd = (p.start_date || '').trim();
+            const ed = (p.end_date || '').trim();
+            if (sd && ed && sd > ed) issues.push('start>end');
+            if (!sd) issues.push('start_missing');
+            if (!ed) issues.push('end_missing');
+            return issues;
+        }
+
         function renderResults(results) {
             const card = document.getElementById('resultsCard');
             const body = document.getElementById('resultsBody');
@@ -1395,6 +1421,7 @@
                 if (removeCount > 0) badges += `<span class="badge remove">减${removeCount}</span>`;
 
                 let tableRows = '';
+                let dateWarnCount = 0;
                 if (persons.length === 0) {
                     tableRows = '<tr><td colspan="12" style="text-align:center;color:#999;padding:20px;">未提取到人员信息</td></tr>';
                 } else {
@@ -1402,10 +1429,21 @@
                         const modClass = p.modification_type === '增保' ? 'add' : (p.modification_type === '减保' ? 'remove' : '');
                         const startDate = p.start_date || r.overall_start_date || '';
                         const endDate = p.end_date || r.overall_end_date || '';
+                        const issues = checkDateAnomaly(p);
+                        const warnClass = issues.length > 0 ? 'date-warn' : '';
+                        let warnIcon = '';
+                        if (issues.length > 0) {
+                            dateWarnCount++;
+                            const tips = [];
+                            if (issues.includes('start>end')) tips.push('起始>起止日期（数据异常）');
+                            if (issues.includes('start_missing')) tips.push('缺失起始日期');
+                            if (issues.includes('end_missing')) tips.push('缺失起止日期');
+                            warnIcon = `<span class="date-warn-icon" title="${tips.join('；')}">⚠</span>`;
+                        }
                         tableRows += `
-                            <tr>
+                            <tr class="${warnClass}">
                                 <td>${idx + 1}</td>
-                                <td>${p.name || ''}</td>
+                                <td>${p.name || ''}${warnIcon}</td>
                                 <td>${p.id_number || ''}</td>
                                 <td>${p.birth_date || ''}</td>
                                 <td>${p.company || ''}</td>
@@ -1421,12 +1459,17 @@
                     });
                 }
 
+                const warnSummary = dateWarnCount > 0
+                    ? `<div class="date-warn-summary"><span class="count-badge">${dateWarnCount}</span>本文件存在 ${dateWarnCount} 条日期异常记录（黄底⚠），请人工核实！可能原因：批单主保单未上传/批改日期超出主保单期间/识别错误。</div>`
+                    : '';
+
                 section.innerHTML = `
                     <div class="file-header">
                         <span>${r.file_name}</span>
                         <span style="color:#888;font-size:12px;">${r.insurance_company || ''} | ${r.policy_number || ''}</span>
                         ${badges}
                     </div>
+                    ${warnSummary}
                     <table>
                         <thead>
                             <tr>
@@ -1557,7 +1600,11 @@
         function renderLibraryRows(rows) {
             const tbody = document.getElementById('libraryTbody');
             if (!rows || rows.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="5" style="padding:30px;text-align:center;color:#999;">保单库为空，请先在「保单识别」上传 PDF</td></tr>';
+                const q = (document.getElementById('librarySearch')?.value || '').trim();
+                const msg = q
+                    ? `未匹配到保单号/批单号等于「${q}」的记录`
+                    : '保单库为空，请先在「保单识别」上传 PDF';
+                tbody.innerHTML = `<tr><td colspan="5" style="padding:30px;text-align:center;color:#999;">${msg}</td></tr>`;
                 return;
             }
             tbody.innerHTML = rows.map(r => {
@@ -1580,12 +1627,14 @@
         }
 
         function filterLibraryRows() {
-            const q = (document.getElementById('librarySearch').value || '').toLowerCase().trim();
+            // 精确匹配：仅按保单号或批单号完全相等（不区分大小写、前后空格）
+            const q = (document.getElementById('librarySearch').value || '').trim();
             if (!q) { renderLibraryRows(_libraryAllRows); return; }
+            const qLower = q.toLowerCase();
             const filtered = _libraryAllRows.filter(r => {
-                const hay = [r.file_name, r.company, r.policy_number, r.insurance_company, r.policy_type]
-                    .filter(Boolean).join(' ').toLowerCase();
-                return hay.includes(q);
+                const policyNo = (r.policy_number || '').toLowerCase();
+                // 1. 保单号完全相等；2. 文件名里包含完整搜索词（兜底支持未入索引的纯文件）
+                return policyNo === qLower || (r.file_name || '').toLowerCase().includes(qLower);
             });
             renderLibraryRows(filtered);
         }
@@ -2295,6 +2344,12 @@
         // ========== 保单人员数据 ==========
 
         let personnelRecordsCache = [];  // 保单人员数据缓存（用于搜索筛选）
+        let _dateAnomalyOnly = false;  // 是否仅显示日期异常记录
+
+        function filterDateAnomalies() {
+            _dateAnomalyOnly = !_dateAnomalyOnly;
+            renderPersonnelTable();
+        }
 
         async function loadPersonnel() {
             const apiBase = getApiBase();
@@ -2304,6 +2359,12 @@
                 const data = await resp.json();
                 personnelRecordsCache = data.records || [];
                 document.getElementById('personnelCount').textContent = data.total || 0;
+                // 统计日期异常条数
+                const anomalyCount = personnelRecordsCache.filter(r => checkLibraryDateAnomaly(r).length > 0).length;
+                const anomalyNumEl = document.getElementById('anomalyNum');
+                if (anomalyNumEl) anomalyNumEl.textContent = anomalyCount;
+                const anomalyCountEl = document.getElementById('personnelAnomalyCount');
+                if (anomalyCountEl) anomalyCountEl.style.display = anomalyCount > 0 ? 'inline' : 'none';
                 populatePersonnelFilters();
                 renderPersonnelTable();
             } catch (err) {
@@ -2322,6 +2383,16 @@
             compSel.value = curComp;
         }
 
+        function checkLibraryDateAnomaly(r) {
+            const sd = (r['起始时间'] || '').trim();
+            const ed = (r['起止时间'] || '').trim();
+            const issues = [];
+            if (sd && ed && sd > ed) issues.push('start>end');
+            if (!sd) issues.push('start_missing');
+            if (!ed) issues.push('end_missing');
+            return issues;
+        }
+
         function renderPersonnelTable() {
             const tbody = document.getElementById('personnelTableBody');
             const search = (document.getElementById('personnelSearch')?.value || '').trim().toLowerCase();
@@ -2330,6 +2401,7 @@
 
             // 应用筛选
             let filtered = personnelRecordsCache.filter(r => {
+                if (_dateAnomalyOnly && checkLibraryDateAnomaly(r).length === 0) return false;
                 if (compFilter && r['保险公司'] !== compFilter) return false;
                 if (statusFilter && r['状态'] !== statusFilter) return false;
                 if (search) {
@@ -2350,9 +2422,19 @@
             tbody.innerHTML = filtered.map(r => {
                 const statusColor = r['状态'] === '失效' ? '#e53e3e' : '#48bb78';
                 const rid = r['id'] !== undefined ? r['id'] : '';
+                const issues = checkLibraryDateAnomaly(r);
+                const warnClass = issues.length > 0 ? 'date-warn' : '';
+                let warnIcon = '';
+                if (issues.length > 0) {
+                    const tips = [];
+                    if (issues.includes('start>end')) tips.push('起始>起止日期');
+                    if (issues.includes('start_missing')) tips.push('缺失起始日期');
+                    if (issues.includes('end_missing')) tips.push('缺失起止日期');
+                    warnIcon = `<span class="date-warn-icon" title="${tips.join('；')}">⚠</span>`;
+                }
                 return `
-                <tr>
-                    <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['姓名'] || ''}</td>
+                <tr class="${warnClass}">
+                    <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['姓名'] || ''}${warnIcon}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['证件号码'] || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['证件类型'] || ''}</td>
                     <td style="padding:6px 8px;border:1px solid #e2e8f0;">${r['出生日期'] || ''}</td>

@@ -234,6 +234,29 @@ def _process_single_pdf(fpath: str) -> dict:
         if not result_dict.get("policy_holder"):
             result_dict["policy_holder"] = fname_info.company
 
+        # 收集 validator_node 的 warnings（用于检测批单主保单缺失等异常）
+        warnings = final_state.get("warnings") or []
+
+        # 批单主保单缺失/不匹配检测（2026-09-15 关键防御）：
+        # 必须在 persist 之前阻断，否则空日期的人员记录仍会被 upsert 进库
+        # （参见 森炜 0072423000 批单错填 6894300 日期事件）
+        if fname_info.policy_type == "批单" and not result_dict.get("error"):
+            main_missing_warnings = [
+                w for w in warnings
+                if "未找到对应主保单" in w
+                or ("主保单号" in w and "不一致" in w)
+            ]
+            if main_missing_warnings:
+                msg = main_missing_warnings[0]
+                return {
+                    "file_name": fname,
+                    "error": f"批单主保单缺失/不匹配：{msg}",
+                    "warnings": warnings,
+                    "policy_number": result_dict.get("policy_number", ""),
+                    "policy_holder": result_dict.get("policy_holder", ""),
+                    "insured_persons": [],
+                }
+
         # 注册到保单文件库
         if not result_dict.get("error"):
             try:
@@ -247,6 +270,7 @@ def _process_single_pdf(fpath: str) -> dict:
         except Exception:
             pass
 
+        result_dict["warnings"] = warnings
         return result_dict
     except Exception as e:
         return {"file_name": fname, "error": str(e)}

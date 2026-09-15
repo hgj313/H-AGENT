@@ -183,15 +183,53 @@ class PolicyLibrary:
 
         return None
 
-    def find_main_policy(self, policy_number: str = "", company: str = "") -> Optional[PolicyRecord]:
-        """查找主保单：先按保单号，再按公司名
+    @staticmethod
+    def _policy_numbers_compatible(batch_no: str, main_no: str) -> bool:
+        """检查批单保单号与主保单保单号是否兼容（同属一份保单）
+
+        利宝规则：主保单 81XXXXXXXXXXXXXXXXXXYY / 批单 71XXXXXXXXXXXXXXXXXXNN
+        → 第 1 位 8 vs 7（保单 vs 批单），第 2 位相同
+        → 中间 18 位（positions 3-20，0-indexed 2..19）相同
+        → 最后 1-2 位是流水号
+
+        其它保险公司保单号结构不同 → 退化为：号码本身完全相等或共享长前缀
+        （保守策略：前缀不一致时拒绝，避免错配）
+        """
+        if not batch_no or not main_no:
+            return False
+        if batch_no == main_no:
+            return True
+        # 利宝：8 vs 7 + 共享中段
+        if len(batch_no) >= 20 and len(main_no) >= 20:
+            # 第 2 位（index 1）必须相同
+            if batch_no[1] != main_no[1]:
+                return False
+            # 中段 positions 2..19（18 位）必须完全一致
+            if batch_no[2:20] == main_no[2:20]:
+                # 利宝第 1 位 8=主保单 / 7=批单
+                if batch_no[0] == "7" and main_no[0] == "8":
+                    return True
+                # 其它保险公司（保单号首字符非 7/8）：保守按"前 18 位相同"放行
+                if batch_no[0] not in ("7", "8") and main_no[0] not in ("7", "8"):
+                    return True
+        return False
+
+    def find_main_policy(
+        self, policy_number: str = "", company: str = ""
+    ) -> Optional[PolicyRecord]:
+        """查找主保单：先按保单号，再按公司名（带保单号前缀兼容性校验）
 
         Args:
-            policy_number: 批单中的保单号
+            policy_number: 批单中的保单号（同时用于保单号前缀兼容性校验）
             company: 公司名称（备用匹配）
 
         Returns:
             PolicyRecord or None
+
+        Note:
+            2026-09-15 加固：仅按公司名模糊匹配时，必须校验保单号前缀兼容
+            （否则森炜 0072423000 批单会匹配到 6894300 主保单，把别人的起止日期
+            错填到本批单的逐人记录中）。
         """
         # 1. 先按保单号精确匹配
         if policy_number:
@@ -199,11 +237,14 @@ class PolicyLibrary:
             if record:
                 return record
 
-        # 2. 再按公司名模糊匹配
+        # 2. 再按公司名模糊匹配（带保单号前缀兼容性校验）
         if company:
             record = self.find_main_policy_by_company(company)
-            if record:
-                return record
+            if record and policy_number:
+                # 校验保单号前缀是否兼容：拒绝"同公司不同保单号"的错配
+                if not self._policy_numbers_compatible(policy_number, record.policy_number):
+                    return None
+            return record
 
         return None
 
