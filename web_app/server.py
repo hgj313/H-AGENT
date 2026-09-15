@@ -77,6 +77,20 @@ _llm_client = None
 _policy_library = PolicyLibrary()  # 默认用项目根下的 policy_library 目录
 _latest_results: list[dict] = []  # 最近一次提取结果
 _graph_cache = None  # 单例 graph，复用避免每次重建
+_graph_cache_signature = None  # 上次构建 graph 时的关键文件 mtime 签名（用于代码更新自动重建）
+
+# 关键代码文件列表：变更这些文件应触发 graph 重建
+_GRAPH_CODE_FILES = [
+    "insurance_agent/agents/invoice_recognition/nodes/policy_parser_node.py",
+    "insurance_agent/agents/invoice_recognition/nodes/metadata_extractor_node.py",
+    "insurance_agent/agents/invoice_recognition/nodes/personnel_extractor_node.py",
+    "insurance_agent/agents/invoice_recognition/nodes/validator_node.py",
+    "insurance_agent/agents/invoice_recognition/nodes/output_node.py",
+    "insurance_agent/extractors/table_extractor.py",
+    "insurance_agent/extractors/inline_extractor.py",
+    "insurance_agent/extractors/individual_extractor.py",
+    "insurance_agent/extractors/ocr_extractor.py",
+]
 
 # 公司系统会话管理器（25分钟自动续期 JSESSIONID）
 # 生产环境使用 www.gseerp.com
@@ -98,10 +112,61 @@ def get_llm():
     return _llm_client
 
 
-def get_invoice_graph():
-    """获取单例 invoice recognition graph（避免每次请求重建）"""
-    global _graph_cache
-    if _graph_cache is None:
+def _compute_graph_signature() -> tuple:
+    """计算 graph 关键代码文件的 mtime 签名
+
+    用于检测代码变更。但**不能**仅靠 signature 自动 rebuild——Python 模块缓存在
+    sys.modules 中，需 importlib.reload 显式重载才能生效。完整方案是配合
+    `force_reload=True` 调用，或干脆重启服务（见 `/api/agent/info`）。
+    """
+    sig = {}
+    for rel in _GRAPH_CODE_FILES:
+        full = os.path.join(_BASE_DIR, rel)
+        try:
+            sig[rel] = os.path.getmtime(full)
+        except OSError:
+            sig[rel] = 0.0
+    return tuple(sorted(sig.items()))
+
+
+def _reload_graph_dependencies() -> None:
+    """强制 reload 关键代码模块，使其新代码生效（不重启进程）。
+
+    注意：被引用方需一并 reload（如 graph.py 引用了 nodes/*，改了节点文件
+    也要 reload graph 模块本身）。下面的顺序按依赖倒序：先 reload 叶子节点。
+    """
+    import importlib
+    mods = [
+        "insurance_agent.agents.invoice_recognition.nodes.policy_parser_node",
+        "insurance_agent.agents.invoice_recognition.nodes.metadata_extractor_node",
+        "insurance_agent.agents.invoice_recognition.nodes.personnel_extractor_node",
+        "insurance_agent.agents.invoice_recognition.nodes.validator_node",
+        "insurance_agent.agents.invoice_recognition.nodes.output_node",
+        "insurance_agent.extractors.table_extractor",
+        "insurance_agent.extractors.inline_extractor",
+        "insurance_agent.extractors.individual_extractor",
+        "insurance_agent.extractors.ocr_extractor",
+        "insurance_agent.agents.invoice_recognition.capability",
+        "insurance_agent.agents.invoice_recognition.graph",
+    ]
+    for m in mods:
+        if m in sys.modules:
+            try:
+                importlib.reload(sys.modules[m])
+            except Exception as e:
+                print(f"[WARN] reload {m} 失败: {e}")
+
+
+def get_invoice_graph(force_rebuild: bool = False):
+    """获取单例 invoice recognition graph（避免每次请求重建）
+
+    Args:
+        force_rebuild: 强制重建 graph（仅在已 reload 模块后才有意义）
+    """
+    global _graph_cache, _graph_cache_signature
+    if force_rebuild:
+        _reload_graph_dependencies()
+    if force_rebuild or _graph_cache is None:
         llm = get_llm()
         capability = InvoiceRecognitionCapability(
             pdf_parser=PyMuPDFParser(),
@@ -109,6 +174,7 @@ def get_invoice_graph():
             policy_library=_policy_library,
         )
         _graph_cache = build_invoice_recognition_graph(capability)
+        _graph_cache_signature = _compute_graph_signature()
     return _graph_cache
 
 
@@ -346,6 +412,76 @@ PERSONNEL_FIELDS = [
 @app.get("/api/health")
 async def health():
     return {"status": "ok", "llm_available": _llm_client is not None}
+
+
+@app.get("/api/agent/info")
+async def agent_info():
+    """返回 agent 代码版本信息（关键文件 mtime + git commit）
+
+    用于：
+    1. 用户/前端核对"代码修复后服务是否已加载新代码"（无需重启，graph 自动重建）
+    2. 调试时确认运行中的代码版本
+    """
+    import os, subprocess, time
+
+    # 关键代码文件 mtime
+    files = []
+    for rel in _GRAPH_CODE_FILES:
+        full = os.path.join(_BASE_DIR, rel)
+        try:
+            mt = os.path.getmtime(full)
+            files.append({
+                "path": rel,
+                "mtime": mt,
+                "mtime_iso": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mt)),
+            })
+        except OSError as e:
+            files.append({"path": rel, "error": str(e)})
+
+    # git commit (best-effort)
+    git_commit = ""
+    try:
+        git_commit = subprocess.check_output(
+            ["git", "-C", _BASE_DIR, "rev-parse", "--short", "HEAD"],
+            stderr=subprocess.DEVNULL, timeout=2
+        ).decode().strip()
+    except Exception:
+        pass
+
+    # 当前 graph 签名（与磁盘签名对比判断是否需要重建）
+    sig = _compute_graph_signature()
+    sig_built = _graph_cache_signature
+    rebuilt_pending = (sig != sig_built) if sig_built else None
+
+    return {
+        "git_commit": git_commit,
+        "graph_files": files,
+        "graph_signature": list(sig),  # [(path, mtime), ...]
+        "graph_signature_built": list(sig_built) if sig_built else None,
+        "rebuild_pending": rebuilt_pending,  # True = 下次请求会自动重建
+    }
+
+
+@app.post("/api/agent/reload")
+async def agent_reload():
+    """手动 reload 关键代码模块并重建 graph（无需重启服务）。
+
+    适用场景：开发者改了 insurance_agent 代码，希望立即生效而不想重启服务。
+    仍建议优先重启服务以确保 100% 模块状态一致。
+    """
+    before_sig = _compute_graph_signature()
+    before_built = _graph_cache_signature
+    get_invoice_graph(force_rebuild=True)
+    after_sig = _compute_graph_signature()
+    after_built = _graph_cache_signature
+
+    return {
+        "success": True,
+        "before_signature": list(before_sig),
+        "after_signature": list(after_sig),
+        "before_signature_built": list(before_built) if before_built else None,
+        "after_signature_built": list(after_built),
+    }
 
 
 def _load_upload_token() -> str:

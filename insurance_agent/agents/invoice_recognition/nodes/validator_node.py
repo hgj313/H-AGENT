@@ -101,6 +101,22 @@ class ValidatorNode:
             )
             return warnings
 
+        # 安全校验（2026-09-15 关键修复）：匹配到的主保单 保单号 必须与批单中的保单号一致
+        # 避免 `find_main_policy_by_company` 公司模糊匹配时匹配到同公司其他主保单，
+        # 导致把别人的起止日期错填到本批单的逐人记录中。
+        # 实例：森炜 0072423000 批单001/002 (2026-09-03 上传) → 主保单 0072423000 未入库
+        #   → 回退到 6894300 主保单（也是森炜）→ 3 条记录被错填 2026-06-09~2026-12-08
+        if policy_number and main_policy.policy_number and main_policy.policy_number != policy_number:
+            warnings.append(
+                f"批单关联的主保单号({main_policy.policy_number})与批单中的保单号({policy_number})不一致，"
+                f"跳过日期补全。请先上传主保单 {policy_number} 再上传该批单。"
+            )
+            logger.warning(
+                f"批单 {file_name} 期望主保单号 {policy_number}，"
+                f"但 find_main_policy 匹配到 {main_policy.policy_number}，拒绝日期补全"
+            )
+            return warnings
+
         # 用主保单的起止时间填充缺失的时间
         main_start = main_policy.start_date
         main_end = main_policy.end_date
