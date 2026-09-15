@@ -36,6 +36,12 @@ _INDIVIDUAL_MARKERS = ["被保险人信息", "被保人信息"]
 # 不记名投保保单特征（灵工版等 — 只投总人数，不逐人记名 → 无清单）
 _UNLISTED_MARKERS = ["是否记名投保", "总投保员工人数", "不记名投保", "灵工版", "灵工雇主"]
 
+# 批单生效日期：自 2026年09月04日 零时起生效
+# 提取批单整体生效日（单点日期），用于减保记录的 end_date 补全
+_ENDORSEMENT_EFFECTIVE_PATTERN = re.compile(
+    r"自\s*(\d{4})年(\d{1,2})月(\d{1,2})日\s*零时起\s*生效"
+)
+
 
 class MetadataExtractorNode:
     """元数据提取节点（无外部依赖，纯规则）"""
@@ -62,6 +68,15 @@ class MetadataExtractorNode:
 
         # 2. 整体保险期间
         overall_start, overall_end = extract_overall_insurance_period(all_text)
+
+        # 2.5 批单生效日期（2026-09-15 新增）
+        # 批单的"自 X年Y月Z日 零时起生效"是单点日期，extract_overall_insurance_period 的
+        # "起至...止"模式无法匹配。提取后用于减保记录的 end_date 补全（避免错填为主保单止期）。
+        endorsement_effective_date = ""
+        m_eff = _ENDORSEMENT_EFFECTIVE_PATTERN.search(all_text)
+        if m_eff:
+            year, month, day = m_eff.group(1), m_eff.group(2), m_eff.group(3)
+            endorsement_effective_date = f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
 
         # 3. 投保人公司名
         policy_holder = extract_company_after_label(all_text) or extract_company_name(all_text) or ""
@@ -111,6 +126,7 @@ class MetadataExtractorNode:
                     "policy_number": policy_number,
                     "overall_start_date": overall_start,
                     "overall_end_date": overall_end,
+                    "endorsement_effective_date": endorsement_effective_date,
                     "policy_holder": policy_holder,
                     "list_pages": list_pages,
                     "format_hint": format_hint,
@@ -121,6 +137,7 @@ class MetadataExtractorNode:
                 "policy_number": policy_number,
                 "overall_start_date": overall_start,
                 "overall_end_date": overall_end,
+                "endorsement_effective_date": endorsement_effective_date,
             },
         }
 

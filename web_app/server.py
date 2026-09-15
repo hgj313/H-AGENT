@@ -7,6 +7,7 @@
 import csv
 import io
 import json
+import logging
 import os
 import sys
 import tempfile
@@ -26,6 +27,8 @@ from pydantic import BaseModel
 # 确保项目根目录在 path 中（本文件位于 web_app/ 下，上级即项目根）
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _BASE_DIR)
+
+logger = logging.getLogger("insurance_agent.server")
 
 from dotenv import load_dotenv
 # 加载 .env：本地开发用 H-AGENT/.env，Docker 部署可挂载到项目根 .env
@@ -305,6 +308,8 @@ def _persist_policy_result(result_dict: dict, fpath: str):
     source_file = result_dict.get("file_name", "")
     overall_start = result_dict.get("overall_start_date", "")
     overall_end = result_dict.get("overall_end_date", "")
+    # 批单生效日（2026-09-15 新增）：用于减保时同步更新 end_date，避免错填为主保单止期
+    endorsement_effective_date = result_dict.get("endorsement_effective_date", "") or ""
 
     today = datetime.now().strftime("%Y-%m-%d")
 
@@ -316,7 +321,7 @@ def _persist_policy_result(result_dict: dict, fpath: str):
         id_num = (p.get("id_number") or "").strip()
 
         if mod_type == "减保":
-            # 减保：按身份证号标记为失效
+            # 减保：按身份证号标记为失效（end_date 用批单生效日，避免错填为主保单止期）
             if id_num:
                 remove_ids.append(id_num)
             continue
@@ -347,9 +352,20 @@ def _persist_policy_result(result_dict: dict, fpath: str):
     if add_rows:
         db.upsert_insurance_personnel(add_rows)
 
-    # 减保：状态改失效
+    # 减保：状态改失效 + 同步 end_date 为批单生效日（2026-09-15 修复 秦克智事件）
     if remove_ids:
-        db.deactivate_insurance(remove_ids)
+        # 优先用 endorsement_effective_date（批单生效日），fallback 到 overall_start（主保单起期）
+        # 注意：fallback 到 overall_start 在批单缺失生效日时仍可能错填主保单起期，但至少
+        # 不会再出现"end_date > today"的不一致。如果连 overall_start 都没有，则只用 status 兜底。
+        deactivate_end_date = endorsement_effective_date or overall_start
+        if deactivate_end_date:
+            db.deactivate_insurance(remove_ids, end_date=deactivate_end_date)
+        else:
+            logger.warning(
+                f"批单 {source_file} 减保时未提取到批单生效日，"
+                f"仅更新 status 而不更新 end_date（可能产生不一致）"
+            )
+            db.deactivate_insurance(remove_ids)
 
 
 def process_files(file_paths: list[str]) -> list[dict]:
@@ -505,6 +521,30 @@ async def agent_reload():
         "after_signature": list(after_sig),
         "before_signature_built": list(before_built) if before_built else None,
         "after_signature_built": list(after_built),
+    }
+
+
+@app.get("/api/insurance/inconsistencies")
+async def get_insurance_inconsistencies():
+    """检测保单人员数据中的不一致记录（2026-09-15 新增）。
+
+    当前实现：status=失效 但 end_date > today 的记录。
+    通常由"减保时未同步更新 end_date"或历史脏数据造成。
+
+    返回：
+        {
+          "today": "2026-09-15",
+          "count": 0,
+          "records": [...]
+        }
+    """
+    import datetime as _dt
+    today = _dt.date.today().isoformat()
+    records = db.find_inconsistent_deactivations(today=today)
+    return {
+        "today": today,
+        "count": len(records),
+        "records": records,
     }
 
 

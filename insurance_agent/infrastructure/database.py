@@ -71,7 +71,8 @@ def init_db() -> None:
                     manager_phone TEXT,               -- 项目经理手机
                     manager_email TEXT,               -- 项目经理邮箱
                     synced_at TEXT,                    -- 同步时间
-                    UNIQUE(punch_date, erp_id)
+                    punch_time TEXT,                  -- 打卡时间（ERP 原始返回则有，无则留空）
+                    UNIQUE(punch_date, identification_number)
                 )
             """)
 
@@ -107,6 +108,11 @@ def init_db() -> None:
             _migrate_insurance_personnel(conn)
             # 迁移：punch_records 增加项目经理三列
             _migrate_punch_manager_columns(conn)
+            # 迁移：punch_records 增加打卡时间列
+            _migrate_punch_time_column(conn)
+            # 迁移：punch_records 唯一约束改为 (punch_date, identification_number)
+            #   避免 ERP 推送缺 id 字段时 erp_id="" 互相覆盖
+            _migrate_unique_to_identification_number(conn)
             logger.info("数据库初始化完成: %s", DB_PATH)
         finally:
             conn.close()
@@ -174,7 +180,180 @@ def _migrate_punch_manager_columns(conn: sqlite3.Connection) -> None:
     conn.commit()
 
 
+def _migrate_punch_time_column(conn: sqlite3.Connection) -> None:
+    """迁移 punch_records 表：增加打卡时间列（兼容生产表与测试副本表）
+
+    ERP 原始打卡记录若含打卡时间（punchTime / clockTime / 打卡时间 等任意一种），
+    同步时即写入本列；若 ERP 不返回该字段，则保持为空，不影响其它字段。
+    """
+    cursor = conn.cursor()
+    # 同时兼容生产表与测试副本表（punch_records_test 由生产表备份而来，
+    # 但若在加列之前已建，则需补列）
+    tables = ["punch_records"]
+    cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'punch_records_%'"
+    )
+    tables += [row[0] for row in cursor.fetchall()]
+    for tbl in tables:
+        cursor.execute(f"PRAGMA table_info({tbl})")
+        cols = [row[1] for row in cursor.fetchall()]
+        if "punch_time" not in cols:
+            logger.info("%s 缺少列 punch_time，执行 ALTER ADD COLUMN", tbl)
+            cursor.execute(f"ALTER TABLE {tbl} ADD COLUMN punch_time TEXT")
+    conn.commit()
+
+
+def _migrate_unique_to_identification_number(conn: sqlite3.Connection) -> None:
+    """迁移 punch_records 唯一约束：UNIQUE(punch_date, erp_id) → UNIQUE(punch_date, identification_number)
+
+    背景：
+        ERP MQ 推送的消息体常常缺 `id` 字段（阿里云 RocketMQ 实例化时高凡/华南保利
+        的真实事件就没有），导致 erp_id 为空字符串 ""。原 UNIQUE(punch_date, erp_id)
+        约束下，多条缺 id 的消息会触发互相 UPDATE 覆盖，数据丢失。
+
+    步骤：
+        1. 检测 UNIQUE INDEX idx_uniq_punch_date_idnum 是否存在（幂等性）
+        2. 清理 (punch_date, identification_number) 冲突行（保留 id 较小的）
+        3. 重建表（SQLite 不支持 DROP CONSTRAINT，只能 ALTER TABLE RENAME + 新建 + 数据迁移）
+        4. 创建新 UNIQUE INDEX（WHERE 子句避免空身份证号被纳入去重）
+    """
+    cursor = conn.cursor()
+
+    # 1) 幂等检查：新 UNIQUE INDEX 已存在则跳过
+    cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_uniq_punch_date_idnum'"
+    )
+    if cursor.fetchone():
+        logger.info("punch_records 已迁移到 UNIQUE(punch_date, identification_number)，跳过")
+        return
+
+    # 2) 找出所有 punch_records_* 副本表（含测试表）
+    tables = ["punch_records"]
+    cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'punch_records%'"
+    )
+    tables += [row[0] for row in cursor.fetchall()]
+
+    for tbl in tables:
+        # 表是否存在
+        cursor.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+            (tbl,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            continue
+        sql_def = row[0] or ""
+
+        # 已迁移（新约束已存在）则跳过
+        if "UNIQUE(punch_date, identification_number)" in sql_def:
+            logger.info("%s 已包含新唯一约束，跳过迁移", tbl)
+            continue
+
+        # 旧约束已无（表已经是新约束了）→ 仅补 INDEX
+        # 走完整迁移
+        logger.info("开始迁移 %s 的唯一约束 ...", tbl)
+
+        # 3) 清理 (punch_date, identification_number) 冲突（保留 id 较小）
+        #    用子查询避免自删
+        cursor.execute(f"""
+            DELETE FROM {tbl}
+            WHERE id NOT IN (
+                SELECT MIN(id) FROM {tbl}
+                WHERE identification_number IS NOT NULL AND identification_number != ''
+                GROUP BY punch_date, identification_number
+            )
+            AND identification_number IS NOT NULL AND identification_number != ''
+        """)
+        deleted = cursor.rowcount
+        if deleted:
+            logger.info("%s 清理 (punch_date, identification_number) 冲突行: %d", tbl, deleted)
+
+    # 4) 重建表（统一处理，避免每张表重写 CREATE TABLE）
+    for tbl in list(tables):
+        cursor.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?",
+            (tbl,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            continue
+        sql_def = row[0] or ""
+        if "UNIQUE(punch_date, identification_number)" in sql_def:
+            # 已迁移，仅确保 UNIQUE INDEX 存在
+            cursor.execute(f"""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_uniq_punch_date_idnum
+                ON {tbl}(punch_date, identification_number)
+                WHERE identification_number IS NOT NULL AND identification_number != ''
+            """)
+            continue
+
+        # RENAME → 新建 → 数据迁移 → DROP 备份
+        backup = f"{tbl}_pre_uniq_migration"
+        cursor.execute(f"ALTER TABLE {tbl} RENAME TO {backup}")
+
+        # 新表 SQL（保留旧表所有列 + 新 UNIQUE 约束）
+        # 不重建为完整表定义，用 LIKE 复制旧表结构并替换约束
+        # SQLite 的 CREATE TABLE ... AS SELECT 不能复制约束，所以手动重写
+        cursor.execute(f"""
+            CREATE TABLE {tbl} (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                erp_id INTEGER,
+                punch_date TEXT NOT NULL,
+                member_id TEXT,
+                member_name TEXT,
+                identification_number TEXT,
+                age INTEGER,
+                project_name TEXT,
+                team_name TEXT,
+                supplier_name TEXT,
+                category_name TEXT,
+                examination_status TEXT,
+                telephone TEXT,
+                project_manager TEXT,
+                manager_phone TEXT,
+                manager_email TEXT,
+                synced_at TEXT,
+                punch_time TEXT,
+                UNIQUE(punch_date, identification_number)
+            )
+        """)
+        # 数据迁移
+        cursor.execute(f"""
+            INSERT INTO {tbl} SELECT * FROM {backup}
+        """)
+        # 删除备份
+        cursor.execute(f"DROP TABLE {backup}")
+        # 加 UNIQUE INDEX
+        cursor.execute(f"""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_uniq_punch_date_idnum
+            ON {tbl}(punch_date, identification_number)
+            WHERE identification_number IS NOT NULL AND identification_number != ''
+        """)
+        logger.info("%s 唯一约束已迁移到 (punch_date, identification_number)", tbl)
+
+    conn.commit()
+    logger.info("punch_records 唯一约束迁移完成")
+
+
 # ==================== 打卡数据操作 ====================
+
+# ERP 可能使用的「打卡时间」字段名（驼峰 / 蛇形 / 常见别名 / 中文），
+# 命中任意一个即写入 punch_time；都不命中则留空（不污染数据）。
+_PUNCH_TIME_KEYS = (
+    "punchTime", "punch_time", "punchtime", "punchDateTime",
+    "clockTime", "signTime", "signInTime", "attendTime",
+    "checkInTime", "checkinTime", "打卡时间", "打卡日期",
+)
+
+
+def _pick_punch_time(r: dict) -> str:
+    for k in _PUNCH_TIME_KEYS:
+        v = r.get(k)
+        if v not in (None, ""):
+            return str(v)
+    return ""
+
 
 def upsert_punch_records(records: list[dict], punch_date: str) -> int:
     """批量插入/更新打卡记录（使用 executemany + 单事务，性能提升 10x+）
@@ -211,7 +390,12 @@ def upsert_punch_records(records: list[dict], punch_date: str) -> int:
             r.get("categoryName"),
             r.get("examinationStatusName"),
             r.get("telephone"),
+            # 项目经理三列（ERP 实时消息体携带，避免被 _resolve_manager 缓存污染）
+            r.get("projectManager") or r.get("project_manager") or "",
+            r.get("managerPhone") or r.get("manager_phone") or "",
+            r.get("managerEmail") or r.get("manager_email") or "",
             synced_at,
+            _pick_punch_time(r),
         ))
 
     if not rows:
@@ -227,9 +411,12 @@ def upsert_punch_records(records: list[dict], punch_date: str) -> int:
                     erp_id, punch_date, member_id, member_name,
                     identification_number, age, project_name, team_name,
                     supplier_name, category_name, examination_status,
-                    telephone, synced_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(punch_date, erp_id) DO UPDATE SET
+                    telephone, project_manager, manager_phone, manager_email,
+                    synced_at, punch_time
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(punch_date, identification_number) DO UPDATE SET
+                    erp_id=excluded.erp_id,
+                    member_id=excluded.member_id,
                     member_name=excluded.member_name,
                     identification_number=excluded.identification_number,
                     age=excluded.age,
@@ -239,7 +426,11 @@ def upsert_punch_records(records: list[dict], punch_date: str) -> int:
                     category_name=excluded.category_name,
                     examination_status=excluded.examination_status,
                     telephone=excluded.telephone,
-                    synced_at=excluded.synced_at
+                    project_manager=excluded.project_manager,
+                    manager_phone=excluded.manager_phone,
+                    manager_email=excluded.manager_email,
+                    synced_at=excluded.synced_at,
+                    punch_time=excluded.punch_time
             """, rows)
             conn.commit()
             return cursor.rowcount
@@ -247,23 +438,59 @@ def upsert_punch_records(records: list[dict], punch_date: str) -> int:
             conn.close()
 
 
-def get_punch_records(punch_date: Optional[str] = None, limit: int = 500) -> list[dict]:
-    """查询打卡记录"""
+def get_punch_records(
+    punch_date: Optional[str] = None,
+    limit: int = 500,
+    table: str = "punch_records",
+) -> list[dict]:
+    """查询打卡记录
+
+    Args:
+        table: 表名（默认生产表 ``punch_records``；测试时可传 ``punch_records_test``）。
+               表名必须已经存在且结构兼容，否则会报错。
+    """
+    # 白名单校验，防止 SQL 注入
+    if table != "punch_records" and not table.startswith("punch_records_"):
+        raise ValueError(f"非法的 punch_records 表名: {table}")
     with _lock:
         conn = get_connection()
         try:
             cursor = conn.cursor()
             if punch_date:
                 cursor.execute(
-                    "SELECT * FROM punch_records WHERE punch_date = ? ORDER BY id LIMIT ?",
+                    f"SELECT * FROM {table} WHERE punch_date = ? ORDER BY id LIMIT ?",
                     (punch_date, limit),
                 )
             else:
                 cursor.execute(
-                    "SELECT * FROM punch_records ORDER BY punch_date DESC, id LIMIT ?",
+                    f"SELECT * FROM {table} ORDER BY punch_date DESC, id LIMIT ?",
                     (limit,),
                 )
             return [dict(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+
+def get_manager_info_by_project(project_name: str) -> dict:
+    """按项目名称回退查询项目经理联系方式（实时事件经理解析用）
+
+    从已有打卡记录中取该项目首个含联系方式的记录；用于实时事件到达时，
+    即便当日尚未做全量经理同步，也能补全经理联系方式。查不到返回空字典。
+    """
+    if not project_name:
+        return {}
+    with _lock:
+        conn = get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT project_manager, manager_phone, manager_email "
+                "FROM punch_records WHERE project_name = ? "
+                "AND (manager_phone <> '' OR manager_email <> '') LIMIT 1",
+                (project_name,),
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else {}
         finally:
             conn.close()
 
@@ -369,11 +596,16 @@ def update_punch_manager_info(punch_date: str, manager_map: dict) -> int:
 def upsert_insurance_personnel(persons: list[dict]) -> int:
     """批量写入保单人员数据（增保：新增或更新）
 
+    去重规则（用户约定 2026-08-26）：
+    - 同一 (name, id_number) 视为同一人
+    - 用 end_date 最新的那条数据替换 end_date 老的那条
+    - 仅当新数据 end_date >= 旧数据 end_date 时才覆盖（保险：避免老保单回退覆盖新保单）
+
     Args:
         persons: 人员列表，每个 dict 需包含 status 字段（"正常"/"失效"）
 
     Returns:
-        写入条数
+        写入条数（新增+更新）
     """
     if not persons:
         return 0
@@ -385,36 +617,48 @@ def upsert_insurance_personnel(persons: list[dict]) -> int:
             created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             count = 0
             for p in persons:
+                name = (p.get("name") or "").strip()
                 id_num = (p.get("id_number") or "").strip()
                 policy_number = (p.get("policy_number") or "").strip()
                 if not id_num:
                     continue
                 status = p.get("status", "正常")
+                new_start = p.get("start_date", "")
+                new_end = p.get("end_date", "")
+
                 cursor.execute("""
                     INSERT INTO insurance_personnel (
                         name, id_number, id_type, company, start_date, end_date,
                         job_title, birth_date, insurance_company, policy_number,
                         source_file, status, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id_number, policy_number) DO UPDATE SET
-                        name=excluded.name,
-                        company=excluded.company,
-                        start_date=excluded.start_date,
-                        end_date=excluded.end_date,
-                        job_title=excluded.job_title,
-                        insurance_company=excluded.insurance_company,
-                        source_file=excluded.source_file,
-                        status=excluded.status
+                    ON CONFLICT(name, id_number) WHERE id_number != '' DO UPDATE SET
+                        company = excluded.company,
+                        start_date = excluded.start_date,
+                        end_date = excluded.end_date,
+                        job_title = excluded.job_title,
+                        insurance_company = excluded.insurance_company,
+                        policy_number = excluded.policy_number,
+                        source_file = excluded.source_file,
+                        status = excluded.status,
+                        created_at = excluded.created_at
+                    WHERE
+                        -- 仅在「新数据 end_date 更晚」时覆盖（保险型语义）
+                        -- 同时把空 end_date 当作 1900-01-01 兜底，保证老记录可被更新
+                        (insurance_personnel.end_date = '' OR
+                         excluded.end_date = '' OR
+                         excluded.end_date >= insurance_personnel.end_date)
                 """, (
-                    p.get("name", ""), id_num,
+                    name, id_num,
                     p.get("id_type", "身份证"), p.get("company", ""),
-                    p.get("start_date", ""), p.get("end_date", ""),
+                    new_start, new_end,
                     p.get("job_title", ""), p.get("birth_date", ""),
                     p.get("insurance_company", ""), policy_number,
                     p.get("file_name", p.get("source_file", "")),
                     status, created_at,
                 ))
-                count += 1
+                if cursor.rowcount > 0:
+                    count += 1
             conn.commit()
             return count
         finally:
@@ -502,14 +746,21 @@ def add_insurance_personnel(persons: list[dict]) -> dict:
             conn.close()
 
 
-def deactivate_insurance(id_numbers: list[str]) -> int:
+def deactivate_insurance(id_numbers: list[str], end_date: str | None = None) -> int:
     """减保：将指定身份证号的人员状态设为失效
 
     Args:
         id_numbers: 身份证号列表
+        end_date: 减保生效日（YYYY-MM-DD）。如果提供，会同步更新 end_date 字段，
+                   避免出现"status=失效 但 end_date 还是主保单止期"的不一致。
+                   通常由批单的"批单生效日期"提供（见 metadata_extractor 的 endorsement_effective_date）。
 
     Returns:
         更新的条数
+
+    Note:
+        - 不提供 end_date 时保留旧行为（仅更新 status），以保证向后兼容。
+        - 但推荐调用方始终显式传入减保生效日，避免数据不一致（参见 2026-09-15 秦克智事件）。
     """
     id_numbers = [str(i).strip() for i in id_numbers if i and str(i).strip()]
     if not id_numbers:
@@ -520,10 +771,20 @@ def deactivate_insurance(id_numbers: list[str]) -> int:
         try:
             cursor = conn.cursor()
             placeholders = ",".join("?" for _ in id_numbers)
-            cursor.execute(
-                f"UPDATE insurance_personnel SET status = '失效' WHERE id_number IN ({placeholders})",
-                id_numbers,
-            )
+            if end_date:
+                # 减保生效日：同步更新 status 和 end_date，保证一致性
+                end_date = str(end_date).strip()
+                cursor.execute(
+                    f"UPDATE insurance_personnel SET status = '失效', end_date = ? "
+                    f"WHERE id_number IN ({placeholders})",
+                    [end_date, *id_numbers],
+                )
+            else:
+                # 旧行为：仅更新 status（不推荐）
+                cursor.execute(
+                    f"UPDATE insurance_personnel SET status = '失效' WHERE id_number IN ({placeholders})",
+                    id_numbers,
+                )
             conn.commit()
             return cursor.rowcount
         finally:
@@ -534,21 +795,26 @@ def refresh_expired_status() -> int:
     """将已到起止日期的人员状态刷新为失效
 
     Returns:
-        更新的条数
+        更新的条数（失败时返回 0）
     """
     today = datetime.now().strftime("%Y-%m-%d")
-    with _lock:
-        conn = get_connection()
-        try:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE insurance_personnel SET status = '失效' WHERE end_date != '' AND end_date < ?",
-                (today,),
-            )
-            conn.commit()
-            return cursor.rowcount
-        finally:
-            conn.close()
+    try:
+        with _lock:
+            conn = get_connection()
+            try:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE insurance_personnel SET status = '失效' WHERE end_date != '' AND end_date < ?",
+                    (today,),
+                )
+                conn.commit()
+                return cursor.rowcount
+            finally:
+                conn.close()
+    except Exception as e:  # noqa: BLE001
+        # 部分运行环境（如 sandbox）下 db 写权限受限，失败不应让上层接口崩溃
+        logger.warning("refresh_expired_status 失败（已忽略）: %s", e)
+        return 0
 
 
 def get_insurance_personnel() -> list[dict]:
@@ -558,6 +824,46 @@ def get_insurance_personnel() -> list[dict]:
         try:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM insurance_personnel ORDER BY id")
+            return [dict(row) for row in cursor.fetchall()]
+        finally:
+            conn.close()
+
+
+def find_inconsistent_deactivations(today: str | None = None) -> list[dict]:
+    """查找 status=失效 但 end_date > today 的不一致记录。
+
+    这种记录通常意味着：减保时只更新了 status，未同步更新 end_date。
+    真实业务中，status=失效 意味着"保单已不再覆盖此人"，end_date 应该等于
+    减保生效日（或更早），而不可能晚于今天。
+
+    用于：
+    - 一次性全库扫描（修复历史脏数据）
+    - 每日例行检查（防止新代码回归引入不一致）
+
+    Args:
+        today: 用于比较的"今天"，格式 YYYY-MM-DD。None 则使用 datetime.now()。
+
+    Returns:
+        不一致记录列表，每项含 id/name/id_number/policy_number/status/start_date/end_date/source_file
+    """
+    if today is None:
+        today = datetime.now().strftime("%Y-%m-%d")
+    with _lock:
+        conn = get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT id, name, id_number, policy_number, status,
+                       start_date, end_date, source_file, created_at
+                FROM insurance_personnel
+                WHERE status = '失效'
+                  AND end_date != ''
+                  AND end_date > ?
+                ORDER BY id
+                """,
+                (today,),
+            )
             return [dict(row) for row in cursor.fetchall()]
         finally:
             conn.close()
