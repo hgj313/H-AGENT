@@ -6,6 +6,7 @@
 - 决策 format_hint（table / inline / ocr）
 """
 
+import logging
 import re
 from insurance_agent.domain import PDFDocument
 from insurance_agent.tools import (
@@ -15,6 +16,8 @@ from insurance_agent.tools import (
     detect_insurance_company_by_policy_number,
 )
 from insurance_agent.agents.invoice_recognition.states.inv_state import InvoiceRecognitionState
+
+logger = logging.getLogger(__name__)
 
 
 # 人员清单页定位标记

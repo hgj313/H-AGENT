@@ -47,6 +47,10 @@
 - **upsert 拒绝覆盖导致新正确数据不写库（同日衍生，2026-09-15）**：批单004 (减 谭建芬/增 秦克智) 已 register 到 index.json（含正确日期），但 `add_insurance_personnel()` 的 upsert 规则 `excluded.end_date >= insurance_personnel.end_date` 拒绝覆盖：旧 end=2026-12-08 (从 6894300 错填过来的) > 新 end=2026-09-16 → 跳过 UPDATE → 谭建芬仍是错日期。修复批次数据时需用 SQL `UPDATE WHERE id IN (...)` 直接绕开 upsert。
 
 ## 关键 Bug 修复要点（按时间倒序）
+- **metadata_extractor_node logger NameError + BSHH 号段映射错（2026-09-16）**：用户上传恒财批单 `批单_..._BSHH01137126QA16XPVB(1).pdf` 报错 "name 'logger' is not defined"。根因：上轮我加 `logger.info(...)` 号段覆盖日志时**没导入 `logging` 也没建 logger 实例**。修复：补 `import logging` + `logger = logging.getLogger(__name__)`。顺手修另一处号段映射错误——我把 `BSHH` 映射到安诚是错的（以为是安诚批单），实际是**中国太平洋财产保险**的批单前缀（A=Annual 主保单 ASHH，B=Batch 批单 BSHH，368 条历史入库 100% 归太保证实）。修正后：
+  - `ASHH` → `中国太平洋财产保险`（主保单）
+  - `BSHH` → `中国太平洋财产保险`（批单）
+  端到端测试这个 PDF：policy_number=ASHH07037126FN0080SX、insurance_company=中国太平洋财产保险、13 人识别正确（含张应财 510802196607116477 9.17 起保新增）。入库副作用回滚：12 人 source_file 还原为主保单，保留 1 人新增（张应财）。教训：① 引用 logger 前必须先 import+建实例——Python 启动报错会让整流程死锁；② 号段推断要查**历史入库数据的保险公司归属**作为金标准，不能凭经验猜（"ASHH 像安诚"是错的，实际是太保的内部编码）
 - **段小平 insurance_company 错识为"黄河财险"（2026-09-16）**：用户截图显示系统数据中段小平 (id=3988) 保险公司字段显示"黄河财险"，但实际保单号 6130101040320260000001-088 是华安号段（杭州班王建筑劳务有限公司重庆分公司保单，已复核确认华安）。根因 3 层：①`_COMPANY_PATTERNS` **缺"华安"关键词**（但有"黄河"），PDF 文本提到"黄河"被命中；②`_detect_insurance_company` 用首次命中策略，无加权，多公司关键词同存时按字典序先匹配到黄河；③无保单号→保险公司号段映射兜底。**上轮段小平 status 修复时只核对了姓名/起止日期，漏核了 insurance_company 字段——本次才暴露**。修复 3 层：
   - L1 `pymupdf_parser._COMPANY_PATTERNS` 加"华安财产保险 / 华安保险 / 华安财险 / Sinosafe"；pattern 顺序长关键词优先（"黄河财产保险" 在 "黄河" 前）
   - L2 `pymupdf_parser._detect_insurance_company` 改为**按命中次数加权**——统计每个公司关键词在文本中出现次数，取最大者；防止华安批单088 PDF 模板残留"黄河"字样被错识别
