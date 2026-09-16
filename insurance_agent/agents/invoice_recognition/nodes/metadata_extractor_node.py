@@ -12,6 +12,7 @@ from insurance_agent.tools import (
     extract_company_after_label,
     extract_overall_insurance_period,
     extract_company_name,
+    detect_insurance_company_by_policy_number,
 )
 from insurance_agent.agents.invoice_recognition.states.inv_state import InvoiceRecognitionState
 
@@ -67,6 +68,16 @@ class MetadataExtractorNode:
         fname_for_extract = state.get("file_path", "")
         policy_number = self._extract_policy_number(all_text, file_name=fname_for_extract)
 
+        # 1.5 号段兜底（2026-09-16 新增）：保单号前缀是承保机构发行的硬证据，
+        # 比 PDF 文本中关键词匹配更可靠（段小平事件：华安批单088 PDF 提到"黄河"
+        # 被错识别为黄河财险，但保单号 613010104 是华安号段）。
+        insurance_company_override = detect_insurance_company_by_policy_number(policy_number)
+        if insurance_company_override:
+            logger.info(
+                "保单号 %s 号段匹配保险公司 %s，覆写文本检测结果",
+                policy_number, insurance_company_override,
+            )
+
         # 2. 整体保险期间
         overall_start, overall_end = extract_overall_insurance_period(all_text)
 
@@ -121,6 +132,8 @@ class MetadataExtractorNode:
             "policy_holder": policy_holder,
             "list_pages": list_pages,
             "format_hint": format_hint,
+            # 2026-09-16 新增：号段映射覆盖 insurance_company（华安批单088 类场景防御）
+            **({"insurance_company": insurance_company_override} if insurance_company_override else {}),
             "tool_results": {
                 **state.get("tool_results", {}),
                 "metadata_extractor": {
@@ -131,6 +144,7 @@ class MetadataExtractorNode:
                     "policy_holder": policy_holder,
                     "list_pages": list_pages,
                     "format_hint": format_hint,
+                    "insurance_company_override": insurance_company_override,
                 },
             },
             "working_memory": {

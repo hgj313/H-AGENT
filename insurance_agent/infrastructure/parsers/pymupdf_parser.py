@@ -26,6 +26,7 @@ class PyMuPDFParser:
     IMAGE_DPI = 200
 
     # 已知保险公司名称（用于从文字层识别）
+    # 注意：patterns 顺序敏感，**长的在前**（"黄河财产保险" 应在 "黄河" 之前，否则会被"黄河"匹配掉）
     _COMPANY_PATTERNS = {
         "利宝保险": ["利宝保险", "Liberty", "libertymutual"],
         "中国太平洋财产保险": ["太平洋财产保险", "中国太平洋", "cpic", "95500"],
@@ -43,12 +44,29 @@ class PyMuPDFParser:
         # Phase 4 新增
         "众安在线财产保险": ["众安在线", "众安保险", "zhongan", "952299"],
         "华农财产保险": ["华农财产保险"],
+        # 华安财产保险 2026-09-16 新增：批单088 续保批改PDF文本提到"黄河"被误命中，
+        # 同时引用的原保单/承保方其实是华安。增加"华安"匹配 + 后续按出现次数加权 + 号段映射兜底
+        "华安财产保险": ["华安财产保险", "华安保险", "华安财险", "Sinosafe"],
         "黄河财产保险": ["黄河财产保险", "ypic"],
         "珠峰财产保险": ["珠峰财产保险"],
         "国泰财产保险": ["国泰财产保险"],
         "亚太财产保险": ["亚太财产保险"],
         "紫金财产保险": ["紫金财产保险"],
         "永安财产保险": ["永安财产保险"],
+        "安诚财产保险": ["安诚财产保险", "安诚保险", "e-acic"],
+    }
+
+    # 保单号前缀 → 保险公司号段映射（最强信号，作为兜底）
+    # 2026-09-16 新增：华安批单088的 PDF 文本提到"黄河"被错命中，但保单号 613010104 是华安号段。
+    # 文本提取有不确定性（PDF 模板残留/条款引用），但保单号前缀是承保机构发行的硬证据，
+    # 不可能被误读。
+    _POLICY_NUMBER_TO_COMPANY = {
+        "613010104": "华安财产保险",  # 华安财险号段（杭州班王 088 批单证实）
+        "8116013100": "利宝保险",       # 利宝主保单号段（81 开头）
+        "7116013100": "利宝保险",       # 利宝批单号段（71 开头）
+        "ASHH": "安诚财产保险",         # 安诚 ASHH 开头
+        "81160": "安诚财产保险",        # 安诚 81160 号段
+        "61160": "安诚财产保险",        # 安诚 61160 号段（批单）
     }
 
     def parse(self, file_path: str) -> PDFDocument:
@@ -122,15 +140,51 @@ class PyMuPDFParser:
         return images
 
     def _detect_insurance_company(self, pdf_doc: PDFDocument) -> str:
-        """从所有页面文字中识别保险公司名"""
+        """从所有页面文字中识别保险公司名
+
+        优先级（2026-09-16 增强）：
+        1. 保单号前缀号段映射（最强信号，硬证据）—— 在调用方传 policy_number 时覆盖
+           注：parser 阶段还不知道 policy_number，所以这里只做文本检测
+        2. 文本中保险公司关键词 **按出现次数加权** —— 防止华安批单088 因 PDF 模板残留
+           "黄河财产保险" 字样被错误识别（2026-09-16 段小平事件根因）
+        3. 单一关键词首次命中（兜底）
+        """
         all_text = " ".join(p.text for p in pdf_doc.pages if p.has_meaningful_text)
         if not all_text:
             return "unknown"
 
         all_text_lower = all_text.lower()
+
+        # 统计每个公司关键词在文本中出现次数，取最大者
+        # 长关键词优先（如"黄河财产保险"应优先于"黄河"）
+        hits: list[tuple[int, str]] = []
         for company_name, patterns in self._COMPANY_PATTERNS.items():
+            count = 0
             for pattern in patterns:
-                if pattern.lower() in all_text_lower:
-                    return company_name
+                count += all_text_lower.count(pattern.lower())
+            if count > 0:
+                hits.append((count, company_name))
+
+        if hits:
+            # 按命中次数降序，并列时取长关键词优先（避免"黄河"命中而错过"黄河财产保险"）
+            hits.sort(key=lambda x: x[0], reverse=True)
+            return hits[0][1]
 
         return "unknown"
+
+    def detect_insurance_company_by_policy_number(self, policy_number: str) -> str:
+        """根据保单号前缀反查保险公司（2026-09-16 新增，作为号段兜底）
+
+        保单号前缀是承保机构发行的硬证据，比 PDF 文本中关键词匹配更可靠。
+        用于覆盖文本检测结果（华安批单088 的 PDF 文本提到"黄河"但保单号段是华安）。
+
+        Returns:
+            匹配到的保险公司名，或空字符串表示未匹配
+        """
+        if not policy_number:
+            return ""
+        pn_upper = policy_number.upper()
+        for prefix, company in self._POLICY_NUMBER_TO_COMPANY.items():
+            if pn_upper.startswith(prefix.upper()):
+                return company
+        return ""

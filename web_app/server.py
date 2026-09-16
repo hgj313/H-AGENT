@@ -137,18 +137,33 @@ def _reload_graph_dependencies() -> None:
 
     注意：被引用方需一并 reload（如 graph.py 引用了 nodes/*，改了节点文件
     也要 reload graph 模块本身）。下面的顺序按依赖倒序：先 reload 叶子节点。
+
+    2026-09-16 增补：
+    - insurance_agent.infrastructure.parsers.pymupdf_parser（_detect_insurance_company
+      命中次数加权 + _POLICY_NUMBER_TO_COMPANY 号段映射）
+    - insurance_agent.tools.company_extractor（detect_insurance_company_by_policy_number
+      号段兜底 helper）
+    - insurance_agent.tools（__init__.py 导出新 helper）
     """
     import importlib
     mods = [
+        # 叶子工具层（先 reload，供上层 import 最新版）
+        "insurance_agent.tools.company_extractor",
+        "insurance_agent.tools.filename_parser",
+        "insurance_agent.tools",
+        "insurance_agent.infrastructure.parsers.pymupdf_parser",
+        # 节点层
         "insurance_agent.agents.invoice_recognition.nodes.policy_parser_node",
         "insurance_agent.agents.invoice_recognition.nodes.metadata_extractor_node",
         "insurance_agent.agents.invoice_recognition.nodes.personnel_extractor_node",
         "insurance_agent.agents.invoice_recognition.nodes.validator_node",
         "insurance_agent.agents.invoice_recognition.nodes.output_node",
+        # 抽取器层
         "insurance_agent.extractors.table_extractor",
         "insurance_agent.extractors.inline_extractor",
         "insurance_agent.extractors.individual_extractor",
         "insurance_agent.extractors.ocr_extractor",
+        # 顶层 graph（最后 reload 才能拿到所有最新子模块）
         "insurance_agent.agents.invoice_recognition.capability",
         "insurance_agent.agents.invoice_recognition.graph",
     ]

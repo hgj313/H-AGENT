@@ -47,6 +47,13 @@
 - **upsert 拒绝覆盖导致新正确数据不写库（同日衍生，2026-09-15）**：批单004 (减 谭建芬/增 秦克智) 已 register 到 index.json（含正确日期），但 `add_insurance_personnel()` 的 upsert 规则 `excluded.end_date >= insurance_personnel.end_date` 拒绝覆盖：旧 end=2026-12-08 (从 6894300 错填过来的) > 新 end=2026-09-16 → 跳过 UPDATE → 谭建芬仍是错日期。修复批次数据时需用 SQL `UPDATE WHERE id IN (...)` 直接绕开 upsert。
 
 ## 关键 Bug 修复要点（按时间倒序）
+- **段小平 insurance_company 错识为"黄河财险"（2026-09-16）**：用户截图显示系统数据中段小平 (id=3988) 保险公司字段显示"黄河财险"，但实际保单号 6130101040320260000001-088 是华安号段（杭州班王建筑劳务有限公司重庆分公司保单，已复核确认华安）。根因 3 层：①`_COMPANY_PATTERNS` **缺"华安"关键词**（但有"黄河"），PDF 文本提到"黄河"被命中；②`_detect_insurance_company` 用首次命中策略，无加权，多公司关键词同存时按字典序先匹配到黄河；③无保单号→保险公司号段映射兜底。**上轮段小平 status 修复时只核对了姓名/起止日期，漏核了 insurance_company 字段——本次才暴露**。修复 3 层：
+  - L1 `pymupdf_parser._COMPANY_PATTERNS` 加"华安财产保险 / 华安保险 / 华安财险 / Sinosafe"；pattern 顺序长关键词优先（"黄河财产保险" 在 "黄河" 前）
+  - L2 `pymupdf_parser._detect_insurance_company` 改为**按命中次数加权**——统计每个公司关键词在文本中出现次数，取最大者；防止华安批单088 PDF 模板残留"黄河"字样被错识别
+  - L3 `tools/company_extractor.detect_insurance_company_by_policy_number` **号段映射兜底**：保单号前缀是承保机构发行的硬证据，比关键词匹配更强。已知映射：613010104→华安；8116013100/7116013100→利宝；ASHH/81160/61160→安诚；X44/SHBX→太保。`metadata_extractor_node` 在拿到 policy_number 后调用 helper，若有结果则覆盖 insurance_company 输出
+  - 数据修复：7 条 `insurance_company='黄河财险'`（全部来自 `2c021216f0804eb5a8f192f5d5066968.pdf` 同一批单088）→ `华安财产保险`。备份 `data/app.db.bak.20260916_before_fix_insurance_company_huaan`。修复后全库 0 条黄河记录
+  - **服务器端 reload 链补全**：`web_app/server.py _reload_graph_dependencies` 新增 `pymupdf_parser / company_extractor / tools / filename_parser` 模块的 reload，让命中次数加权逻辑热重载生效（之前 reload 列表里只有 nodes/* 和 extractors/*，叶子工具层不在内）。**server.py 改动必须重启服务**才能生效（reload 不会 reload server.py 自身）
+  - **通用教训**：① `_COMPANY_PATTERNS` 这种白名单必须**完整**，遗漏一个公司就可能误识别为其它（"华安"漏掉就掉到"黄河"）；② 文本关键词识别需"按命中次数加权"，单次命中容易被模板残留条款带偏；③ 保单号→保险公司号段映射是**最强兜底**（号段是承保机构发行的硬证据，不可被文本干扰）；④ 数据校验要**逐字段**，不能只看姓名/身份证/起止就以为"100% 正确"——上轮 status 修复漏验 insurance_company，本轮才暴露
 - **谭建芬 (id=220) end_date < start_date 反序 + 批单 policy_number 全错 + 减保跨保单误改 + SQL 参数顺序错位 bug（2026-09-16 4 bug 一并修复 ✅）**：用户反馈谭建芬 51303119711110358X start=2026-06-23 / end=2026-06-17（**反序 6 天**），要求排查同类 + 修复 + 防复发。
   - **Bug A 反序**：批单004（7116013100260072423004）"自2026年09月13日零时起生效"，该生效日应是减保谭建芬的 end_date，但 `personnel_extractor_node` 没把 `endorsement_effective_date` 传到 ExtractionResult → `_persist_policy_result` 拿不到 → 降级用 overall_start（主保单起期 2026-06-17）→ 谭建芬 end_date=2026-06-17 < start_date=2026-06-23。
   - **Bug B 批单 policy_number 全错为 81**：`_extract_policy_number` 对批单文件总是先匹配"保险单号" → 拿主保单号（81 开头）。63 条批单记录 policy_number 写成主保单号。重跑 27 份未入库批单 + 70 次 SQL 修正 63 条历史脏数据后 → 177 条批单记录 policy_number 正确。

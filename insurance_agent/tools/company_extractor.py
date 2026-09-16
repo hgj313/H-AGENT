@@ -37,6 +37,26 @@ _FALSE_POSITIVES = {
     "鉴于投保人已向本公司", "向本公司",
 }
 
+# 中介/经纪公司黑名单：这些是"代为投保"的机构，不是用工单位（投保人）
+# 场景：保单由保险经纪公司代理投保时，PDF"投保人名称"位置写的是经纪公司名
+# 但业务上我们需要的是真正雇员工的公司（用工单位），不是中介
+# 处理方式：识别时跳过这种名字，回退到下一条或报错让用户确认
+_INTERMEDIARY_KEYWORDS = (
+    "保险经纪",   # 广东美保保险经纪有限公司
+    "经纪公司",
+    "代理公司",
+    "保险代理",
+    "保险公估",
+    "保险经纪机构",
+)
+
+
+def _is_intermediary_company(name: str) -> bool:
+    """判断是否为保险中介公司（保险经纪/代理/公估等），不应作为投保人/用工单位使用。"""
+    if not name:
+        return False
+    return any(kw in name for kw in _INTERMEDIARY_KEYWORDS)
+
 
 def _is_valid_company_name(name: str) -> bool:
     """判断是否为有效的公司名（排除误报）"""
@@ -66,7 +86,11 @@ def extract_company_name(text: str) -> Optional[str]:
 
 
 def extract_company_after_label(text: str) -> Optional[str]:
-    """从带标签的文本中提取公司名（如 "投保人名称：XXX"）"""
+    """从带标签的文本中提取公司名（如 "投保人名称：XXX"）
+
+    跳过中介/经纪公司（保险经纪/代理/公估等），因为这些是"代为投保"的中介，
+    不是真正的用工单位。返回 None 时调用方可回退到其他来源（如文件名解析）。
+    """
     if not text:
         return None
 
@@ -74,6 +98,45 @@ def extract_company_after_label(text: str) -> Optional[str]:
         m = pattern.search(text)
         if m:
             name = m.group(1).strip()
+            if _is_intermediary_company(name):
+                # 跳过中介公司，继续匹配下一个标签
+                continue
             if _is_valid_company_name(name):
                 return name
     return None
+
+
+# 保单号前缀 → 保险公司号段映射（2026-09-16 新增，号段兜底防御）
+# 保单号前缀是承保机构发行的硬证据，比 PDF 文本中关键词匹配更可靠。
+# 用于华安批单088 类场景：PDF 文本提到"黄河"被错误识别，但保单号 613010104 是华安号段。
+_POLICY_NUMBER_PREFIX_TO_COMPANY = {
+    "613010104": "华安财产保险",       # 华安财险号段（杭州班王 088 批单证实）
+    "8116013100": "利宝保险",           # 利宝主保单号段（81 开头）
+    "7116013100": "利宝保险",           # 利宝批单号段（71 开头）
+    "ASHH": "安诚财产保险",             # 安诚 ASHH 开头
+    "81160": "安诚财产保险",            # 安诚 81160 号段
+    "61160": "安诚财产保险",            # 安诚 61160 号段（批单）
+    "X44": "中国太平洋财产保险",        # 太保 X44 开头
+    "SHBX": "中国太平洋财产保险",       # 太保 SHBX 开头
+}
+
+
+def detect_insurance_company_by_policy_number(policy_number: str) -> str:
+    """根据保单号前缀反查保险公司（2026-09-16 新增，号段兜底）
+
+    保单号前缀是承保机构发行的硬证据，比 PDF 文本中关键词匹配更可靠。
+    用于覆盖文本检测结果（如华安批单088 的 PDF 文本提到"黄河"但保单号段是华安）。
+
+    Args:
+        policy_number: 保单号（主保单或批单号均可）
+
+    Returns:
+        匹配到的保险公司名（标准名），未匹配返回空字符串
+    """
+    if not policy_number:
+        return ""
+    pn_upper = policy_number.upper()
+    for prefix, company in _POLICY_NUMBER_PREFIX_TO_COMPANY.items():
+        if pn_upper.startswith(prefix.upper()):
+            return company
+    return ""
