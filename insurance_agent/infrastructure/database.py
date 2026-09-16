@@ -29,6 +29,81 @@ DB_PATH = os.path.join(DATA_DIR, "app.db")
 _lock = threading.Lock()
 
 
+# ==================== status 白名单 ====================
+# 业务上保单人员状态只有两种取值（用户明确约定）：
+#   正常 / 失效
+# 但历史上有多条写入路径误把「批改类型」(modification_type: 增保/减保) 或 Excel 里的
+# 任意文本写进了 status 列，导致：
+#   1. 前端下拉框显示非法值
+#   2. get_active_insurance_by_id() 用 status = '正常' 严格等值查询 → 漏匹配
+#      → 误判为「未参保」→ 误发邮件/短信（见 2026-09-16 段小平事件）
+# 因此在数据库层做无条件归一化，作为所有写入路径的统一防线。
+_VALID_PERSON_STATUSES = ("正常", "失效")
+
+# 批改类型 → 业务状态（当 status 位置填了 modification_type 时的补救映射）
+_MODIFICATION_TO_STATUS = {
+    "增保": "正常",
+    "减保": "失效",
+    "批增": "正常",
+    "批减": "失效",
+    "增加": "正常",
+    "减少": "失效",
+    "新增": "正常",
+    "删除": "失效",
+}
+
+
+def normalize_person_status(raw: str, end_date: str = "", today: str | None = None) -> str:
+    """把任意 status 输入归一化到白名单 {正常, 失效}（2026-09-16 新增）
+
+    归一化优先级：
+      1. 已是白名单值 → 原样返回（最常见，零开销）
+      2. 是批改类型（增保/减保/批增/...）→ 按 _MODIFICATION_TO_STATUS 映射，
+         再用 end_date 校正（即使批改类型是"增保"，已过期仍应为"失效"）
+      3. 空值 / 其它未知值 → 按 end_date 与今天比较推断：
+         已过期 → 失效；否则（含无 end_date）→ 正常
+
+    Args:
+        raw: 调用方传入的原始 status（可能为空、可能为批改类型、可能为任意文本）
+        end_date: 该人员的保险止期 YYYY-MM-DD，用于兜底推断
+        today: "今天"，格式 YYYY-MM-DD；None 时取 datetime.now()
+
+    Returns:
+        "正常" 或 "失效"（保证一定是白名单值）
+    """
+    raw = (raw or "").strip()
+    # 1. 已是白名单值 → 原样返回（最常见，零开销）
+    if raw in _VALID_PERSON_STATUSES:
+        return raw
+
+    today = today or datetime.now().strftime("%Y-%m-%d")
+    end_date = (end_date or "").strip()
+
+    # 2. 是批改类型 → 先按语义映射
+    mapped = _MODIFICATION_TO_STATUS.get(raw)
+    if mapped:
+        logger.warning(
+            "status 收到批改类型 %r，已映射为 %r（写入方应传 正常/失效）", raw, mapped
+        )
+        # 再用 end_date 校正：即使批改类型是"增保"，只要已过期就该是失效
+        if end_date and end_date < today:
+            logger.warning("  └─ 但该人员 end_date=%s 已过期，校正为 失效", end_date)
+            return "失效"
+        return mapped
+
+    # 3. 空值 / 其它未知值 → 按 end_date 与今天比较推断
+    inferred = "失效" if (end_date and end_date < today) else "正常"
+    if raw:
+        logger.warning(
+            "status 收到未知取值 %r，已按 end_date=%r 推断为 %r", raw, end_date, inferred
+        )
+    return inferred
+
+
+# 内部别名：database 模块内部其它函数用短名调用，保持可读性
+_normalize_status = normalize_person_status
+
+
 def ensure_dirs():
     """确保数据目录存在"""
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -622,9 +697,10 @@ def upsert_insurance_personnel(persons: list[dict]) -> int:
                 policy_number = (p.get("policy_number") or "").strip()
                 if not id_num:
                     continue
-                status = p.get("status", "正常")
                 new_start = p.get("start_date", "")
                 new_end = p.get("end_date", "")
+                # status 归一化到白名单 {正常, 失效}（防御批改类型/Excel 任意文本污染）
+                status = _normalize_status(p.get("status"), new_end)
 
                 cursor.execute("""
                     INSERT INTO insurance_personnel (
@@ -694,7 +770,8 @@ def add_insurance_personnel(persons: list[dict]) -> dict:
 
                 start_date = p.get("start_date", "")
                 end_date = p.get("end_date", "")
-                status = p.get("status", "正常")
+                # status 归一化到白名单 {正常, 失效}（防御批改类型/Excel 任意文本污染）
+                status = _normalize_status(p.get("status"), end_date)
                 company = p.get("company", "")
                 job_title = p.get("job_title", "")
                 insurance_company = p.get("insurance_company", "")
@@ -890,8 +967,12 @@ def update_personnel(person_id: int, updates: dict) -> bool:
     values = []
     for key in _EDITABLE_FIELDS:
         if key in updates:
+            value = updates[key]
+            # status 归一化到白名单 {正常, 失效}（编辑页下拉框误传批改类型时的防线）
+            if key == "status":
+                value = _normalize_status(value, updates.get("end_date", ""))
             fields.append(f"{key} = ?")
-            values.append(updates[key])
+            values.append(value)
     if not fields:
         return False
     values.append(person_id)
@@ -937,7 +1018,15 @@ def clear_insurance_personnel() -> int:
 
 
 def get_active_insurance_by_id() -> dict[str, list[dict]]:
-    """获取按身份证号分组的有效保单人员（状态正常且未到期）
+    """获取按身份证号分组的有效保单人员（未失效且未到期）
+
+    2026-09-16 加固（段小平事件）：
+        原实现用 `status = '正常'` 严格等值匹配。一旦库里出现非白名单 status
+        （如被误写入的批改类型 '增保'），即使该人保险未到期也会被漏匹配，
+        进而在打卡比对时被误判为「未参保」并误发邮件/短信给项目经理。
+
+        现改为**排除式**判断：只要不是明确的 '失效' 且未到期，就视为有效。
+        这样任何未知的 status 取值都不会导致误报漏保。
 
     Returns:
         {id_number: [person_dict, ...]}
@@ -949,7 +1038,8 @@ def get_active_insurance_by_id() -> dict[str, list[dict]]:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT * FROM insurance_personnel
-                WHERE status = '正常' AND (end_date = '' OR end_date >= ?)
+                WHERE (status IS NULL OR status = '' OR status != '失效')
+                  AND (end_date = '' OR end_date >= ?)
             """, (today,))
             result: dict[str, list[dict]] = {}
             for row in cursor.fetchall():

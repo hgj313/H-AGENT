@@ -1799,12 +1799,15 @@ def _parse_personnel_excel(content: bytes) -> list[dict]:
         id_num = _get("证件号码")
         if not name and not id_num:
             continue
-        # 状态：未指定时根据起止日期判断
-        status = _get("状态")
-        if not status:
-            end_date = _get("起止时间")
-            today = datetime.now().strftime("%Y-%m-%d")
-            status = "失效" if (end_date and end_date < today) else "正常"
+        # 状态：只接受白名单 {正常, 失效}（2026-09-16 加固）
+        # Excel 的「状态」列历史上有被填成批改类型（增保/减保）的情况，
+        # 直接入库会污染 pol 数据，导致参保检测漏匹配 → 误发通知（段小平事件）。
+        end_date = _get("起止时间")
+        raw_status = _get("状态")
+        today = datetime.now().strftime("%Y-%m-%d")
+        status = db.normalize_person_status(raw_status, end_date, today) if raw_status else (
+            "失效" if (end_date and end_date < today) else "正常"
+        )
         person = {
             "name": name,
             "id_number": id_num,
