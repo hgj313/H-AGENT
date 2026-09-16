@@ -64,7 +64,8 @@ class MetadataExtractorNode:
         all_text = " ".join(p.text for p in pdf_doc.pages if p.has_meaningful_text)
 
         # 1. 保单号
-        policy_number = self._extract_policy_number(all_text)
+        fname_for_extract = state.get("file_path", "")
+        policy_number = self._extract_policy_number(all_text, file_name=fname_for_extract)
 
         # 2. 整体保险期间
         overall_start, overall_end = extract_overall_insurance_period(all_text)
@@ -142,33 +143,65 @@ class MetadataExtractorNode:
         }
 
     @staticmethod
-    def _extract_policy_number(text: str) -> str:
+    def _extract_policy_number(text: str, file_name: str = "") -> str:
         """从 PDF 全文中提取"保单单号"（系统唯一编号）。
 
-        优先级（2026-09-15 修复）：保单单号（保险单/凭证号次） > 保单号 > 保单流水号
+        优先级（2026-09-16 增强）：批单号(若批单文件) > 保单单号 > 保单号 > 保单流水号
 
-        背景：中国太平洋财险等保单的 PDF 含多个编号：
-        - "保单流水号" (DZCA...)：每张保单/批单的内部流水，**不是系统唯一编号**
-        - "保险单或凭证号次" (ACHQ...)：保单单号，是系统唯一编号
-          业务约定："系统中每个保险单的唯一编号是保单单号。批单文件中去找主保单时也是找保单单号。"
-        - "保单号" (利宝 ACHQ/81XX...)：主保单号
+        背景（2026-09-16 修复）：利宝批单 PDF 中同时含：
+        - "保险单号 8116013100260072423000"（主保单号，81开头）
+        - "批单号 7116013100260072423004"（批单号，71开头）
+        旧逻辑总是先匹配"保险单号" → result_dict["policy_number"] 变成主保单号 → 入库后
+        policy_number 字段错填为 81 主保单号（63 条批单记录全部中招）。
 
-        旧逻辑：fallback 到 "保单流水号" → 把 DZCA 流水号当成保单号入库 → validator
-        关联主保单时保单号不相等 → 拒绝补全 end_date → 9 条记录 end_date NULL。
+        新逻辑（2026-09-16 v2）：如果是批单文件（文件名含"批单"），优先匹配"批单号"。
+        若 PDF 文本仍未匹配到，fallback 用 parse_policy_filename 从文件名解析（处理 BD 格式）。
+        否则按原优先级。
 
-        新逻辑：优先识别"保险单或凭证号次"标签，把 ACHQ 保单单号返回为 policy_number。
+        BD 格式陷阱：万年县盛美 BD 格式 PDF 文本中没有"批单号"字样，只有"保险单号"+主保单号。
+        但文件名 `万年县盛美建筑工程有限公司_7116013100260112989001_BD.pdf` 含完整批单号
+        → 必须用 filename_parser 兜底，否则 policy_number 永远错填为 81 主保单号。
         """
-        patterns = [
-            r"保险单或凭证号次[\s\S]{0,30}?([A-Z0-9]{16,30})",  # 1. 太保：保单单号（系统唯一编号），容许中间夹 1-2 行
-            r"凭证号次[\s\S]{0,30}?([A-Z0-9]{16,30})",            # 2. 太保：简称
-            r"保险单号[：:\s]*([A-Z0-9]{16,30})",                # 3. 利宝等：主保单号
-            r"保单号[：:\s]*([A-Z0-9]{16,30})",                  # 4. 利宝等：主保单号
-            r"保单流水号[\s\S]{0,30}?([A-Z0-9]{16,30})",          # 5. 太保：保单内部流水号（fallback）
-        ]
+        from insurance_agent.tools.filename_parser import parse_policy_filename
+
+        is_endorsement = "批单" in file_name or "BD" in file_name.upper()
+
+        if is_endorsement:
+            # 批单：优先匹配"批单号"
+            patterns = [
+                r"批单号[：:\s]*([A-Z0-9]{16,30})",                  # 1. 利宝等：批单号
+                r"保险单号[：:\s]*([A-Z0-9]{16,30})",                # 2. fallback 主保单号
+                r"保险单或凭证号次[\s\S]{0,30}?([A-Z0-9]{16,30})",  # 3. 太保
+                r"保单号[：:\s]*([A-Z0-9]{16,30})",
+                r"保单流水号[\s\S]{0,30}?([A-Z0-9]{16,30})",
+            ]
+        else:
+            # 主保单：原优先级
+            patterns = [
+                r"保险单或凭证号次[\s\S]{0,30}?([A-Z0-9]{16,30})",  # 1. 太保：保单单号（系统唯一编号），容许中间夹 1-2 行
+                r"凭证号次[\s\S]{0,30}?([A-Z0-9]{16,30})",            # 2. 太保：简称
+                r"保险单号[：:\s]*([A-Z0-9]{16,30})",                # 3. 利宝等：主保单号
+                r"保单号[：:\s]*([A-Z0-9]{16,30})",                  # 4. 利宝等：主保单号
+                r"保单流水号[\s\S]{0,30}?([A-Z0-9]{16,30})",          # 5. 太保：保单内部流水号（fallback）
+            ]
         for p in patterns:
             m = re.search(p, text)
             if m:
-                return m.group(1)
+                pn = m.group(1)
+                # 2026-09-16 v2 兜底：批单文件若仍拿到 81 开头主保单号，
+                # 说明 PDF 文本无"批单号"标签（BD 格式万年县盛美等），用文件名保单号覆盖
+                if is_endorsement and pn.startswith("8"):
+                    fname_info = parse_policy_filename(file_name)
+                    if fname_info.policy_number and fname_info.policy_number.startswith("7"):
+                        return fname_info.policy_number
+                return pn
+
+        # 所有正则都没匹配上 → 兜底用文件名解析
+        if is_endorsement:
+            fname_info = parse_policy_filename(file_name)
+            if fname_info.policy_number:
+                return fname_info.policy_number
+
         return ""
 
     @staticmethod

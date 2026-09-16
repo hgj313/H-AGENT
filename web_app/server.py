@@ -358,14 +358,16 @@ def _persist_policy_result(result_dict: dict, fpath: str):
         # 注意：fallback 到 overall_start 在批单缺失生效日时仍可能错填主保单起期，但至少
         # 不会再出现"end_date > today"的不一致。如果连 overall_start 都没有，则只用 status 兜底。
         deactivate_end_date = endorsement_effective_date or overall_start
+        # 2026-09-16 修复徐成强事件：传入 policy_number 限定只减保本批单的记录，
+        # 避免跨保单误改（同身份证在不同保单下的记录被无差别失效）。
         if deactivate_end_date:
-            db.deactivate_insurance(remove_ids, end_date=deactivate_end_date)
+            db.deactivate_insurance(remove_ids, end_date=deactivate_end_date, policy_number=policy_number)
         else:
             logger.warning(
                 f"批单 {source_file} 减保时未提取到批单生效日，"
                 f"仅更新 status 而不更新 end_date（可能产生不一致）"
             )
-            db.deactivate_insurance(remove_ids)
+            db.deactivate_insurance(remove_ids, policy_number=policy_number)
 
 
 def process_files(file_paths: list[str]) -> list[dict]:

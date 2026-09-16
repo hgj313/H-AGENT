@@ -98,12 +98,17 @@ class PersonnelExtractorNode:
 
         # 构造 ExtractionResult 存回 state
         policy_number = state.get("working_memory", {}).get("policy_number", "")
+        # 2026-09-16 修复：从 working_memory 读取批单生效日，避免 _persist_policy_result 减保时
+        # 降级用 overall_start（主保单起期）兜底。谭建芬事件：end_date=主保单起期(2026-06-17)，
+        # 应是批单004生效日(2026-09-13)。
+        endorsement_effective_date = state.get("working_memory", {}).get("endorsement_effective_date", "")
         result = ExtractionResult(
             file_name=pdf_doc.file_name,
             insurance_company=insurance_company,
             policy_number=policy_number,
             overall_start_date=overall_start,
             overall_end_date=overall_end,
+            endorsement_effective_date=endorsement_effective_date,
             insured_persons=persons,
             format_used=format_hint,
             extraction_method=("ocr" if format_hint == "ocr" else "text"),

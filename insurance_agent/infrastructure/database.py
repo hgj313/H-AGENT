@@ -823,7 +823,8 @@ def add_insurance_personnel(persons: list[dict]) -> dict:
             conn.close()
 
 
-def deactivate_insurance(id_numbers: list[str], end_date: str | None = None) -> int:
+def deactivate_insurance(id_numbers: list[str], end_date: str | None = None,
+                        policy_number: str | None = None) -> int:
     """减保：将指定身份证号的人员状态设为失效
 
     Args:
@@ -831,6 +832,8 @@ def deactivate_insurance(id_numbers: list[str], end_date: str | None = None) -> 
         end_date: 减保生效日（YYYY-MM-DD）。如果提供，会同步更新 end_date 字段，
                    避免出现"status=失效 但 end_date 还是主保单止期"的不一致。
                    通常由批单的"批单生效日期"提供（见 metadata_extractor 的 endorsement_effective_date）。
+        policy_number: 2026-09-16 新增：批单号。提供时仅减保该保单下的记录，
+                       避免跨保单误改（同身份证在不同保单下的记录）。
 
     Returns:
         更新的条数
@@ -838,6 +841,8 @@ def deactivate_insurance(id_numbers: list[str], end_date: str | None = None) -> 
     Note:
         - 不提供 end_date 时保留旧行为（仅更新 status），以保证向后兼容。
         - 但推荐调用方始终显式传入减保生效日，避免数据不一致（参见 2026-09-15 秦克智事件）。
+        - 推荐传入 policy_number 防跨保单误改（2026-09-16 徐成强事件：批单0034742015 减保
+          把同身份证的华安一年保单 1763 也改成失效）。
     """
     id_numbers = [str(i).strip() for i in id_numbers if i and str(i).strip()]
     if not id_numbers:
@@ -848,19 +853,29 @@ def deactivate_insurance(id_numbers: list[str], end_date: str | None = None) -> 
         try:
             cursor = conn.cursor()
             placeholders = ",".join("?" for _ in id_numbers)
+            where_clauses = [f"id_number IN ({placeholders})"]
+            params: list = []
+            if end_date:
+                end_date = str(end_date).strip()
+            if policy_number:
+                where_clauses.append("policy_number = ?")
+                params.append(str(policy_number).strip())
+            where_sql = " AND ".join(where_clauses)
+            # 注意参数顺序：必须与 WHERE 子句中占位符的出现顺序严格一致
+            # where_sql 形如 "id_number IN (?,?,?) AND policy_number = ?"
+            # 对应参数顺序: id_numbers..., 然后 policy_number
             if end_date:
                 # 减保生效日：同步更新 status 和 end_date，保证一致性
-                end_date = str(end_date).strip()
                 cursor.execute(
                     f"UPDATE insurance_personnel SET status = '失效', end_date = ? "
-                    f"WHERE id_number IN ({placeholders})",
-                    [end_date, *id_numbers],
+                    f"WHERE {where_sql}",
+                    [end_date, *id_numbers, *params],
                 )
             else:
                 # 旧行为：仅更新 status（不推荐）
                 cursor.execute(
-                    f"UPDATE insurance_personnel SET status = '失效' WHERE id_number IN ({placeholders})",
-                    id_numbers,
+                    f"UPDATE insurance_personnel SET status = '失效' WHERE {where_sql}",
+                    [*id_numbers, *params],
                 )
             conn.commit()
             return cursor.rowcount

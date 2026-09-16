@@ -13,6 +13,7 @@ class ExtractionResult:
     policy_number: str = ""
     overall_start_date: str = ""
     overall_end_date: str = ""
+    endorsement_effective_date: str = ""  # 2026-09-16 新增：批单生效日（"自X年Y月Z日零时起生效"）
     insured_persons: list[InsuredPerson] = field(default_factory=list)
     format_used: str = ""
     extraction_method: str = ""
