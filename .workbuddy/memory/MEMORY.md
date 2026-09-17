@@ -22,6 +22,8 @@
 | 平安财险-投保单 | no_list(仅条款) | — | — | — | |
 | 安诚财险(ASHH/81160131) | table(投保人名称 空格分隔) | ❌整体期限 | 投保人 | 纯增保 | |
 | **众安在线财险（非灵工）** | table(序号/姓名/性别/证件号码/职业代码/保险方案/实际用人单位/实际用工企业/保障起期/保障止期/人均保费) | ✅逐人 | ✅有列 | 纯增保 | **2026-09 新增**：表头关键词是"人员名单"（不是"人员清单"），PyMuPDF 可能把 18 位身份证拆成两行（如 `43061119711230\n2016`），靠 `re.sub(r'(\d{3,})\n(\d\|[Xx])', r'\1\2', text)` 跨行拼接；前几页条款页常含"雇员清单"会触发误识别 → 用 `_is_clause_page` + `_is_real_list_page` 双过滤 |
+| **中国人寿-在保名单(绿洲团体意外险)** | **block_kv(每人独立键值对块)**：序号/姓名/被保人类型/性别/出生日期/证件类型及号码/职业名称/生效日期/终止日期/要约状态 | ✅逐人 | ✅从「投保人名称」标签提取 | 纯增保（主保单）/ 增人减人替换人(批单) | **2026-09-17 新增**：`BlockKVExtractor`。强特征「有效被保险人清单」+「汇交号/保险合同号」+「被保人顺序号」+「要约状态」。保单号格式：22 位字符（汇交号=绿洲团体意外险）。整体期限在两条独立字段「保险合同生效日期」+「保险合同满期日期」（顺序不固定）。**跨行干扰极严重**：「身份\n证」「证件\n类型\n及号\n码：」「序\n号：1」「电路安装及维\n修工人」 → 必须先 `_clean_text()` 合并再分块。`_JOB_PATTERN` 用 lookahead 捕获到下个字段标签（避免 `\S+` 在跨行空格截断）。PDF 中只显示品牌名「国寿」不显示「中国人寿」→ `_COMPANY_PATTERNS` 加国寿/国寿新绿洲/国寿附加绿洲 |
+| **中国人寿-被保险人变动清单(批单)** | **table(双栏)**：列=序号/是否生效/变动类型/被保险人类型/姓名+个人编号/生效日/终止日/组号-组名/证件类型/证件号码/险种/保额/标准保费/应收应付。**左栏=增加被保险人**(姓名+编号+证件类型+证件号码+险种+保额+标准保费)，**右栏=减少被保险人**(仅姓名+编号，无证件号码) | ✅逐人(YYYY/MM/DD) | ✅从「投保人」标签提取 | 增/减/替换(同期增减) | **2026-09-17 新增**：table_extractor 已支持。关键规则见下方「中国人寿变动清单提取要点」。保单号=「保险合同号」(22 位字符如 `2026660109D7H400014536` / `2026660531D7H400052298`)，同公司多份批单可能分属不同保单号 |
 
 ## 关键识别规则（易错点）
 - **文件名含"投保单" ≠ 投保申请书**：仅当同时无保单号且无清单页才判 `no_list`。例"逸趣投保单.pdf"实为保险单。
@@ -32,11 +34,17 @@
 - **BD格式文件名**：`公司名_保单号_BD.pdf` 不带"批单"/"保单"前缀 → `filename_parser` 必须支持，正则 `^(.+?)_(\d{16,30})_BD$`。
 - **清单页定位（精确版）**：`_LIST_MARKERS` 命中后，必须用 `_is_real_list_page`(表头词+6位数字) 真清单校验，再用 `_is_clause_page`(条款/附录/赔偿处理) 剔除误触发；跨页扩展的续页判定**不能用表头词作为唯一条件**——大型保单（>100 人）常省略重复表头，需用 `_is_list_continuation_page()`（≥3 个 18 位身份证）作为续页强证据。
 - **table_extractor post_region 截断（2026-09-14 关键）**：`post_region = list_text[id_pos:id_pos + 400]` 必须截断到下一个身份证号之前。否则会把"下一个人员的生效日期"误当作"当前人员的起止日期"——当所有人员同一起保日（利宝 1-3 月期短期保单常见）时，会导致 end_date == start_date（同一天）。修复后单列"生效日期" + 全员同日期场景稳定。
+- **中国人寿变动清单提取要点（2026-09-17 新增，table_extractor）**：中国人寿"被保险人变动清单"批单格式特殊，必须按以下规则处理：
+  1. **日期在 ID 之前**：生效日/终止日在身份证号左侧（pre_region），不在右侧。逻辑改为先搜 `dates_post`，为空才用 `dates_pre`；`extract_dates_near` 过滤 birth_date 且年份≥2010。
+  2. **"受理时间/受理日期"噪声标签必须剔除**：批单页脚有「受理时间：2026年07月31日」会污染起期（把受理日当生效日）。预处理 `re.sub` 同时删「受理日期」「受理时间」「制单时间」。
+  3. **per-row 批改类型**：同一份批单可能混合增+减（如 7月31替换人 同期增减）。新增 `_detect_row_modification_type(region)`：优先 `同期增减/同期替换/替换/置换`→增保，再 `减少/删除`→减保，再 `增加`→增保。文件级 mod_type 仅作 fallback。
+  4. **"同期增减"=减少栏无 ID**：中国人寿"同期增减/替换"操作中，右栏「减少被保险人」只列 姓名+编号（无证件号码），左栏「增加被保险人」才有完整证件号码。故同一份替换批单只能提取到"增加"的那个人（如 7月31替换人 只识 封明秀，王长容 无 ID 不识）。这是 PDF 固有数据缺失，非识别 bug。
+  5. **表头列名误配工种**：列名「增加主被保险人/减少被保险人」会被 `_JOB_PATTERN` 误识为工种 → `_VARIATION_NOISE` 黑名单（含"生效/增加主被保险人/减少被保险人/同期增减"等） + `_TABLE_HEADER_KEYWORDS` 子串过滤双重拦截。
 
 ## 技术方案
 - PDF解析: PyMuPDF 文字层 + 扫描件 MiniMax-M3 视觉OCR
 - 流程: policy_parser→metadata_extractor→personnel_extractor→validator→output (LangGraph)
-- Extractors: table / inline / individual / ocr（按 format_hint 分发）
+- Extractors: table / inline / individual / **block_kv（中国人寿在保名单）** / ocr（按 format_hint 分发）
 - LLM: MiniMax-M3 (Anthropic协议，H-AGENT/.env)
 - 服务: FastAPI (web_app/server.py :8765) + watchdog (service_watchdog.py) + 一键启动服务.bat
 
@@ -47,6 +55,20 @@
 - **upsert 拒绝覆盖导致新正确数据不写库（同日衍生，2026-09-15）**：批单004 (减 谭建芬/增 秦克智) 已 register 到 index.json（含正确日期），但 `add_insurance_personnel()` 的 upsert 规则 `excluded.end_date >= insurance_personnel.end_date` 拒绝覆盖：旧 end=2026-12-08 (从 6894300 错填过来的) > 新 end=2026-09-16 → 跳过 UPDATE → 谭建芬仍是错日期。修复批次数据时需用 SQL `UPDATE WHERE id IN (...)` 直接绕开 upsert。
 
 ## 关键 Bug 修复要点（按时间倒序）
+- **中国人寿"在保名单" block_kv 新格式支持（2026-09-17）**：吉盛上传 26人清单 PDF 触发新格式识别需求。详见 `2026-09-17.md`。要点：
+  - 新建 `extractors/block_kv_extractor.py`（BlockKVExtractor）
+  - `metadata_extractor_node.py` 加 `_BLOCK_KV_MARKERS` + format_hint 分支 + 保单号正则「汇交号」
+  - `date_parser.py` 加 `_extract_block_kv_period`（兼容两条字段顺序不固定）+ `_BLOCK_KV_FIELD_PATTERN`
+  - `pymupdf_parser._COMPANY_PATTERNS` 加「国寿 / 国寿新绿洲 / 国寿附加绿洲」品牌名
+  - `pymupdf_parser._detect_insurance_company` 改按 **max_pattern_len 优先**（而非命中次数）—— 解决「中国人寿财产保险」包含「中国人寿」导致重复计数问题
+  - `web_app/server.py _GRAPH_CODE_FILES` + `_reload_graph_dependencies` 加 `block_kv_extractor.py` + `date_parser.py`
+  - **延伸 bug**：server.py 模块级 `from X import Y` 在 reload 后仍指向旧 class object → 必须重启服务（用 ctypes SeDebugPrivilege + TerminateProcess 杀 watchdog 启动的 server → watchdog 自动重启）
+  - 教训：① 跨行干扰字段提取不要用 `\S+`，必须用 lookahead 捕获到下个字段标签；② 关键词数量加权有重叠风险，需配合最长关键词命中优先；③ 中国人寿品牌名 PDF 只写「国寿」，keywords 需双轨；④ server.py `from...import` 引用在 reload 后不更新
+- **中国人寿"被保险人变动清单"批单格式支持（2026-09-17）**：吉盛上传 9 份批单（7月2/7月13/7月31减/7月31替换/8月4/8月19/8月24/8月26/9月3 增人/减人/替换人）。详见本文件「中国人寿变动清单提取要点」。代码改动：
+  - `date_parser.py`：`_DATE_PATTERN` 加 `/` 分隔符（中国人寿用 YYYY/MM/DD）；`_OVERALL_PATTERNS` 4 条主正则 `-` 分隔符均加 `/` 兼容
+  - `table_extractor.py`：pre_region 日期搜索 + per-row mod_type(`_detect_row_modification_type`) + `_VARIATION_NOISE`/`_TABLE_HEADER_KEYWORDS` 工种黑名单 + 预处理剔除「受理时间/受理日期/制单时间」噪声标签
+  - 验证：9 份全部提取完整（共 22 人次；7月31替换人 仅识封明秀 因王长容 无 ID 属 PDF 固有缺失）。已按时间顺序经 `/api/upload` 入库（18 条最终记录：王长容/邹如碧 因 upsert 按 name+id_number 去重跨 Policy A/B 合并为 Policy A；7月31减人 减保因无 Policy A 目标记录为 no-op，邹如碧 后被 9月3 重新增保覆盖为正常）
+  - **已知限制**：① 中国人寿"同期增减/替换"批单的「减少被保险人」栏无证件号码 → 减保人员无法自动提取/去失效（需人工或跨页关联）；② upsert 按 name+id_number 去重，同人跨多保单(Policy A/B)只保留最新 end_date 那条
 - **metadata_extractor_node logger NameError + BSHH 号段映射错（2026-09-16）**：用户上传恒财批单 `批单_..._BSHH01137126QA16XPVB(1).pdf` 报错 "name 'logger' is not defined"。根因：上轮我加 `logger.info(...)` 号段覆盖日志时**没导入 `logging` 也没建 logger 实例**。修复：补 `import logging` + `logger = logging.getLogger(__name__)`。顺手修另一处号段映射错误——我把 `BSHH` 映射到安诚是错的（以为是安诚批单），实际是**中国太平洋财产保险**的批单前缀（A=Annual 主保单 ASHH，B=Batch 批单 BSHH，368 条历史入库 100% 归太保证实）。修正后：
   - `ASHH` → `中国太平洋财产保险`（主保单）
   - `BSHH` → `中国太平洋财产保险`（批单）
