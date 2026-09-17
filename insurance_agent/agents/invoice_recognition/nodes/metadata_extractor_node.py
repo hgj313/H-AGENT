@@ -39,6 +39,14 @@ _INLINE_MARKERS = ["雇员姓名：", "雇员姓名:", "雇员姓名：", "雇�
 _INDIVIDUAL_MARKERS = ["被保险人信息", "被保人信息"]
 # 不记名投保保单特征（灵工版等 — 只投总人数，不逐人记名 → 无清单）
 _UNLISTED_MARKERS = ["是否记名投保", "总投保员工人数", "不记名投保", "灵工版", "灵工雇主"]
+# 块状键值对清单标记（2026-09-17 新增：中国人寿"在保名单"绿洲团体意外险等）
+# 特征：抬头含"有效被保险人清单"+"汇交号/保险合同号"+每人有"生效日期/终止日期"
+_BLOCK_KV_MARKERS = [
+    "有效被保险人清单",   # 中国人寿绿洲团体意外险典型特征
+    "被保人顺序号",         # 块状格式特征
+    "要约状态",             # 块状格式特征
+    "汇交号",               # 中国人寿绿洲团体意外险保单号前缀
+]
 
 # 批单生效日期：自 2026年09月04日 零时起生效
 # 提取批单整体生效日（单点日期），用于减保记录的 end_date 补全
@@ -111,6 +119,9 @@ class MetadataExtractorNode:
             # 有人员清单页 → 真实保单，优先按清单格式识别
             if any(marker in all_text for marker in _INLINE_MARKERS):
                 format_hint = "inline"
+            elif any(marker in all_text for marker in _BLOCK_KV_MARKERS):
+                # 块状键值对清单（2026-09-17 新增：中国人寿"在保名单"绿洲团体意外险等）
+                format_hint = "block_kv"
             elif self._is_individual_policy(all_text):
                 format_hint = "individual"
                 list_pages = self._find_individual_pages(pdf_doc) or list_pages
@@ -197,6 +208,8 @@ class MetadataExtractorNode:
             patterns = [
                 r"保险单或凭证号次[\s\S]{0,30}?([A-Z0-9]{16,30})",  # 1. 太保：保单单号（系统唯一编号），容许中间夹 1-2 行
                 r"凭证号次[\s\S]{0,30}?([A-Z0-9]{16,30})",            # 2. 太保：简称
+                r"汇交号[/／\s]*保险合同号[：:\s]*([A-Z0-9]{16,30})", # 2.5 中国人寿绿洲团体意外险"在保名单"汇交号（2026-09-17 新增）
+                r"保险合同号[：:\s]*([A-Z0-9]{16,30})",                # 2.6 中国人寿"汇交号/保险合同号"另一形式
                 r"保险单号[：:\s]*([A-Z0-9]{16,30})",                # 3. 利宝等：主保单号
                 r"保单号[：:\s]*([A-Z0-9]{16,30})",                  # 4. 利宝等：主保单号
                 r"保单流水号[\s\S]{0,30}?([A-Z0-9]{16,30})",          # 5. 太保：保单内部流水号（fallback）

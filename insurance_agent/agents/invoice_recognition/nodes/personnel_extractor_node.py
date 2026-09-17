@@ -11,14 +11,17 @@ DI：所有 Extractor 通过构造器注入。
 
 from typing import Optional
 from insurance_agent.domain import PDFDocument, InsuredPerson, ExtractionResult
-from insurance_agent.extractors import BaseExtractor, TableExtractor, InlineExtractor, IndividualExtractor, OCRExtractor
+from insurance_agent.extractors import (
+    BaseExtractor, TableExtractor, InlineExtractor, IndividualExtractor,
+    BlockKVExtractor, OCRExtractor,  # 2026-09-17 新增 BlockKVExtractor
+)
 from insurance_agent.agents.invoice_recognition.states.inv_state import InvoiceRecognitionState
 
 
 class PersonnelExtractorNode:
     """人员提取节点
 
-    DI：注入三种 Extractor（table / inline / ocr）。
+    DI：注入四种 Extractor（table / inline / individual / block_kv / ocr）。
     """
 
     def __init__(
@@ -26,11 +29,13 @@ class PersonnelExtractorNode:
         table_extractor: Optional[BaseExtractor] = None,
         inline_extractor: Optional[BaseExtractor] = None,
         individual_extractor: Optional[BaseExtractor] = None,
+        block_kv_extractor: Optional[BaseExtractor] = None,
         ocr_extractor: Optional[BaseExtractor] = None,
     ):
         self._table = table_extractor or TableExtractor()
         self._inline = inline_extractor or InlineExtractor()
         self._individual = individual_extractor or IndividualExtractor()
+        self._block_kv = block_kv_extractor or BlockKVExtractor()  # 2026-09-17 新增
         self._ocr = ocr_extractor  # OCR 需要 LLM，默认不注入
 
     def __call__(self, state: InvoiceRecognitionState) -> dict:
@@ -84,6 +89,8 @@ class PersonnelExtractorNode:
                     persons.extend(self._inline.extract(text, policy_holder, insurance_company))
                 elif format_hint == "individual":
                     persons.extend(self._individual.extract(text, policy_holder, insurance_company))
+                elif format_hint == "block_kv":
+                    persons.extend(self._block_kv.extract(text, policy_holder, insurance_company))
                 else:  # table（默认）
                     persons.extend(self._table.extract(text, policy_holder, insurance_company))
 

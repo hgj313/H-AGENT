@@ -7,11 +7,15 @@
 from .base import BaseExtractor
 from .table_extractor import TableExtractor
 from .inline_extractor import InlineExtractor
+from .individual_extractor import IndividualExtractor
+from .block_kv_extractor import BlockKVExtractor  # 2026-09-17 新增：中国人寿"在保名单"
 from .ocr_extractor import OCRExtractor
 
 __all__ = [
     "BaseExtractor",
     "TableExtractor",
     "InlineExtractor",
+    "IndividualExtractor",
+    "BlockKVExtractor",
     "OCRExtractor",
 ]

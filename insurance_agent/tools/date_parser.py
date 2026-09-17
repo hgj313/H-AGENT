@@ -10,19 +10,24 @@ import re
 from typing import Optional
 
 # 整体保险期间：自 X年Y月Z日 ... 起至 X年Y月Z日 ... 止
+# 字符类包含中文（支持"零时""二十四时"等中文时间表述）
+# "自"后允许空格（如"自 2026年03月24日..."）
 _OVERALL_PATTERNS = [
     re.compile(
-        r"自(\d{4})年(\d{1,2})月(\d{1,2})日[\d:时分秒\s]*起[,，]?\s*至\s*(\d{4})年(\d{1,2})月(\d{1,2})日[\d:时分秒\s]*止"
+        r"自\s*(\d{4})年(\d{1,2})月(\d{1,2})日[\d:时分秒\s\u4e00-\u9fff]*起[,，]?\s*至\s*(\d{4})年(\d{1,2})月(\d{1,2})日[\d:时分秒\s\u4e00-\u9fff]*止"
     ),
     re.compile(
-        r"自(\d{4})-(\d{1,2})-(\d{1,2})[\s\d:时分秒]*起?\s*至\s*(\d{4})-(\d{1,2})-(\d{1,2})[\s\d:时分秒]*止"
+        r"自\s*(\d{4})-(\d{1,2})-(\d{1,2})[\s\d:时分秒\u4e00-\u9fff]*起?\s*至\s*(\d{4})-(\d{1,2})-(\d{1,2})[\s\d:时分秒\u4e00-\u9fff]*止"
     ),
     re.compile(
-        r"保险期间[：:\s]*自(\d{4})[年\-](\d{1,2})[月\-](\d{1,2})[日\s\d:时分秒]*至\s*(\d{4})[年\-](\d{1,2})[月\-](\d{1,2})"
+        r"保险期间[：:\s]*自\s*(\d{4})[年\-](\d{1,2})[月\-](\d{1,2})[日\s\d:时分秒\u4e00-\u9fff]*至\s*(\d{4})[年\-](\d{1,2})[月\-](\d{1,2})"
     ),
     re.compile(
-        r"自(\d{4})[年\-](\d{1,2})[月\-](\d{1,2})日?[\s\d:时分秒]*起[,，\s]*至\s*(\d{4})[年\-](\d{1,2})[月\-](\d{1,2})日?[\s\d:时分秒]*止"
+        r"自\s*(\d{4})[年\-](\d{1,2})[月\-](\d{1,2})日?[\s\d:时分秒\u4e00-\u9fff]*起[,，\s]*至\s*(\d{4})[年\-](\d{1,2})[月\-](\d{1,2})日?[\s\d:时分秒\u4e00-\u9fff]*止"
     ),
+    # 2026-09-17 新增：中国人寿"在保名单"绿洲团体意外险 — 整体期限在两条独立字段中
+    # 例：保险合同生效日期 2026年06月29日 零时零分零秒 / 保险合同满期日期 2027年06月28日 二十四时
+    # 兼容两种字段顺序：生效→满期 或 满期→生效（统一在 _extract_block_kv_period 中处理）
 ]
 
 # 单点日期：2026-06-24 00:00:00  / 2026年06月24日  / 2026年7月1日
@@ -30,10 +35,41 @@ _DATE_PATTERN = re.compile(
     r"(\d{4})[-年](\d{1,2})[-月](\d{1,2})[日\s]*(?:\d{1,2}[时:]\d{1,2}(?:分:?\d{1,2}秒?)?)?"
 )
 
+# 中国人寿"在保名单"绿洲团体意外险 — 两条独立字段（顺序不固定）
+# 2026-09-17 新增：处理"保险合同生效日期"和"保险合同满期日期"两条独立字段；
+# 字段顺序不固定（PDF 1: 满期→生效；PDF 2: 生效→满期）。
+_BLOCK_KV_FIELD_PATTERN = re.compile(
+    r"保险合同(?:生效日期|满期日期)[：:\s]*(\d{4})[年\-/](\d{1,2})[月\-/](\d{1,2})日?"
+)
+
 
 def normalize_date(year: str, month: str, day: str) -> str:
     """统一日期格式为 YYYY-MM-DD"""
     return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+
+
+def _extract_block_kv_period(text: str) -> tuple[Optional[str], Optional[str]]:
+    """提取中国人寿"在保名单"绿洲团体意外险的双字段整体期限
+
+    兼容"保险合同生效日期"和"保险合同满期日期"字段顺序不固定的情况：
+    找到所有"保险合同XX日期"字段值，去重后取最早为 start、最晚为 end。
+    """
+    if not text:
+        return None, None
+    dates: list[str] = []
+    seen: set[str] = set()
+    for m in _BLOCK_KV_FIELD_PATTERN.finditer(text):
+        d = normalize_date(m.group(1), m.group(2), m.group(3))
+        if d not in seen:
+            seen.add(d)
+            dates.append(d)
+    if len(dates) >= 2:
+        dates.sort()
+        return dates[0], dates[-1]
+    if len(dates) == 1:
+        # 只有一条 — 不能推断期间
+        return dates[0], None
+    return None, None
 
 
 def extract_overall_insurance_period(text: str) -> tuple[Optional[str], Optional[str]]:
@@ -45,12 +81,15 @@ def extract_overall_insurance_period(text: str) -> tuple[Optional[str], Optional
     if not text:
         return None, None
 
+    # 1. 通用正则（支持各种"自X起至Y止"格式）
     for pattern in _OVERALL_PATTERNS:
         m = pattern.search(text)
         if m:
             return normalize_date(m.group(1), m.group(2), m.group(3)), \
                    normalize_date(m.group(4), m.group(5), m.group(6))
-    return None, None
+
+    # 2. 块状键值对双字段（中国人寿在保名单）
+    return _extract_block_kv_period(text)
 
 
 def extract_dates_near(text: str, anchor_pos: int, window: int = 300) -> list[str]:

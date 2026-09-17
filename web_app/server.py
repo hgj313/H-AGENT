@@ -92,7 +92,9 @@ _GRAPH_CODE_FILES = [
     "insurance_agent/extractors/table_extractor.py",
     "insurance_agent/extractors/inline_extractor.py",
     "insurance_agent/extractors/individual_extractor.py",
+    "insurance_agent/extractors/block_kv_extractor.py",  # 2026-09-17 新增：中国人寿"在保名单"
     "insurance_agent/extractors/ocr_extractor.py",
+    "insurance_agent/tools/date_parser.py",  # 2026-09-17 新增：中国人寿在保名单双字段日期正则
 ]
 
 # 公司系统会话管理器（25分钟自动续期 JSESSIONID）
@@ -150,6 +152,7 @@ def _reload_graph_dependencies() -> None:
         # 叶子工具层（先 reload，供上层 import 最新版）
         "insurance_agent.tools.company_extractor",
         "insurance_agent.tools.filename_parser",
+        "insurance_agent.tools.date_parser",  # 2026-09-17 新增：双字段日期正则
         "insurance_agent.tools",
         "insurance_agent.infrastructure.parsers.pymupdf_parser",
         # 节点层
@@ -162,6 +165,7 @@ def _reload_graph_dependencies() -> None:
         "insurance_agent.extractors.table_extractor",
         "insurance_agent.extractors.inline_extractor",
         "insurance_agent.extractors.individual_extractor",
+        "insurance_agent.extractors.block_kv_extractor",  # 2026-09-17 新增
         "insurance_agent.extractors.ocr_extractor",
         # 顶层 graph（最后 reload 才能拿到所有最新子模块）
         "insurance_agent.agents.invoice_recognition.capability",

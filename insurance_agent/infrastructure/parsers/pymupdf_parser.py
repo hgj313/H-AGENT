@@ -30,8 +30,8 @@ class PyMuPDFParser:
     _COMPANY_PATTERNS = {
         "利宝保险": ["利宝保险", "Liberty", "libertymutual"],
         "中国太平洋财产保险": ["太平洋财产保险", "中国太平洋", "cpic", "95500"],
-        "中国人寿财产保险": ["中国人寿财产保险", "中国人寿财险"],
-        "中国人寿": ["中国人寿"],
+        "中国人寿财产保险": ["中国人寿财产保险", "中国人寿财险", "国寿财产", "国寿财险"],
+        "中国人寿": ["中国人寿", "国寿", "国寿新绿洲", "国寿附加绿洲"],
         "中国平安": ["平安保险", "平安养老", "Ping An"],
         "中国人民保险": ["人民保险", "PICC"],
         "泰康保险": ["泰康"],
@@ -148,6 +148,11 @@ class PyMuPDFParser:
         2. 文本中保险公司关键词 **按出现次数加权** —— 防止华安批单088 因 PDF 模板残留
            "黄河财产保险" 字样被错误识别（2026-09-16 段小平事件根因）
         3. 单一关键词首次命中（兜底）
+
+        2026-09-17 修复：重叠关键词计数问题。
+        之前按"中国人寿"出现次数最多（含于"中国人寿财产保险"中），导致中国人寿财产险 PDF 被
+        错识为"中国人寿"（缺少"财产保险"修饰）。改为**最长关键词命中优先**：若有更长的
+        关键词命中过（如"中国人寿财产保险"），即使"中国人寿"出现次数更多，也优先选最长关键词。
         """
         all_text = " ".join(p.text for p in pdf_doc.pages if p.has_meaningful_text)
         if not all_text:
@@ -155,22 +160,27 @@ class PyMuPDFParser:
 
         all_text_lower = all_text.lower()
 
-        # 统计每个公司关键词在文本中出现次数，取最大者
-        # 长关键词优先（如"黄河财产保险"应优先于"黄河"）
-        hits: list[tuple[int, str]] = []
+        # 1. 收集所有命中的 (count, company_name, max_pattern_len)
+        #    max_pattern_len 用于解决"中国人寿"被"中国人寿财产保险"包含导致的重复计数问题
+        hits: list[tuple[int, str, int]] = []
         for company_name, patterns in self._COMPANY_PATTERNS.items():
             count = 0
+            max_pattern_len = 0
             for pattern in patterns:
-                count += all_text_lower.count(pattern.lower())
+                c = all_text_lower.count(pattern.lower())
+                count += c
+                if c > 0:
+                    max_pattern_len = max(max_pattern_len, len(pattern))
             if count > 0:
-                hits.append((count, company_name))
+                hits.append((count, company_name, max_pattern_len))
 
-        if hits:
-            # 按命中次数降序，并列时取长关键词优先（避免"黄河"命中而错过"黄河财产保险"）
-            hits.sort(key=lambda x: x[0], reverse=True)
-            return hits[0][1]
+        if not hits:
+            return "unknown"
 
-        return "unknown"
+        # 2. 按 max_pattern_len 降序，相同 len 时按 count 降序
+        #    长度优先：避免短关键词"中国人寿"（被含于"中国人寿财产保险"）抢走命中的问题
+        hits.sort(key=lambda x: (x[2], x[0]), reverse=True)
+        return hits[0][1]
 
     def detect_insurance_company_by_policy_number(self, policy_number: str) -> str:
         """根据保单号前缀反查保险公司（2026-09-16 新增，作为号段兜底）
