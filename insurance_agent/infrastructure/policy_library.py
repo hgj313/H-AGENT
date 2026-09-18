@@ -183,6 +183,43 @@ class PolicyLibrary:
 
         return None
 
+    def find_main_policy_by_company_compatible(
+        self, company: str, batch_policy_number: str = ""
+    ) -> Optional[PolicyRecord]:
+        """通过公司名查找主保单（带保单号兼容性校验，2026-09-18 新增）
+
+        背景：万年县盛美上传主保单 8116013100260112989000 之前，已有一条
+        主保单 8116013100260107550000（同一公司）。find_main_policy_by_company
+        按列表顺序返回第一个匹配 → 错返回旧保单 → find_main_policy 兼容性校验
+        拒绝 → 批单无法关联主保单 → 起止日期 NULL 写入数据库（4 条异常记录暴露）。
+
+        解决：按"保单号前缀兼容性"过滤后再返回，避免"同公司不同保单号"的错配。
+
+        Args:
+            company: 公司名（批单中的投保人）
+            batch_policy_number: 批单号（用于兼容性校验）
+
+        Returns:
+            第一个保单号兼容的主保单记录，若无则返回 None
+        """
+        if not company:
+            return None
+        company_clean = company.replace("有限公司", "").replace("公司", "").strip()
+        for r in self._records:
+            if r.policy_type != "保单":
+                continue
+            r_company_clean = r.company.replace("有限公司", "").replace("公司", "").strip()
+            if not (company_clean and r_company_clean and
+                    (company_clean in r_company_clean or r_company_clean in company_clean)):
+                continue
+            # 校验保单号兼容性：批单 71/80/81 vs 主保单 81/80/71 共享中段
+            if batch_policy_number and not self._policy_numbers_compatible(
+                batch_policy_number, r.policy_number
+            ):
+                continue
+            return r
+        return None
+
     @staticmethod
     def _policy_numbers_compatible(batch_no: str, main_no: str) -> bool:
         """检查批单保单号与主保单保单号是否兼容（同属一份保单）
@@ -230,6 +267,12 @@ class PolicyLibrary:
             2026-09-15 加固：仅按公司名模糊匹配时，必须校验保单号前缀兼容
             （否则森炜 0072423000 批单会匹配到 6894300 主保单，把别人的起止日期
             错填到本批单的逐人记录中）。
+
+            2026-09-18 二次加固：万年县盛美事件。同公司可能有多个不同时期的主保单
+            （如 8116013100260107550000 旧主保单 + 8116013100260112989000 新主保单）。
+            若 find_main_policy_by_company 返回的旧主保单号与批单号不兼容，
+            会导致找不到主保单、批单记录 NULL 日期入库。修复：按保单号兼容性
+            迭代过滤，返回第一个兼容的主保单。
         """
         # 1. 先按保单号精确匹配
         if policy_number:
@@ -237,14 +280,13 @@ class PolicyLibrary:
             if record:
                 return record
 
-        # 2. 再按公司名模糊匹配（带保单号前缀兼容性校验）
+        # 2. 再按公司名模糊匹配（带保单号兼容性迭代过滤，2026-09-18 加固）
         if company:
-            record = self.find_main_policy_by_company(company)
-            if record and policy_number:
-                # 校验保单号前缀是否兼容：拒绝"同公司不同保单号"的错配
-                if not self._policy_numbers_compatible(policy_number, record.policy_number):
-                    return None
-            return record
+            if policy_number:
+                # 传入了保单号 → 用兼容性过滤版本（修复万年县盛美事件）
+                return self.find_main_policy_by_company_compatible(company, policy_number)
+            # 未传保单号 → 退回旧行为（第一个匹配）
+            return self.find_main_policy_by_company(company)
 
         return None
 

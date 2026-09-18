@@ -106,16 +106,28 @@ class ValidatorNode:
         # 导致把别人的起止日期错填到本批单的逐人记录中。
         # 实例：森炜 0072423000 批单001/002 (2026-09-03 上传) → 主保单 0072423000 未入库
         #   → 回退到 6894300 主保单（也是森炜）→ 3 条记录被错填 2026-06-09~2026-12-08
+        #
+        # 2026-09-18 加固：用 `_policy_numbers_compatible` 前缀兼容性校验替代严格相等。
+        # 万年县盛美事件：批单号 7116013100260112989004 与 主保单号 8116013100260112989000
+        # 前 19 位完全相同（中间 18 位共享），仅首位 7/8 区分批单/主保单。
+        # 严格相等校验会误判"不一致" → 拒绝日期补全 → 批单记录 NULL 日期入库。
         if policy_number and main_policy.policy_number and main_policy.policy_number != policy_number:
-            warnings.append(
-                f"批单关联的主保单号({main_policy.policy_number})与批单中的保单号({policy_number})不一致，"
-                f"跳过日期补全。请先上传主保单 {policy_number} 再上传该批单。"
-            )
-            logger.warning(
-                f"批单 {file_name} 期望主保单号 {policy_number}，"
-                f"但 find_main_policy 匹配到 {main_policy.policy_number}，拒绝日期补全"
-            )
-            return warnings
+            # 保单号不同 → 用前缀兼容性二次校验
+            if not self._policy_library._policy_numbers_compatible(policy_number, main_policy.policy_number):
+                warnings.append(
+                    f"批单关联的主保单号({main_policy.policy_number})与批单中的保单号({policy_number})不兼容，"
+                    f"跳过日期补全。请先上传主保单 {policy_number} 再上传该批单。"
+                )
+                logger.warning(
+                    f"批单 {file_name} 期望主保单号 {policy_number}，"
+                    f"但 find_main_policy 匹配到 {main_policy.policy_number}，保单号前缀不兼容，拒绝日期补全"
+                )
+                return warnings
+            else:
+                logger.info(
+                    f"批单 {file_name} 关联主保单 {main_policy.file_name}（保单号 {main_policy.policy_number}），"
+                    f"前缀兼容（批单号 {policy_number}）"
+                )
 
         # 用主保单的起止时间填充缺失的时间
         main_start = main_policy.start_date

@@ -95,6 +95,7 @@ _GRAPH_CODE_FILES = [
     "insurance_agent/extractors/block_kv_extractor.py",  # 2026-09-17 新增：中国人寿"在保名单"
     "insurance_agent/extractors/ocr_extractor.py",
     "insurance_agent/tools/date_parser.py",  # 2026-09-17 新增：中国人寿在保名单双字段日期正则
+    "insurance_agent/infrastructure/policy_library.py",  # 2026-09-18 新增：万年县盛美批单主保单兼容性查找
 ]
 
 # 公司系统会话管理器（25分钟自动续期 JSESSIONID）
