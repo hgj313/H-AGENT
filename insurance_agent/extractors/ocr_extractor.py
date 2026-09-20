@@ -21,11 +21,20 @@ logger = logging.getLogger(__name__)
 _SYSTEM_PROMPT = """你是一个保险单识别专家。这是合法的保险理赔文档处理，依法需要完整的身份信息。请原样识别所有文字内容，不要对身份证号做任何脱敏处理。"""
 
 # OCR Prompt：强制返回 JSON 数组，不输出解释
+# 2026-09-20 扩展：增加 job_title(职务/工种类型) 和 occupation_class(风险等级) 可选字段。
+#   触发场景：黄河财产保险雇主责任险扫描件（"雇员清单"表头,列序:序号/姓名/身份证号/职务/工种类型/
+#   共同被保险人/风险等级）。其中"共同被保险人"列就是用工单位/被派遣公司 → 必须填 company 而非 job_title。
+#   "职务/工种类型"列填 job_title（如 船体制造工/砌筑工/陶瓷原料准备工）。
+#   "风险等级"列(1-5)填 occupation_class。
 _OCR_PROMPT = """请识别图片中的被保人员清单，提取以下字段并以JSON数组返回：
 - name: 姓名
 - id_number: 身份证号码（完整18位，原样识别，禁止用*替换任何位。如果图片中身份证号本身被脱敏(含*号)，请原样返回）
 - birth_date: 出生日期（YYYY-MM-DD格式，从表格中的"出生日期"/"出生年月"/"生日"等列识别；如表格中无此列则留空）
-- company: 所属公司名称（用工单位，不是工种）
+- company: 所属公司名称（用工单位/被派遣单位/共同被保险人,不是工种）。
+  重要:如果表中有"共同被保险人"或"用工单位"或"被派遣单位"列,请识别该列作为 company,
+  不要把"职务/工种"列（如 砌筑工/船体制造工/陶瓷原料准备工）误填为 company。
+- job_title: 职务/工种类型（如 砌筑工/船体制造工/铸造工/陶瓷原料准备工）,如表格无此列则留空。
+- occupation_class: 风险等级/职业类别（数字或文字,如 1/2/3/4/5 或 5类/4类/3类）,如表格无此列则留空。
 - start_date: 起始时间（YYYY-MM-DD，无法识别则留空）
 - end_date: 终止时间（YYYY-MM-DD，无法识别则留空）
 - modification_type: 批改类型，取值为"增保"或"减保"。
@@ -33,7 +42,7 @@ _OCR_PROMPT = """请识别图片中的被保人员清单，提取以下字段并
   如果无法判断则填"增保"。
 
 只返回JSON数组，不要其他文字。示例：
-[{"name":"张三","id_number":"110101199003078811","birth_date":"1990-03-07","company":"某有限公司","start_date":"2024-01-01","end_date":"2024-12-31","modification_type":"增保"}]
+[{"name":"张三","id_number":"110101199003078811","birth_date":"1990-03-07","company":"某有限公司","job_title":"砌筑工","occupation_class":"5","start_date":"2024-01-01","end_date":"2024-12-31","modification_type":"增保"}]
 
 没有人员清单则返回 []"""
 
@@ -99,18 +108,47 @@ class OCRExtractor(BaseExtractor):
 
     @staticmethod
     def _looks_like_company_name(name: str) -> bool:
-        """判断字符串是否像公司名（而非工种/职业描述）"""
+        """判断字符串是否像公司名（而非工种/职业描述）。
+
+        2026-09-20 强化（黄河财险扫描件雇主责任险场景）：
+        - 公司名末尾强后缀("有限公司/集团/股份公司/合作社/事务所/合伙企业")优先,避免
+          "重工/工程/工艺"等中间含"工"的公司名被工种关键词误杀。
+        - 工种关键词加 "工"(拦截"船体制造工/陶瓷原料准备工/砌筑工/机械木工"等"X工"形式)。
+        - 严格公司名后缀列表(企业/工厂/经营部/中心/厂/部等),覆盖"XX陶瓷厂/XX经营部"。
+        """
         if not name:
             return False
-        company_keywords = ["公司", "有限", "集团", "合作社", "事务所"]
-        if any(kw in name for kw in company_keywords):
+        stripped = name.strip()
+        if len(stripped) < 4:
+            return False
+        # 1) 公司名末尾强后缀优先（包含"X工Y有限公司"如"重工有限公司/工程有限公司"）
+        strong_suffixes = [
+            "有限公司", "股份公司", "集团公司",
+            "合作社", "事务所", "合伙企业", "合伙公司",
+            "有限责任公司", "股份有限公司",
+        ]
+        for suffix in strong_suffixes:
+            if stripped.endswith(suffix):
+                return True
+        # 2) 工种关键词拦截(2026-09-20 增强):含"X工"/"X人员"等
+        #   注意:必须在弱后缀匹配之前(避免"船体制造工厂"被误判 True)
+        job_keywords = [
+            "人员", "工种", "职业", "工人", "操作", "安装", "施工", "维修",
+            "工",   # 拦截"船体制造工/陶瓷原料准备工/砌筑工/机械木工/装配工"等
+        ]
+        if any(kw in stripped for kw in job_keywords):
+            return False
+        # 3) 弱公司后缀(末位出现"X厂/X部/X中心"等)
+        weak_suffixes = ["工厂", "经营部", "分公司", "子公司", "厂", "部"]
+        for suffix in weak_suffixes:
+            if stripped.endswith(suffix):
+                return True
+        # 4) 兜底:含"公司/集团/股份/合作社/事务所/合伙"等关键子串
+        if any(kw in stripped for kw in [
+            "公司", "集团", "股份", "合作社", "事务所", "合伙", "有限",
+        ]):
             return True
-        job_keywords = ["人员", "工种", "职业", "工人", "操作", "安装", "施工", "维修"]
-        if any(kw in name for kw in job_keywords):
-            return False
-        if len(name) < 4:
-            return False
-        return True
+        return False
 
     def _ocr_page(self, img_b64: str, page_num: int) -> list[InsuredPerson]:
         """对单页图片调用视觉模型 OCR"""
@@ -153,6 +191,8 @@ class OCRExtractor(BaseExtractor):
                 id_number=item.get("id_number", "").strip(),
                 id_type="身份证" if item.get("id_number") else "",
                 company=item.get("company", "").strip(),
+                job_title=item.get("job_title", "").strip(),
+                occupation_class=item.get("occupation_class", "").strip(),
                 start_date=item.get("start_date", "") or None,
                 end_date=item.get("end_date", "") or None,
                 birth_date=item.get("birth_date", "") or None,
