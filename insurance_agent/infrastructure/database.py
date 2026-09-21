@@ -720,10 +720,12 @@ def upsert_insurance_personnel(persons: list[dict]) -> int:
                         created_at = excluded.created_at
                     WHERE
                         -- 仅在「新数据 end_date 更晚」时覆盖（保险型语义）
-                        -- 同时把空 end_date 当作 1900-01-01 兜底，保证老记录可被更新
-                        (insurance_personnel.end_date = '' OR
-                         excluded.end_date = '' OR
-                         excluded.end_date >= insurance_personnel.end_date)
+                        -- 同时把空/NULL end_date 当作 1900-01-01 兜底，保证老记录可被更新
+                        -- 2026-09-21 修复：刘红才历史记录的 end_date 为 NULL 时所有比较都 → NULL，
+                        --     导致 upsert 返回 rowcount=0，新正确数据写不进去。COALESCE 兜底
+                        (COALESCE(insurance_personnel.end_date, '') = '' OR
+                         COALESCE(excluded.end_date, '') = '' OR
+                         excluded.end_date >= COALESCE(insurance_personnel.end_date, '1900-01-01'))
                 """, (
                     name, id_num,
                     p.get("id_type", "身份证"), p.get("company", ""),
@@ -858,8 +860,25 @@ def deactivate_insurance(id_numbers: list[str], end_date: str | None = None,
             if end_date:
                 end_date = str(end_date).strip()
             if policy_number:
+                # 严格匹配：只减保该 batch 下的记录（防止跨公司/跨保单族误改）
                 where_clauses.append("policy_number = ?")
                 params.append(str(policy_number).strip())
+            elif main_policy_number:
+                # 主保单号族放宽匹配：匹配该主保单下所有 batch
+                # 中段 18 位（pos 2-19，保单号总长至少 21 位时取 18 位）：
+                #   主保单 81[18位]XX  ↔  批单 71[18位]XX
+                # 我们用 SUBSTR(policy_number, 3, 18) 提取中间 18 位，
+                # 并要求目标记录的 policy_number 中段 18 位 == 主保单号的中段 18 位。
+                main_pn = str(main_policy_number).strip()
+                if len(main_pn) >= 20:
+                    middle = main_pn[2:20]  # 18 位中段
+                    like_pattern = f"%{middle}%"
+                    where_clauses.append("policy_number LIKE ?")
+                    params.append(like_pattern)
+                else:
+                    # 主保单号格式不符，按主保单号本身严格匹配兜底
+                    where_clauses.append("policy_number = ?")
+                    params.append(main_pn)
             where_sql = " AND ".join(where_clauses)
             # 注意参数顺序：必须与 WHERE 子句中占位符的出现顺序严格一致
             # where_sql 形如 "id_number IN (?,?,?) AND policy_number = ?"

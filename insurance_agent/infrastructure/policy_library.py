@@ -2,34 +2,42 @@
 
 功能：
 - 存储上传的保单 PDF 文件（复制到统一目录）
-- 建立索引：policy_number → metadata
-- 支持按保单号查找主保单
+- 建立索引：主保单 → metadata / 批单 → metadata（2026-09-21 拆两个表）
+- 支持按保单号查找主保单（精确）
 - 支持按公司名模糊匹配查找主保单
 - 批单处理时，通过保单号或公司名查找主保单，补全起止时间
 
-索引存储：JSON 文件 (policy_library/index.json)
+索引存储（2026-09-21 改造）：
+  - index_main.json  — 主保单表（含起始时间、起止时间字段）
+  - index_batch.json — 批单表（关联主保单号）
+
 文件存储：policy_library/ 目录
 """
 
 import json
+import logging
 import os
 import shutil
 from typing import Optional
 from dataclasses import dataclass, field, asdict
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class PolicyRecord:
-    """保单库中的一条记录"""
+    """保单库中的一条记录（主保单或批单通用）"""
     file_name: str = ""
     file_path: str = ""              # 原始文件路径
     stored_path: str = ""            # 库内存储路径
     policy_type: str = ""            # "保单" / "批单"
-    policy_number: str = ""          # 保单号
+    policy_number: str = ""          # 自身保单号（主保单=主保单号；批单=批单号 71开头）
+    main_policy_number: str = ""     # 关联的主保单号（仅批单有意义；主保单可为空或=自身）
     company: str = ""                # 所属公司（投保人）
     insurance_company: str = ""      # 保险公司
     start_date: str = ""             # 保险起始时间
     end_date: str = ""               # 保险起止时间
+    endorsement_effective_date: str = ""  # 批单生效日（仅批单有意义）
     persons_count: int = 0           # 人员数量
     persons: list[dict] = field(default_factory=list)  # 人员清单（精简）
 
@@ -48,8 +56,11 @@ class PolicyLibrary:
             os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
             "policy_library",
         )
-        self._index_path = os.path.join(self._base_dir, "index.json")
-        self._records: list[PolicyRecord] = []
+        # 2026-09-21 改造：拆成两个索引文件（主保单 / 批单）
+        self._index_main_path = os.path.join(self._base_dir, "index_main.json")
+        self._index_batch_path = os.path.join(self._base_dir, "index_batch.json")
+        self._main_records: list[PolicyRecord] = []   # 主保单表
+        self._batch_records: list[PolicyRecord] = []  # 批单表
         self._load()
 
     @property
@@ -58,13 +69,35 @@ class PolicyLibrary:
 
     @property
     def records(self) -> list[PolicyRecord]:
-        return list(self._records)
+        """所有记录（主保单 + 批单），向后兼容。"""
+        return list(self._main_records) + list(self._batch_records)
+
+    @property
+    def main_records(self) -> list[PolicyRecord]:
+        """主保单表"""
+        return list(self._main_records)
+
+    @property
+    def batch_records(self) -> list[PolicyRecord]:
+        """批单表"""
+        return list(self._batch_records)
 
     def register(self, result_dict: dict) -> PolicyRecord:
         """注册一条提取结果到保单库
 
+        2026-09-21 改造：按 policy_type 分表入库（主保单 / 批单）。
+        主保单起止时间字段、批单关联主保单号字段都强制写入。
+
         Args:
             result_dict: Agent 提取结果 dict
+                推荐字段：
+                  - policy_type: "保单" / "批单"
+                  - policy_number: 自身保单号（主保单=主保单号；批单=批单号 71开头）
+                  - main_policy_number: 关联的主保单号（批单有意义）
+                  - overall_start_date / overall_end_date: 整体保险期间
+                  - endorsement_effective_date: 批单生效日（批单）
+                  - policy_holder / insurance_company: 公司信息
+                  - insured_persons: 人员清单
 
         Returns:
             PolicyRecord: 注册后的记录
@@ -73,17 +106,25 @@ class PolicyLibrary:
 
         file_name = result_dict.get("file_name", "")
         file_path = result_dict.get("file_path", "")
-        policy_number = result_dict.get("policy_number", "")
+        # 2026-09-21：优先用 metadata_extractor 给的字段
+        policy_type = result_dict.get("policy_type") or ""
+        policy_number = (
+            result_dict.get("batch_policy_number")
+            or result_dict.get("policy_number")
+            or ""
+        )
+        main_policy_number = result_dict.get("main_policy_number") or ""
+
         insurance_company = result_dict.get("insurance_company", "")
         overall_start = result_dict.get("overall_start_date") or ""
         overall_end = result_dict.get("overall_end_date") or ""
+        endorsement_effective_date = result_dict.get("endorsement_effective_date") or ""
         persons = result_dict.get("insured_persons", [])
 
-        # 从文件名解析保单类型和公司名
+        # 从文件名解析保单类型和公司名（兜底）
         fname_info = parse_policy_filename(file_name)
-        policy_type = fname_info.policy_type
-
-        # 如果文件名没解析出类型，从内容推断
+        if not policy_type:
+            policy_type = fname_info.policy_type
         if not policy_type:
             if any(p.get("modification_type") == "减保" for p in persons):
                 policy_type = "批单"
@@ -109,10 +150,12 @@ class PolicyLibrary:
             stored_path="",
             policy_type=policy_type,
             policy_number=policy_number,
+            main_policy_number=main_policy_number,
             company=company,
             insurance_company=insurance_company,
             start_date=overall_start,
             end_date=overall_end,
+            endorsement_effective_date=endorsement_effective_date,
             persons_count=len(persons),
             persons=persons_slim,
         )
@@ -131,38 +174,39 @@ class PolicyLibrary:
             else:
                 record.stored_path = stored_path
 
-        # 更新或添加记录（按 file_name 去重）
+        # 2026-09-21：按 policy_type 分表更新或添加
+        target_list = self._main_records if policy_type == "保单" else self._batch_records
         existing_idx = None
-        for i, r in enumerate(self._records):
+        for i, r in enumerate(target_list):
             if r.file_name == file_name:
                 existing_idx = i
                 break
 
         if existing_idx is not None:
-            self._records[existing_idx] = record
+            target_list[existing_idx] = record
         else:
-            self._records.append(record)
+            target_list.append(record)
 
         self._save()
         return record
 
     def find_main_policy_by_number(self, policy_number: str) -> Optional[PolicyRecord]:
-        """通过保单号查找主保单（保单类型）
+        """通过保单号查找主保单（精确匹配，2026-09-21 用主保单表）
 
         批单文件中会包含主保单的保单号，
-        用该保单号查找库中的保单类型记录。
+        用该保单号在主保单表（_main_records）中精确查找。
         """
         if not policy_number:
             return None
 
-        for r in self._records:
-            if r.policy_type == "保单" and r.policy_number == policy_number:
+        for r in self._main_records:
+            if r.policy_number == policy_number:
                 return r
 
         return None
 
     def find_main_policy_by_company(self, company: str) -> Optional[PolicyRecord]:
-        """通过公司名模糊匹配查找主保单
+        """通过公司名模糊匹配查找主保单（2026-09-21 用主保单表）
 
         当批单未找到保单号匹配时，用公司名进行模糊匹配。
         """
@@ -172,9 +216,7 @@ class PolicyLibrary:
         # 标准化公司名
         company_clean = company.replace("有限公司", "").replace("公司", "").strip()
 
-        for r in self._records:
-            if r.policy_type != "保单":
-                continue
+        for r in self._main_records:
             r_company_clean = r.company.replace("有限公司", "").replace("公司", "").strip()
             # 双向包含匹配
             if company_clean and r_company_clean:
@@ -186,7 +228,7 @@ class PolicyLibrary:
     def find_main_policy_by_company_compatible(
         self, company: str, batch_policy_number: str = ""
     ) -> Optional[PolicyRecord]:
-        """通过公司名查找主保单（带保单号兼容性校验，2026-09-18 新增）
+        """通过公司名查找主保单（带保单号兼容性校验，2026-09-18 新增，2026-09-21 用主保单表）
 
         背景：万年县盛美上传主保单 8116013100260112989000 之前，已有一条
         主保单 8116013100260107550000（同一公司）。find_main_policy_by_company
@@ -205,9 +247,7 @@ class PolicyLibrary:
         if not company:
             return None
         company_clean = company.replace("有限公司", "").replace("公司", "").strip()
-        for r in self._records:
-            if r.policy_type != "保单":
-                continue
+        for r in self._main_records:
             r_company_clean = r.company.replace("有限公司", "").replace("公司", "").strip()
             if not (company_clean and r_company_clean and
                     (company_clean in r_company_clean or r_company_clean in company_clean)):
@@ -291,30 +331,117 @@ class PolicyLibrary:
         return None
 
     def _load(self):
-        """从 JSON 文件加载索引"""
-        if os.path.exists(self._index_path):
+        """从 JSON 文件加载索引（2026-09-21 改造：双表加载 + 兼容旧单文件）"""
+        # 主保单表
+        if os.path.exists(self._index_main_path):
             try:
-                with open(self._index_path, "r", encoding="utf-8") as f:
+                with open(self._index_main_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                self._records = [PolicyRecord(**r) for r in data.get("records", [])]
+                self._main_records = [PolicyRecord(**r) for r in data.get("records", [])]
             except Exception:
-                self._records = []
+                self._main_records = []
         else:
-            self._records = []
+            self._main_records = []
+
+        # 批单表
+        if os.path.exists(self._index_batch_path):
+            try:
+                with open(self._index_batch_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                self._batch_records = [PolicyRecord(**r) for r in data.get("records", [])]
+            except Exception:
+                self._batch_records = []
+        else:
+            self._batch_records = []
+
+        # 向后兼容：若新文件都不存在但旧 index.json 存在 → 一次性迁移
+        legacy_path = os.path.join(self._base_dir, "index.json")
+        if not self._main_records and not self._batch_records and os.path.exists(legacy_path):
+            try:
+                with open(legacy_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                all_records = [PolicyRecord(**r) for r in data.get("records", [])]
+                self._main_records = [r for r in all_records if r.policy_type == "保单"]
+                self._batch_records = [r for r in all_records if r.policy_type == "批单"]
+                # 迁移后立刻保存新格式
+                self._save()
+                logger.info(
+                    "保单库已从旧 index.json 迁移到双表（主保单=%d, 批单=%d）",
+                    len(self._main_records), len(self._batch_records),
+                )
+            except Exception as e:
+                logger.warning("迁移旧 index.json 失败: %s", e)
+                self._main_records = []
+                self._batch_records = []
 
     def _save(self):
-        """保存索引到 JSON 文件"""
+        """保存索引到双 JSON 文件（2026-09-21 改造）"""
         os.makedirs(self._base_dir, exist_ok=True)
-        data = {
-            "records": [asdict(r) for r in self._records],
-        }
-        with open(self._index_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        main_data = {"records": [asdict(r) for r in self._main_records]}
+        batch_data = {"records": [asdict(r) for r in self._batch_records]}
+        with open(self._index_main_path, "w", encoding="utf-8") as f:
+            json.dump(main_data, f, ensure_ascii=False, indent=2)
+        with open(self._index_batch_path, "w", encoding="utf-8") as f:
+            json.dump(batch_data, f, ensure_ascii=False, indent=2)
 
     def __len__(self) -> int:
-        return len(self._records)
+        return len(self._main_records) + len(self._batch_records)
 
     def __repr__(self) -> str:
-        main_count = sum(1 for r in self._records if r.policy_type == "保单")
-        batch_count = sum(1 for r in self._records if r.policy_type == "批单")
-        return f"PolicyLibrary(records={len(self._records)}, 保单={main_count}, 批单={batch_count})"
+        return (
+            f"PolicyLibrary(records={len(self)}, "
+            f"主保单={len(self._main_records)}, "
+            f"批单={len(self._batch_records)})"
+        )
+
+    def search(
+        self,
+        policy_number_exact: str = "",
+        company_fuzzy: str = "",
+        date_min: str = "",
+        date_max: str = "",
+        policy_type: str = "all",  # "all" / "main" / "batch"
+    ) -> list[PolicyRecord]:
+        """分字段搜索保单库（2026-09-21 新增）
+
+        字段语义：
+          - policy_number_exact: 保单号或批单号精确匹配（同一字段在主保单表/批单表中按各自 policy_number 比对）
+          - company_fuzzy: 公司名模糊匹配
+          - date_min / date_max: 起止时间范围（任一日期落在区间内）
+          - policy_type: all / main / batch
+
+        Returns:
+            符合条件的 PolicyRecord 列表
+        """
+        def _in_date_range(r: PolicyRecord) -> bool:
+            if not date_min and not date_max:
+                return True
+            dates = [r.start_date, r.end_date]
+            if date_min:
+                if not any(d and d >= date_min for d in dates):
+                    return False
+            if date_max:
+                if not any(d and d <= date_max for d in dates):
+                    return False
+            return True
+
+        def _company_match(r: PolicyRecord) -> bool:
+            if not company_fuzzy:
+                return True
+            c = company_fuzzy.replace("有限公司", "").replace("公司", "").strip()
+            rc = r.company.replace("有限公司", "").replace("公司", "").strip()
+            return bool(c and rc and (c in rc or rc in c))
+
+        def _number_match(r: PolicyRecord) -> bool:
+            if not policy_number_exact:
+                return True
+            return r.policy_number == policy_number_exact or r.main_policy_number == policy_number_exact
+
+        def _iter_records():
+            if policy_type in ("all", "main"):
+                yield from self._main_records
+            if policy_type in ("all", "batch"):
+                yield from self._batch_records
+
+        return [r for r in _iter_records()
+                if _number_match(r) and _company_match(r) and _in_date_range(r)]

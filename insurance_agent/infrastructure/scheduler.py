@@ -3,16 +3,25 @@
 支持多个每日定时任务，每个任务在各自配置的时间点触发一次：
 1. 打卡检查任务：同步打卡数据 → 检查保险覆盖 → 触发邮件提醒（sync_time）
 2. 到期提醒任务：查询还有 N 天到期的人员保险 → 发邮件提醒续保（expiry_time）
+3. 未参保汇总（上午）：每天09:00 汇总今日所有未参保人员给保险管理人员（summary_morning_time）
+4. 未参保汇总（下午）：每天16:30 再次汇总（含上午已发过的人员）给保险管理人员（summary_afternoon_time）
+5. 打卡清理任务：每天 00:00（午夜）清理昨日及更早的 punch_records（cleanup_time）
 
 配置项（存储在 data/scheduler_config.json）：
 {
     "enabled": true,
-    "sync_time": "08:00",          # 每日打卡检查时间
-    "alert_enabled": true,         # 是否发送打卡提醒邮件
-    "punch_sync_enabled": true,    # 是否启用「今日打卡数据同步」（关闭后不再从ERP拉取打卡，仅用现有数据做对比提醒）
-    "expiry_time": "09:00",        # 到期提醒检查时间
-    "expiry_ahead_days": 3,        # 提前 N 天提醒
-    "expiry_enabled": true,        # 是否启用到期提醒
+    "sync_time": "08:00",               # 每日打卡检查时间
+    "alert_enabled": true,              # 是否发送打卡提醒邮件
+    "punch_sync_enabled": true,         # 是否启用「今日打卡数据同步」
+    "expiry_time": "09:00",             # 到期提醒检查时间
+    "expiry_ahead_days": 3,             # 提前 N 天提醒
+    "expiry_enabled": true,             # 是否启用到期提醒
+    "summary_morning_time": "09:00",    # 未参保汇总（上午）触发时间
+    "summary_afternoon_time": "16:30",  # 未参保汇总（下午）触发时间
+    "summary_morning_enabled": true,    # 是否启用上午汇总
+    "summary_afternoon_enabled": true,  # 是否启用下午汇总
+    "cleanup_time": "00:00",            # 打卡数据清理时间（午夜）
+    "cleanup_enabled": true,            # 是否启用打卡数据清理
 }
 """
 
@@ -38,6 +47,14 @@ DEFAULT_CONFIG = {
     "expiry_time": "09:00",
     "expiry_ahead_days": 3,
     "expiry_enabled": True,
+    # 未参保人员定时汇总（保险管理人员通知）
+    "summary_morning_time": "09:00",
+    "summary_afternoon_time": "16:30",
+    "summary_morning_enabled": True,
+    "summary_afternoon_enabled": True,
+    # 打卡数据定时清理（每日 00:00 删除昨日及更早的 punch_records）
+    "cleanup_time": "00:00",
+    "cleanup_enabled": True,
 }
 
 # 全局调度器实例（供 web 层使用）
@@ -164,9 +181,10 @@ class Scheduler:
     def _loop(self):
         while self._running:
             try:
+                # 始终调用 _check_and_run；任务级开关 + 全局 enabled 仅对 daily_check 生效
+                # （避免用户关掉"总开关"后，连运维类定时任务也停了）
                 config = load_scheduler_config()
-                if config.get("enabled", True):
-                    self._check_and_run(config)
+                self._check_and_run(config)
             except Exception as e:
                 logger.error("调度器循环异常: %s", e)
             # 等待（分片 sleep，便于及时响应 stop）
@@ -176,7 +194,13 @@ class Scheduler:
                 time.sleep(1)
 
     def _check_and_run(self, config: dict):
-        """检查各任务是否到点，到点则执行对应任务"""
+        """检查各任务是否到点，到点则执行对应任务。
+
+        任务开关语义：
+        - 全局 enabled 仅对 daily_check（日常打卡同步主任务）生效；
+        - 其他运维任务（expiry_reminder / morning_summary / afternoon_summary /
+          daily_cleanup）按各自独立开关运行，不再被全局开关压制。
+        """
         now = datetime.now()
         today = now.strftime("%Y-%m-%d")
 
@@ -184,8 +208,18 @@ class Scheduler:
             name = task["name"]
             time_key = task["time_key"]
 
-            # 到期提醒任务有独立开关
+            # 各任务独立开关
+            # 1) 全局 enabled 只控制 daily_check 主任务（同步打卡 + 主提醒链路）
+            if name == "daily_check" and not config.get("enabled", True):
+                continue
+            # 2) 其他任务按各自字段控制
             if name == "expiry_reminder" and not config.get("expiry_enabled", True):
+                continue
+            if name == "morning_summary" and not config.get("summary_morning_enabled", True):
+                continue
+            if name == "afternoon_summary" and not config.get("summary_afternoon_enabled", True):
+                continue
+            if name == "daily_cleanup" and not config.get("cleanup_enabled", True):
                 continue
 
             time_str = config.get(time_key, "08:00")

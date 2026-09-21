@@ -150,7 +150,7 @@ def build_manager_map(
     return manager_map
 
 
-def check_insurance_coverage(punch_date: str = None) -> dict:
+def check_insurance_coverage(punch_date: str = None, punch_table: str = "punch_records") -> dict:
     """检查打卡人员是否有正常状态的保单
 
     简化逻辑：
@@ -172,7 +172,7 @@ def check_insurance_coverage(punch_date: str = None) -> dict:
     # 先刷新到期状态：已到起止日期的自动标记为失效
     db.refresh_expired_status()
 
-    punch_records = db.get_punch_records(punch_date, limit=10000)
+    punch_records = db.get_punch_records(punch_date, limit=10000, table=punch_table)
 
     # 按身份证号去重（同一个人可能多条打卡记录）
     seen = {}

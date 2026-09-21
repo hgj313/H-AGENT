@@ -29,6 +29,18 @@ _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _BASE_DIR)
 
 logger = logging.getLogger("insurance_agent.server")
+# 2026-09-21：把 logger 默认设为 INFO level，让 [入库-入口]/[入库-增保]/[入库] 等调试信号能输出到 stdout/server.log
+# 默认 logger 走 root logger，root 默认 WARNING → info/debug 都丢失
+if not logger.level or logger.level == logging.NOTSET:
+    logger.setLevel(logging.INFO)
+# 防止 reload 时重复挂多个 handler（uvicorn 默认有 handler）
+if not logger.handlers:
+    handler = logging.StreamHandler()  # stdout → uvicorn → server.log
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)s [%(name)s] %(message)s"
+    ))
+    logger.addHandler(handler)
+logger.propagate = False
 
 from dotenv import load_dotenv
 # 加载 .env：本地开发用 H-AGENT/.env，Docker 部署可挂载到项目根 .env
@@ -246,7 +258,10 @@ def _process_single_pdf(fpath: str) -> dict:
     """处理单个 PDF 文件（用于并发）"""
     fname = os.path.basename(fpath)
     try:
+        logger.debug("[process] enter %s", fname)
         final_state = run_agent(fpath)
+        logger.debug("[process] after agent %s status=%s error=%s",
+                      fname, final_state.get("status"), final_state.get("error"))
         result_dict = final_state.get("extraction_result") or {
             "file_name": fname,
             "error": final_state.get("error"),
@@ -263,7 +278,15 @@ def _process_single_pdf(fpath: str) -> dict:
         # 批单主保单缺失/不匹配检测（2026-09-15 关键防御）：
         # 必须在 persist 之前阻断，否则空日期的人员记录仍会被 upsert 进库
         # （参见 森炜 0072423000 批单错填 6894300 日期事件）
-        if fname_info.policy_type == "批单" and not result_dict.get("error"):
+        # 2026-09-21 改造：兼容文件名不含"批单"/"BD"的批单 — 用 working_memory["policy_type"] 判定
+        is_batch = (
+            fname_info.policy_type == "批单"
+            or (final_state.get("working_memory") or {}).get("policy_type") == "批单"
+        )
+        logger.debug("[process] is_batch=%s for %s (fname=%r, wm_type=%r)",
+                     is_batch, fname, fname_info.policy_type,
+                     (final_state.get("working_memory") or {}).get("policy_type"))
+        if is_batch and not result_dict.get("error"):
             main_missing_warnings = [
                 w for w in warnings
                 if "未找到对应主保单" in w
@@ -271,6 +294,7 @@ def _process_single_pdf(fpath: str) -> dict:
             ]
             if main_missing_warnings:
                 msg = main_missing_warnings[0]
+                logger.warning("批单 %s 主保单缺失/不匹配：%s", fname, msg)
                 return {
                     "file_name": fname,
                     "error": f"批单主保单缺失/不匹配：{msg}",
@@ -284,18 +308,24 @@ def _process_single_pdf(fpath: str) -> dict:
         if not result_dict.get("error"):
             try:
                 _policy_library.register(result_dict)
-            except Exception:
-                pass
+                logger.debug("[process] policy_library.register OK for %s", fname)
+            except Exception as e:
+                logger.warning("[process] register fail for %s: %r", fname, e)
 
+        logger.debug("[process] BEFORE persist for %s, persons=%d, error=%r",
+                     fname, len(result_dict.get("insured_persons", [])), result_dict.get("error"))
         # 保存 PDF 到独立文件空间 + 人员写入数据库
         try:
             _persist_policy_result(result_dict, fpath)
-        except Exception:
-            pass
+            logger.debug("[process] AFTER persist for %s", fname)
+        except Exception as e:
+            logger.error("[process] _persist fail for %s: %r\n%s",
+                         fname, e, traceback.format_exc())
 
         result_dict["warnings"] = warnings
         return result_dict
     except Exception as e:
+        logger.error("[process] OUTER exception for %s: %r", fname, e)
         return {"file_name": fname, "error": str(e)}
 
 
@@ -304,7 +334,22 @@ def _persist_policy_result(result_dict: dict, fpath: str):
 
     1. PDF 文件复制到 data/policy_pdfs/
     2. 提取的人员写入 insurance_personnel 表
+
+    2026-09-21 增强：
+      - 批单入库时 policy_number 用 batch_policy_number（71 开头），不是主保单号
+      - 减保 deactivate_insurance 用 batch_policy_number 限定，避免跨保单误改
+      - 增保 start_date 优先 endorsement_effective_date，end_date 用主保单止期
     """
+    logger.info(
+        "[persist] enter file=%s policy_number=%r batch=%r main=%r policy_type=%r persons=%d error=%r",
+        result_dict.get("file_name"),
+        result_dict.get("policy_number"),
+        result_dict.get("batch_policy_number"),
+        result_dict.get("main_policy_number"),
+        result_dict.get("policy_type"),
+        len(result_dict.get("insured_persons", [])),
+        result_dict.get("error"),
+    )
     if result_dict.get("error"):
         return
 
@@ -323,7 +368,12 @@ def _persist_policy_result(result_dict: dict, fpath: str):
     if not persons:
         return
 
-    policy_number = result_dict.get("policy_number", "")
+    # 2026-09-21：保单号用 batch_policy_number（批单号），主保单号作为参考
+    policy_number = (
+        result_dict.get("batch_policy_number")
+        or result_dict.get("policy_number", "")
+    )
+    main_policy_number = result_dict.get("main_policy_number", "")
     insurance_company = result_dict.get("insurance_company", "")
     source_file = result_dict.get("file_name", "")
     overall_start = result_dict.get("overall_start_date", "")
@@ -336,6 +386,8 @@ def _persist_policy_result(result_dict: dict, fpath: str):
     add_rows = []      # 增保人员（新增或更新）
     remove_ids = []    # 减保人员（状态改失效）
 
+    logger.debug("[persist] file=%s persons=%d (build loops)", source_file, len(persons))
+
     for p in persons:
         mod_type = p.get("modification_type", "增保")
         id_num = (p.get("id_number") or "").strip()
@@ -347,7 +399,10 @@ def _persist_policy_result(result_dict: dict, fpath: str):
             continue
 
         # 增保：新增或更新
+        # 2026-09-21：end_date 优先用 person 自身（validator 已补全为主保单止期），fallback overall_end
         end_date = p.get("end_date", "") or overall_end
+        # 2026-09-21：start_date 优先用 person 自身（validator 已补全为批单生效日或主保单起期）
+        start_date = p.get("start_date", "") or overall_start
         # 状态判断：起止时间未到期 → 正常；已到期 → 失效
         status = "正常"
         if end_date and end_date < today:
@@ -358,7 +413,7 @@ def _persist_policy_result(result_dict: dict, fpath: str):
             "id_number": id_num,
             "id_type": p.get("id_type", "身份证"),
             "company": p.get("company", ""),
-            "start_date": p.get("start_date", "") or overall_start,
+            "start_date": start_date,
             "end_date": end_date,
             "job_title": p.get("job_title", ""),
             "birth_date": p.get("birth_date", ""),
@@ -370,24 +425,43 @@ def _persist_policy_result(result_dict: dict, fpath: str):
 
     # 增保：新增或更新
     if add_rows:
-        db.upsert_insurance_personnel(add_rows)
+        n = db.upsert_insurance_personnel(add_rows)
+        logger.info(
+            "[persist] file=%s 增保 add_rows=%d upsert_n=%d first_row=%r",
+            source_file, len(add_rows), n, add_rows[0] if add_rows else None,
+        )
 
     # 减保：状态改失效 + 同步 end_date 为批单生效日（2026-09-15 修复 秦克智事件）
     if remove_ids:
         # 优先用 endorsement_effective_date（批单生效日），fallback 到 overall_start（主保单起期）
-        # 注意：fallback 到 overall_start 在批单缺失生效日时仍可能错填主保单起期，但至少
-        # 不会再出现"end_date > today"的不一致。如果连 overall_start 都没有，则只用 status 兜底。
         deactivate_end_date = endorsement_effective_date or overall_start
-        # 2026-09-16 修复徐成强事件：传入 policy_number 限定只减保本批单的记录，
-        # 避免跨保单误改（同身份证在不同保单下的记录被无差别失效）。
-        if deactivate_end_date:
-            db.deactivate_insurance(remove_ids, end_date=deactivate_end_date, policy_number=policy_number)
+        # 2026-09-21 修复跨批单同主保单族减保（万年县盛美场景）：
+        # - 上传刘红才(9006)批单要减保王瑞江，但王瑞江历史记录在 9004（同主保单 9000）
+        # - 严格 batch 相等匹配不到；放宽到主保单号族（中段 18 位同）
+        # - 与徐成强防误改事件不冲突：华安 vs 利宝 中段 18 位完全不同
+        if deactivate_end_date and main_policy_number:
+            n = db.deactivate_insurance(
+                remove_ids,
+                end_date=deactivate_end_date,
+                main_policy_number=main_policy_number,
+            )
+            logger.info(
+                "[入库] %s 减保 %d 人, deact_eff=%s, main_policy_number=%s, rowcount=%d",
+                source_file, len(remove_ids), deactivate_end_date, main_policy_number, n,
+            )
+        elif deactivate_end_date:
+            n = db.deactivate_insurance(remove_ids, end_date=deactivate_end_date, policy_number=policy_number)
+            logger.info(
+                "[入库] %s 减保 %d 人, deact_eff=%s, policy_number=%s, rowcount=%d",
+                source_file, len(remove_ids), deactivate_end_date, policy_number, n,
+            )
         else:
             logger.warning(
-                f"批单 {source_file} 减保时未提取到批单生效日，"
-                f"仅更新 status 而不更新 end_date（可能产生不一致）"
+                "批单 %s 减保时未提取到批单生效日，"
+                "仅更新 status 而不更新 end_date（可能产生不一致）",
+                source_file,
             )
-            db.deactivate_insurance(remove_ids, policy_number=policy_number)
+            db.deactivate_insurance(remove_ids, policy_number=policy_number or main_policy_number)
 
 
 def process_files(file_paths: list[str]) -> list[dict]:
@@ -941,44 +1015,157 @@ async def download_xlsx():
 
 
 @app.get("/api/policy-library")
-async def get_policy_library():
-    """获取保单文件库状态（合并索引元数据 + 文件系统 mtime/size）"""
-    records = []
-    # 用 dict 按 file_name 索引索引元数据；文件系统 mtime 优先用于「上传日期」展示
-    meta_by_name = {r.file_name: r for r in _policy_library.records}
+async def get_policy_library(
+    policy_type: str = "all",                # all / main / batch
+    policy_number_exact: str = "",           # 保单号精确搜索
+    batch_number_exact: str = "",            # 批单号精确搜索
+    company_fuzzy: str = "",                 # 公司名模糊搜索
+    date_min: str = "",                      # 起止时间范围下界（YYYY-MM-DD）
+    date_max: str = "",                      # 起止时间范围上界（YYYY-MM-DD）
+    show_unindexed: bool = True,             # 是否显示未索引文档（仅按文件名包含 batch/main 关键词判断）
+):
+    """获取保单文件库状态（合并索引元数据 + 文件系统 mtime/size）
+
+    2026-09-21 增强：
+      - 支持按 policy_type / 保单号精确 / 批单号精确 / 公司名模糊 / 起止时间范围 过滤
+      - 返回 results 分组（main / batch / unindexed），便于前端分类展示
+    """
+    # 1. 索引里的元数据
+    main_records = _policy_library.main_records
+    batch_records = _policy_library.batch_records
+
+    # 2. 构造过滤函数
+    def _match_by_fields(r) -> bool:
+        if company_fuzzy:
+            c = company_fuzzy.replace("有限公司", "").replace("公司", "").strip()
+            rc = (r.company or "").replace("有限公司", "").replace("公司", "").strip()
+            if not (c and rc and (c in rc or rc in c)):
+                return False
+        if date_min or date_max:
+            dates = [r.start_date or "", r.end_date or ""]
+            if date_min and not any(d and d >= date_min for d in dates):
+                return False
+            if date_max and not any(d and d <= date_max for d in dates):
+                return False
+        return True
+
+    # 3. 按查询参数过滤主保单 / 批单
+    main_hits = [
+        r for r in main_records
+        if (not policy_number_exact or r.policy_number == policy_number_exact)
+        and _match_by_fields(r)
+    ]
+    batch_hits = [
+        r for r in batch_records
+        if (not batch_number_exact or r.policy_number == batch_number_exact)
+        and (not policy_number_exact or r.policy_number == policy_number_exact or r.main_policy_number == policy_number_exact)
+        and _match_by_fields(r)
+    ]
+
+    # 4. 合并元数据 + 文件系统 mtime
     base_dir = _policy_library.base_dir
     try:
         fs_files = os.listdir(base_dir)
     except Exception:
         fs_files = []
-    # 文件系统有的所有 PDF（即使索引里没有也展示，例如手工复制进去的）
-    all_names = set(meta_by_name.keys()) | {f for f in fs_files if f.lower().endswith(".pdf")}
-    for name in sorted(all_names, key=lambda x: x.lower()):
-        full_path = os.path.join(base_dir, name)
-        meta = meta_by_name.get(name)
-        try:
-            stat_info = os.stat(full_path)
-            mtime_ts = int(stat_info.st_mtime)
-            size_bytes = stat_info.st_size
-        except OSError:
-            mtime_ts = 0
-            size_bytes = 0
-        records.append({
+    meta_by_name = {r.file_name: r for r in (main_records + batch_records)}
+
+    def _to_dict(name: str, meta, mtime_ts: int, size_bytes: int, in_index: bool) -> dict:
+        return {
             "file_name": name,
             "policy_type": meta.policy_type if meta else "",
             "policy_number": meta.policy_number if meta else "",
+            "main_policy_number": meta.main_policy_number if meta else "",
             "company": meta.company if meta else "",
             "insurance_company": meta.insurance_company if meta else "",
             "start_date": meta.start_date if meta else "",
             "end_date": meta.end_date if meta else "",
+            "endorsement_effective_date": meta.endorsement_effective_date if meta else "",
             "persons_count": meta.persons_count if meta else 0,
-            "upload_date_ts": mtime_ts,        # 文件 mtime，秒级时间戳
+            "upload_date_ts": mtime_ts,
             "size_bytes": size_bytes,
-            "in_index": meta is not None,
-        })
-    # 按 mtime 降序（最新上传在前）
-    records.sort(key=lambda x: x["upload_date_ts"], reverse=True)
-    return {"records": records, "total": len(records), "base_dir": base_dir}
+            "in_index": in_index,
+        }
+
+    def _build_records(records):
+        out = []
+        for r in records:
+            try:
+                stat_info = os.stat(os.path.join(base_dir, r.file_name))
+                mtime_ts = int(stat_info.st_mtime)
+                size_bytes = stat_info.st_size
+            except OSError:
+                mtime_ts = 0
+                size_bytes = 0
+            out.append(_to_dict(r.file_name, r, mtime_ts, size_bytes, True))
+        out.sort(key=lambda x: x["upload_date_ts"], reverse=True)
+        return out
+
+    main_dicts = _build_records(main_hits)
+    batch_dicts = _build_records(batch_hits)
+
+    # 5. 未索引文档（仅当 policy_number_exact / batch_number_exact 都为空 + show_unindexed）
+    unindexed_dicts = []
+    if show_unindexed and not policy_number_exact and not batch_number_exact and not company_fuzzy:
+        all_names = set(meta_by_name.keys()) | {f for f in fs_files if f.lower().endswith(".pdf")}
+        for name in sorted(all_names, key=lambda x: x.lower()):
+            if name in meta_by_name:
+                continue
+            full_path = os.path.join(base_dir, name)
+            try:
+                stat_info = os.stat(full_path)
+                mtime_ts = int(stat_info.st_mtime)
+                size_bytes = stat_info.st_size
+            except OSError:
+                mtime_ts = 0
+                size_bytes = 0
+            # 简单按文件名关键字猜类型
+            guessed_type = "批单" if ("批单" in name or "BD" in name.upper()) else "保单"
+            unindexed_dicts.append({
+                "file_name": name,
+                "policy_type": guessed_type,
+                "policy_number": "",
+                "main_policy_number": "",
+                "company": "",
+                "insurance_company": "",
+                "start_date": "",
+                "end_date": "",
+                "persons_count": 0,
+                "upload_date_ts": mtime_ts,
+                "size_bytes": size_bytes,
+                "in_index": False,
+            })
+        unindexed_dicts.sort(key=lambda x: x["upload_date_ts"], reverse=True)
+
+    # 6. 按 policy_type 过滤返回
+    if policy_type == "main":
+        main_dicts = main_dicts
+        batch_dicts = []
+        unindexed_dicts = []
+    elif policy_type == "batch":
+        main_dicts = []
+        batch_dicts = batch_dicts
+        unindexed_dicts = []
+    elif policy_type == "unindexed":
+        main_dicts = []
+        batch_dicts = []
+        # unindexed_dicts 保留
+    # all: 全部
+
+    total = len(main_dicts) + len(batch_dicts) + len(unindexed_dicts)
+    return {
+        "main_records": main_dicts,
+        "batch_records": batch_dicts,
+        "unindexed_records": unindexed_dicts,
+        "total": total,
+        "base_dir": base_dir,
+        "counts": {
+            "main": len(main_dicts),
+            "batch": len(batch_dicts),
+            "unindexed": len(unindexed_dicts),
+            "total": total,
+        },
+    }
 
 
 @app.get("/api/policy-library/download/{filename}")

@@ -10,7 +10,10 @@ class ExtractionResult:
     """单份保单的完整提取结果"""
     file_name: str = ""
     insurance_company: str = ""
-    policy_number: str = ""
+    policy_number: str = ""              # 自身保单号（主保单=主保单号；批单=批单号 71开头）
+    main_policy_number: str = ""         # 2026-09-21 新增：批单关联的主保单号（"保险单号"标签）
+    batch_policy_number: str = ""        # 2026-09-21 新增：批单号（"批单号"标签），主保单为空
+    policy_type: str = ""                # 2026-09-21 新增："保单" / "批单"
     overall_start_date: str = ""
     overall_end_date: str = ""
     endorsement_effective_date: str = ""  # 2026-09-16 新增：批单生效日（"自X年Y月Z日零时起生效"）

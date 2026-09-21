@@ -1,9 +1,15 @@
 {
-  "enabled": true,
+  "enabled": false,
   "sync_time": "16:00",
-  "alert_enabled": true,
+  "alert_enabled": false,
   "punch_sync_enabled": false,
   "expiry_time": "09:00",
   "expiry_ahead_days": 3,
-  "expiry_enabled": true
+  "expiry_enabled": true,
+  "summary_morning_time": "09:00",
+  "summary_afternoon_time": "16:30",
+  "summary_morning_enabled": true,
+  "summary_afternoon_enabled": true,
+  "cleanup_time": "00:00",
+  "cleanup_enabled": true
 }

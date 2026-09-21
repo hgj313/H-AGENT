@@ -75,9 +75,13 @@ class MetadataExtractorNode:
 
         all_text = " ".join(p.text for p in pdf_doc.pages if p.has_meaningful_text)
 
-        # 1. 保单号
+        # 1. 保单号（2026-09-21 增强：拆 batch / main 两号）
         fname_for_extract = state.get("file_path", "")
-        policy_number = self._extract_policy_number(all_text, file_name=fname_for_extract)
+        batch_policy_number, main_policy_number, policy_type = self._extract_policy_numbers(
+            all_text, file_name=fname_for_extract
+        )
+        # 兼容旧字段：result_dict["policy_number"] 仍取批单号或主保单号
+        policy_number = batch_policy_number or main_policy_number
 
         # 1.5 号段兜底（2026-09-16 新增）：保单号前缀是承保机构发行的硬证据，
         # 比 PDF 文本中关键词匹配更可靠（段小平事件：华安批单088 PDF 提到"黄河"
@@ -152,6 +156,9 @@ class MetadataExtractorNode:
                 **state.get("tool_results", {}),
                 "metadata_extractor": {
                     "policy_number": policy_number,
+                    "batch_policy_number": batch_policy_number,
+                    "main_policy_number": main_policy_number,
+                    "policy_type": policy_type,
                     "overall_start_date": overall_start,
                     "overall_end_date": overall_end,
                     "endorsement_effective_date": endorsement_effective_date,
@@ -164,6 +171,9 @@ class MetadataExtractorNode:
             "working_memory": {
                 **state.get("working_memory", {}),
                 "policy_number": policy_number,
+                "batch_policy_number": batch_policy_number,
+                "main_policy_number": main_policy_number,
+                "policy_type": policy_type,
                 "overall_start_date": overall_start,
                 "overall_end_date": overall_end,
                 "endorsement_effective_date": endorsement_effective_date,
@@ -171,8 +181,14 @@ class MetadataExtractorNode:
         }
 
     @staticmethod
-    def _extract_policy_number(text: str, file_name: str = "") -> str:
-        """从 PDF 全文中提取"保单单号"（系统唯一编号）。
+    def _extract_policy_numbers(text: str, file_name: str = "") -> tuple[str, str, str]:
+        """从 PDF 全文中提取保单号 + 主保单号 + 保单类型（2026-09-21 三元组返回）。
+
+        Returns:
+            (batch_policy_number, main_policy_number, policy_type):
+              - batch_policy_number: 批单号（71 开头），主保单则为 ""
+              - main_policy_number: 主保单号（81 开头），批单为 PDF "保险单号" 标签对应号码
+              - policy_type: "保单" 或 "批单"
 
         优先级（2026-09-16 增强）：批单号(若批单文件) > 保单单号 > 保单号 > 保单流水号
 
@@ -189,50 +205,110 @@ class MetadataExtractorNode:
         BD 格式陷阱：万年县盛美 BD 格式 PDF 文本中没有"批单号"字样，只有"保险单号"+主保单号。
         但文件名 `万年县盛美建筑工程有限公司_7116013100260112989001_BD.pdf` 含完整批单号
         → 必须用 filename_parser 兜底，否则 policy_number 永远错填为 81 主保单号。
+
+        2026-09-21 增强：刘红才(1).pdf 这种文件名无"批单"/"BD"字样但内容是批单的情况。
+        解决：除文件名外，额外用 PDF 文本内容判定批单：
+          - 同时含"批单号" + "保险单号"
+          - 或含 "本次批改" / "批单生效日期" / "批文" 等批单特征字眼
         """
         from insurance_agent.tools.filename_parser import parse_policy_filename
 
-        is_endorsement = "批单" in file_name or "BD" in file_name.upper()
+        # 1. 判定是否批单（文件名 + 文本双轨，2026-09-21 增强）
+        is_endorsement = MetadataExtractorNode._detect_endorsement(text, file_name)
+
+        # 2. 提取主保单号 + 批单号
+        batch_no = ""   # 批单号
+        main_no = ""    # 主保单号
 
         if is_endorsement:
-            # 批单：优先匹配"批单号"
-            patterns = [
-                r"批单号[：:\s]*([A-Z0-9]{16,30})",                  # 1. 利宝等：批单号
-                r"保险单号[：:\s]*([A-Z0-9]{16,30})",                # 2. fallback 主保单号
-                r"保险单或凭证号次[\s\S]{0,30}?([A-Z0-9]{16,30})",  # 3. 太保
-                r"保单号[：:\s]*([A-Z0-9]{16,30})",
-                r"保单流水号[\s\S]{0,30}?([A-Z0-9]{16,30})",
-            ]
-        else:
-            # 主保单：原优先级
-            patterns = [
-                r"保险单或凭证号次[\s\S]{0,30}?([A-Z0-9]{16,30})",  # 1. 太保：保单单号（系统唯一编号），容许中间夹 1-2 行
-                r"凭证号次[\s\S]{0,30}?([A-Z0-9]{16,30})",            # 2. 太保：简称
-                r"汇交号[/／\s]*保险合同号[：:\s]*([A-Z0-9]{16,30})", # 2.5 中国人寿绿洲团体意外险"在保名单"汇交号（2026-09-17 新增）
-                r"保险合同号[：:\s]*([A-Z0-9]{16,30})",                # 2.6 中国人寿"汇交号/保险合同号"另一形式
-                r"保险单号[：:\s]*([A-Z0-9]{16,30})",                # 3. 利宝等：主保单号
-                r"保单号[：:\s]*([A-Z0-9]{16,30})",                  # 4. 利宝等：主保单号
-                r"保单流水号[\s\S]{0,30}?([A-Z0-9]{16,30})",          # 5. 太保：保单内部流水号（fallback）
-            ]
+            # 批单：先匹配"批单号"再匹配"保险单号"
+            m_batch = re.search(r"批单号[：:\s]*([A-Z0-9]{16,30})", text)
+            if m_batch:
+                batch_no = m_batch.group(1)
+            m_main = re.search(r"保险单号[：:\s]*([A-Z0-9]{16,30})", text)
+            if m_main:
+                main_no = m_main.group(1)
+
+            # 兜底：文件名解析（处理 BD 格式万年县盛美等）
+            fname_info = parse_policy_filename(file_name)
+            if not batch_no and fname_info.policy_number:
+                batch_no = fname_info.policy_number
+            if not main_no and fname_info.policy_number:
+                # BD 格式文件名可能含保单号（71/81 开头）→ 用来推 main
+                if fname_info.policy_number.startswith("8"):
+                    main_no = fname_info.policy_number
+                elif fname_info.policy_number.startswith("7"):
+                    # 7 开头是批单号 → 推 main（按号段兼容性）
+                    from insurance_agent.infrastructure.policy_library import PolicyLibrary
+                    # 利宝规则：81 + 同 18 位中段
+                    if len(fname_info.policy_number) >= 20 and fname_info.policy_number[1] in ("1",):
+                        main_no = "8" + fname_info.policy_number[1:]
+                    else:
+                        main_no = main_no  # 兜底保 8->7 替换
+
+            # 兜底再兜底：批单号拿到但主保单号还没拿到（BD格式"保险单号"是空标签缺失）
+            if batch_no and not main_no:
+                # 按 71→81 号段规律推主保单号
+                if len(batch_no) >= 20 and batch_no[0] == "7":
+                    main_no = "8" + batch_no[1:]
+                # 仍无 → 退化用 batch 当 main
+                if not main_no:
+                    main_no = batch_no
+
+            return (batch_no, main_no, "批单")
+
+        # 3. 主保单：按原优先级匹配
+        patterns = [
+            r"保险单或凭证号次[\s\S]{0,30}?([A-Z0-9]{16,30})",  # 1. 太保：保单单号（系统唯一编号），容许中间夹 1-2 行
+            r"凭证号次[\s\S]{0,30}?([A-Z0-9]{16,30})",            # 2. 太保：简称
+            r"汇交号[/／\s]*保险合同号[：:\s]*([A-Z0-9]{16,30})", # 2.5 中国人寿绿洲团体意外险"在保名单"汇交号（2026-09-17 新增）
+            r"保险合同号[：:\s]*([A-Z0-9]{16,30})",                # 2.6 中国人寿"汇交号/保险合同号"另一形式
+            r"保险单号[：:\s]*([A-Z0-9]{16,30})",                # 3. 利宝等：主保单号
+            r"保单号[：:\s]*([A-Z0-9]{16,30})",                  # 4. 利宝等：主保单号
+            r"保单流水号[\s\S]{0,30}?([A-Z0-9]{16,30})",          # 5. 太保：保单内部流水号（fallback）
+        ]
         for p in patterns:
             m = re.search(p, text)
             if m:
-                pn = m.group(1)
-                # 2026-09-16 v2 兜底：批单文件若仍拿到 81 开头主保单号，
-                # 说明 PDF 文本无"批单号"标签（BD 格式万年县盛美等），用文件名保单号覆盖
-                if is_endorsement and pn.startswith("8"):
-                    fname_info = parse_policy_filename(file_name)
-                    if fname_info.policy_number and fname_info.policy_number.startswith("7"):
-                        return fname_info.policy_number
-                return pn
+                return (m.group(1), "", "保单")
 
-        # 所有正则都没匹配上 → 兜底用文件名解析
-        if is_endorsement:
-            fname_info = parse_policy_filename(file_name)
-            if fname_info.policy_number:
-                return fname_info.policy_number
+        # 4. 兜底：文件名解析主保单号
+        fname_info = parse_policy_filename(file_name)
+        if fname_info.policy_number:
+            return (fname_info.policy_number, fname_info.policy_number, "保单")
 
-        return ""
+        return ("", "", "")
+
+    @staticmethod
+    def _detect_endorsement(text: str, file_name: str = "") -> bool:
+        """判定 PDF 是否为批单（2026-09-21 增强）
+
+        判定条件（满足任一）：
+          1. 文件名含"批单"/"BD"（原有逻辑）
+          2. PDF 文本同时含"批单号"和"保险单号"标签 → 利宝/太保批单典型格式
+          3. PDF 含"本次批改" / "批文" / "批单生效日期" / "<<增加人员信息明细>>" 等批单特征
+
+        关键场景：刘红才(1).pdf 文件名不含"批单"也不含"BD"，但内容是典型利宝批单。
+        """
+        if "批单" in file_name or "BD" in file_name.upper():
+            return True
+        # 文本特征
+        if "批单号" in text and "保险单号" in text:
+            return True
+        if "本次批改" in text or "批文" in text:
+            return True
+        if "批单生效日期" in text or "自" in text and "零时起生效" in text and "批" in text:
+            return True
+        return False
+
+    @staticmethod
+    def _extract_policy_number(text: str, file_name: str = "") -> str:
+        """向后兼容的旧接口：仅返回保单号（批单时取批单号，主保单时取主保单号）。
+
+        新代码请用 `_extract_policy_numbers(text, file_name)` 返回 (batch, main, type)。
+        """
+        batch, main, _ = MetadataExtractorNode._extract_policy_numbers(text, file_name)
+        return batch or main
 
     @staticmethod
     def _is_clause_page(text: str) -> bool:

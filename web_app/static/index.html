@@ -933,14 +933,51 @@
                 <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:12px;">
                     <h3 style="font-size:16px;color:#4a5568;margin:0;">🗂️ 保单文件库</h3>
                     <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-                        <input type="text" id="librarySearch" placeholder="输入保单号或批单号精确搜索"
-                               oninput="filterLibraryRows()"
-                               style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:6px;font-size:13px;min-width:220px;">
                         <button onclick="loadLibrary(true)" style="padding:6px 12px;border:none;background:#667eea;color:white;border-radius:6px;cursor:pointer;font-size:13px;">
                             🔄 刷新
                         </button>
                     </div>
                 </div>
+
+                <!-- 2026-09-21：分字段搜索（保单号/批单号精确 + 公司模糊 + 起止时间范围） -->
+                <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr)) 1fr 1fr 1fr;gap:8px;margin-bottom:12px;padding:12px;background:#f7fafc;border-radius:6px;">
+                    <div style="display:flex;flex-direction:column;gap:2px;">
+                        <label style="font-size:11px;color:#4a5568;">保单号（精确）</label>
+                        <input type="text" id="librarySearchMain" placeholder="如 8116013100260112989000"
+                               style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:4px;font-size:13px;">
+                    </div>
+                    <div style="display:flex;flex-direction:column;gap:2px;">
+                        <label style="font-size:11px;color:#4a5568;">批单号（精确）</label>
+                        <input type="text" id="librarySearchBatch" placeholder="如 7116013100260112989006"
+                               style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:4px;font-size:13px;">
+                    </div>
+                    <div style="display:flex;flex-direction:column;gap:2px;">
+                        <label style="font-size:11px;color:#4a5568;">公司名（模糊）</label>
+                        <input type="text" id="librarySearchCompany" placeholder="如 万年县盛美"
+                               style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:4px;font-size:13px;">
+                    </div>
+                    <div style="display:flex;flex-direction:column;gap:2px;">
+                        <label style="font-size:11px;color:#4a5568;">起期 ≥</label>
+                        <input type="date" id="librarySearchDateMin"
+                               style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:4px;font-size:13px;">
+                    </div>
+                    <div style="display:flex;flex-direction:column;gap:2px;">
+                        <label style="font-size:11px;color:#4a5568;">止期 ≤</label>
+                        <input type="date" id="librarySearchDateMax"
+                               style="padding:6px 10px;border:1px solid #cbd5e0;border-radius:4px;font-size:13px;">
+                    </div>
+                    <div style="display:flex;align-items:flex-end;gap:4px;">
+                        <button onclick="filterLibraryRows()"
+                                style="padding:6px 12px;border:none;background:#48bb78;color:white;border-radius:4px;cursor:pointer;font-size:13px;">
+                            🔍 搜索
+                        </button>
+                        <button onclick="resetLibrarySearch()"
+                                style="padding:6px 12px;border:none;background:#a0aec0;color:white;border-radius:4px;cursor:pointer;font-size:13px;">
+                            ↻ 重置
+                        </button>
+                    </div>
+                </div>
+
                 <div id="librarySummary" style="font-size:13px;color:#718096;margin-bottom:8px;">点击「刷新」加载保单库…</div>
                 <div id="libraryTableWrap" style="max-height:520px;overflow:auto;border:1px solid #e2e8f0;border-radius:6px;">
                     <table style="width:100%;border-collapse:collapse;font-size:13px;">
@@ -950,6 +987,7 @@
                                 <th style="padding:10px;text-align:left;border-bottom:1px solid #e2e8f0;">上传日期</th>
                                 <th style="padding:10px;text-align:right;border-bottom:1px solid #e2e8f0;">大小</th>
                                 <th style="padding:10px;text-align:left;border-bottom:1px solid #e2e8f0;">类型/保单号/公司</th>
+                                <th style="padding:10px;text-align:left;border-bottom:1px solid #e2e8f0;">起止时间</th>
                                 <th style="padding:10px;text-align:center;border-bottom:1px solid #e2e8f0;width:120px;">操作</th>
                             </tr>
                         </thead>
@@ -1562,7 +1600,8 @@
         setInterval(checkServiceHealth, 30000);
 
         // === 保单库 ===
-        let _libraryAllRows = [];   // 缓存最近一次加载的全量数据，供前端搜索过滤
+        let _libraryAllRows = { main: [], batch: [], unindexed: [] };   // 缓存最近一次加载的全量数据
+        let _libraryLastQuery = {};                                       // 最近一次过滤条件
 
         function formatBytes(n) {
             if (!n || n < 0) return '-';
@@ -1588,55 +1627,129 @@
                     return;
                 }
                 const data = await resp.json();
-                _libraryAllRows = data.records || [];
+                _libraryAllRows = {
+                    main: data.main_records || [],
+                    batch: data.batch_records || [],
+                    unindexed: data.unindexed_records || [],
+                };
+                const c = data.counts || {};
                 document.getElementById('librarySummary').textContent =
-                    `共 ${_libraryAllRows.length} 个保单文件 · 库路径：${data.base_dir || ''}`;
-                renderLibraryRows(_libraryAllRows);
+                    `共 ${c.total ?? 0} 个文件（主保单 ${c.main ?? 0} · 批单 ${c.batch ?? 0} · 未索引 ${c.unindexed ?? 0}） · 库路径：${data.base_dir || ''}`;
+                // 重新应用过滤（保持之前输入）
+                filterLibraryRows();
             } catch (e) {
                 document.getElementById('librarySummary').textContent = `加载异常：${e.message}`;
             }
         }
 
-        function renderLibraryRows(rows) {
-            const tbody = document.getElementById('libraryTbody');
-            if (!rows || rows.length === 0) {
-                const q = (document.getElementById('librarySearch')?.value || '').trim();
-                const msg = q
-                    ? `未匹配到保单号/批单号等于「${q}」的记录`
-                    : '保单库为空，请先在「保单识别」上传 PDF';
-                tbody.innerHTML = `<tr><td colspan="5" style="padding:30px;text-align:center;color:#999;">${msg}</td></tr>`;
-                return;
-            }
-            tbody.innerHTML = rows.map(r => {
-                const meta = [r.policy_type, r.policy_number, r.company].filter(Boolean).join(' / ');
-                // 行内 HTML 转义防 XSS
-                const fname = String(r.file_name).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-                const metaSafe = String(meta || '-').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-                const dlUrl = `${getApiBase()}/api/policy-library/download/${encodeURIComponent(r.file_name)}`;
-                const missingTag = r.in_index ? '' : '<span style="color:#dd6b20;font-size:11px;margin-left:6px;">未索引</span>';
-                return `<tr>
-                    <td style="padding:8px 10px;border-bottom:1px solid #edf2f7;word-break:break-all;">${fname}${missingTag}</td>
-                    <td style="padding:8px 10px;border-bottom:1px solid #edf2f7;white-space:nowrap;">${formatDateTime(r.upload_date_ts)}</td>
-                    <td style="padding:8px 10px;border-bottom:1px solid #edf2f7;text-align:right;">${formatBytes(r.size_bytes)}</td>
-                    <td style="padding:8px 10px;border-bottom:1px solid #edf2f7;">${metaSafe}</td>
-                    <td style="padding:8px 10px;border-bottom:1px solid #edf2f7;text-align:center;">
-                        <a href="${dlUrl}" download="${fname}" style="display:inline-block;padding:4px 10px;background:#48bb78;color:white;border-radius:4px;text-decoration:none;font-size:12px;">⬇ 下载</a>
-                    </td>
-                </tr>`;
-            }).join('');
+        function resetLibrarySearch() {
+            document.getElementById('librarySearchMain').value = '';
+            document.getElementById('librarySearchBatch').value = '';
+            document.getElementById('librarySearchCompany').value = '';
+            document.getElementById('librarySearchDateMin').value = '';
+            document.getElementById('librarySearchDateMax').value = '';
+            filterLibraryRows();
         }
 
-        function filterLibraryRows() {
-            // 精确匹配：仅按保单号或批单号完全相等（不区分大小写、前后空格）
-            const q = (document.getElementById('librarySearch').value || '').trim();
-            if (!q) { renderLibraryRows(_libraryAllRows); return; }
-            const qLower = q.toLowerCase();
-            const filtered = _libraryAllRows.filter(r => {
-                const policyNo = (r.policy_number || '').toLowerCase();
-                // 1. 保单号完全相等；2. 文件名里包含完整搜索词（兜底支持未入索引的纯文件）
-                return policyNo === qLower || (r.file_name || '').toLowerCase().includes(qLower);
-            });
-            renderLibraryRows(filtered);
+        function buildLibraryUrl() {
+            const apiBase = getApiBase();
+            const params = new URLSearchParams();
+            const mainNo = (document.getElementById('librarySearchMain').value || '').trim();
+            const batchNo = (document.getElementById('librarySearchBatch').value || '').trim();
+            const company = (document.getElementById('librarySearchCompany').value || '').trim();
+            const dateMin = document.getElementById('librarySearchDateMin').value || '';
+            const dateMax = document.getElementById('librarySearchDateMax').value || '';
+            if (mainNo) params.set('policy_number_exact', mainNo);
+            if (batchNo) params.set('batch_number_exact', batchNo);
+            if (company) params.set('company_fuzzy', company);
+            if (dateMin) params.set('date_min', dateMin);
+            if (dateMax) params.set('date_max', dateMax);
+            const qs = params.toString();
+            return qs ? `${apiBase}/api/policy-library?${qs}` : `${apiBase}/api/policy-library`;
+        }
+
+        async function filterLibraryRows() {
+            const apiBase = getApiBase();
+            const url = buildLibraryUrl();
+            try {
+                const resp = await fetch(url);
+                if (!resp.ok) {
+                    renderLibraryRows({ main: [], batch: [], unindexed: [] }, `加载失败 (HTTP ${resp.status})`);
+                    return;
+                }
+                const data = await resp.json();
+                const grouped = {
+                    main: data.main_records || [],
+                    batch: data.batch_records || [],
+                    unindexed: data.unindexed_records || [],
+                };
+                const c = data.counts || {};
+                document.getElementById('librarySummary').textContent =
+                    `匹配 ${c.total ?? 0} 个（主保单 ${c.main ?? 0} · 批单 ${c.batch ?? 0} · 未索引 ${c.unindexed ?? 0}）`;
+                renderLibraryRows(grouped);
+            } catch (e) {
+                renderLibraryRows({ main: [], batch: [], unindexed: [] }, `过滤异常：${e.message}`);
+            }
+        }
+
+        function _escHtml(s) {
+            return String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+        }
+
+        function renderLibraryRows(grouped, errorMsg) {
+            const tbody = document.getElementById('libraryTbody');
+            const sectionOf = (r) => {
+                if (!r.in_index) return 'unindexed';
+                return r.policy_type === '保单' ? 'main' : 'batch';
+            };
+            const allRows = []
+                .concat((grouped.main || []).map(r => ({ ...r, _section: 'main' })))
+                .concat((grouped.batch || []).map(r => ({ ...r, _section: 'batch' })))
+                .concat((grouped.unindexed || []).map(r => ({ ...r, _section: 'unindexed' })));
+
+            if (errorMsg) {
+                tbody.innerHTML = `<tr><td colspan="6" style="padding:30px;text-align:center;color:#dd6b20;">${_escHtml(errorMsg)}</td></tr>`;
+                return;
+            }
+            if (allRows.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="6" style="padding:30px;text-align:center;color:#999;">未匹配到记录，请调整搜索条件</td></tr>`;
+                return;
+            }
+
+            // 段落分隔：主保单 / 批单 / 未索引
+            const sectionLabels = { main: '🟢 主保单', batch: '🔵 批单', unindexed: '⚠️ 未索引' };
+            const sectionColors = { main: '#48bb78', batch: '#4299e1', unindexed: '#dd6b20' };
+            const sectionOrder = ['main', 'batch', 'unindexed'];
+
+            const html = [];
+            for (const sec of sectionOrder) {
+                const rows = allRows.filter(r => r._section === sec);
+                if (rows.length === 0) continue;
+                html.push(`<tr><td colspan="6" style="padding:6px 10px;background:${sectionColors[sec]}15;color:${sectionColors[sec]};font-weight:600;border-bottom:1px solid ${sectionColors[sec]}40;">
+                    ${sectionLabels[sec]} · ${rows.length} 条
+                </td></tr>`);
+                for (const r of rows) {
+                    const meta = [r.policy_type, r.policy_number, r.main_policy_number ? `主保单:${r.main_policy_number}` : '', r.company].filter(Boolean).join(' / ');
+                    const fname = _escHtml(r.file_name);
+                    const metaSafe = _escHtml(meta || '-');
+                    const dlUrl = `${getApiBase()}/api/policy-library/download/${encodeURIComponent(r.file_name)}`;
+                    const missingTag = r.in_index ? '' : '<span style="color:#dd6b20;font-size:11px;margin-left:6px;">未索引</span>';
+                    const dateRange = (r.start_date || r.end_date)
+                        ? `${_escHtml(r.start_date || '?')} ~ ${_escHtml(r.end_date || '?')}`
+                        : '-';
+                    html.push(`<tr>
+                        <td style="padding:8px 10px;border-bottom:1px solid #edf2f7;word-break:break-all;">${fname}${missingTag}</td>
+                        <td style="padding:8px 10px;border-bottom:1px solid #edf2f7;white-space:nowrap;">${formatDateTime(r.upload_date_ts)}</td>
+                        <td style="padding:8px 10px;border-bottom:1px solid #edf2f7;text-align:right;">${formatBytes(r.size_bytes)}</td>
+                        <td style="padding:8px 10px;border-bottom:1px solid #edf2f7;">${metaSafe}</td>
+                        <td style="padding:8px 10px;border-bottom:1px solid #edf2f7;white-space:nowrap;">${dateRange}</td>
+                        <td style="padding:8px 10px;border-bottom:1px solid #edf2f7;text-align:center;">
+                            <a href="${dlUrl}" download="${fname}" style="display:inline-block;padding:4px 10px;background:#48bb78;color:white;border-radius:4px;text-decoration:none;font-size:12px;">⬇ 下载</a>
+                        </td>
+                    </tr>`);
+                }
+            }
+            tbody.innerHTML = html.join('');
         }
 
         async function loadReminderConfig() {

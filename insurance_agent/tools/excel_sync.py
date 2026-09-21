@@ -12,6 +12,7 @@ Excel 模板字段: 姓名 | 证件号码 | 年龄 | 打卡项目 | 所属班组
 import logging
 import os
 import shutil
+from datetime import datetime
 from typing import Optional
 
 from openpyxl import load_workbook
@@ -79,12 +80,25 @@ def sync_excel_with_extraction(
         output_path = excel_path
 
     # 同步前自动备份原文件（仅在覆盖原文件时）
+    # 使用时间戳命名避免 Permission denied（旧备份可能被 Excel 占用）
     backup_path = None
     if output_path == excel_path and os.path.exists(excel_path):
         base, ext = os.path.splitext(excel_path)
-        backup_path = f"{base}_backup{ext}"
-        shutil.copy2(excel_path, backup_path)
-        logger.info("已自动备份原文件到 %s", backup_path)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_path = f"{base}_backup_{ts}{ext}"
+        try:
+            shutil.copy2(excel_path, backup_path)
+            logger.info("已自动备份原文件到 %s", backup_path)
+        except PermissionError:
+            # 备份失败不阻断同步，尝试备用位置
+            import tempfile
+            backup_path = os.path.join(tempfile.gettempdir(), f"保险数据_backup_{ts}{ext}")
+            try:
+                shutil.copy2(excel_path, backup_path)
+                logger.warning("原始备份位置被占用，备份到: %s", backup_path)
+            except Exception:
+                backup_path = None
+                logger.warning("备份失败，跳过备份直接同步")
 
     wb = load_workbook(excel_path)
     ws = wb.active

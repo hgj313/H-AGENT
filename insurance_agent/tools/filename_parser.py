@@ -9,6 +9,7 @@
 1. 标准格式: 保单_公司名_保单号.pdf  /  批单_公司名_保单号.pdf
 2. 粤灿格式: 替换4人保单·粤灿0612.pdf  /  替换9人·批增2人保单·广州粤灿0624.pdf
 3. 简单格式: 南京大千装饰工程有限公司保单.pdf
+4. BD格式: 公司名_保单号_BD.pdf （不带前缀，仅靠保单号首字符判断主/批单）
 """
 
 import re
@@ -85,6 +86,29 @@ def parse_policy_filename(file_path: str) -> FilenameInfo:
             info.company = company_part
             info.raw_company = company_part
             return info
+
+    # --- 格式4: BD格式 公司名_保单号_BD.pdf （2026-09 新发现）---
+    # 例: 万年县盛美建筑工程有限公司_8116013100260112989000_BD.pdf
+    #     万年县盛美建筑工程有限公司_7116013100260112989001_BD.pdf
+    # 利宝保险约定：保单号首字符 8=主保单, 7=批单
+    m_bd = re.match(
+        r"^(.+?)_(\d{16,30})_BD$",
+        name_no_ext,
+    )
+    if m_bd:
+        info.company = m_bd.group(1).strip()
+        info.raw_company = info.company
+        info.policy_number = m_bd.group(2).strip()
+        # 利用利宝保单号规律判断主/批单
+        first_char = info.policy_number[0]
+        if first_char == "7":
+            info.policy_type = "批单"
+        elif first_char == "8":
+            info.policy_type = "保单"
+        else:
+            # 兜底按未知处理（让 policy_library.register 的"减保"逻辑兜底）
+            info.policy_type = ""
+        return info
 
     # --- 兜底: 检测关键词 ---
     if "批单" in name_no_ext or "替换" in name_no_ext:

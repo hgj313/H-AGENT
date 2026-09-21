@@ -1,4 +1,4 @@
-# 保险单识别系统 Dockerfile
+# 保险管理AI助手 Dockerfile
 #
 # 构建（默认基础镜像 python:3.13-slim）：
 #   docker build -t insurance-agent:latest .
