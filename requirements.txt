@@ -1,4 +1,4 @@
-# 保险单识别系统 — Python 依赖（与本地 H-AGENT/.venv 版本对齐）
+# 保险管理AI助手 — Python 依赖（与本地 H-AGENT/.venv 版本对齐）
 # Python 3.13+
 
 # Web 框架
