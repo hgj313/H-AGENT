@@ -939,7 +939,30 @@
                     </div>
                 </div>
 
-                <!-- 2026-09-21：分字段搜索（保单号/批单号精确 + 公司模糊 + 起止时间范围） -->
+                <!-- 2026-09-21：类型筛选条（全部 / 主保单 / 批单）+ 分字段搜索（保单号/批单号精确 + 公司模糊 + 起止时间范围） -->
+                <!-- 类型筛选（segment 控件） -->
+                <div id="libraryTypeFilterBar" style="display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-wrap:wrap;">
+                    <span style="font-size:12px;color:#4a5568;margin-right:4px;">📂 类型筛选：</span>
+                    <button type="button" data-ltype="all"
+                            class="lib-type-btn lib-type-btn-active"
+                            onclick="setLibraryTypeFilter('all')"
+                            style="padding:5px 12px;border:1px solid #cbd5e0;background:#667eea;color:white;border-radius:14px;cursor:pointer;font-size:12px;font-weight:500;">
+                        全部 <span id="libTypeCntAll" style="opacity:0.85;margin-left:3px;">·0</span>
+                    </button>
+                    <button type="button" data-ltype="main"
+                            class="lib-type-btn"
+                            onclick="setLibraryTypeFilter('main')"
+                            style="padding:5px 12px;border:1px solid #48bb78;background:white;color:#48bb78;border-radius:14px;cursor:pointer;font-size:12px;font-weight:500;">
+                        🟢 主保单 <span id="libTypeCntMain" style="opacity:0.85;margin-left:3px;">·0</span>
+                    </button>
+                    <button type="button" data-ltype="batch"
+                            class="lib-type-btn"
+                            onclick="setLibraryTypeFilter('batch')"
+                            style="padding:5px 12px;border:1px solid #4299e1;background:white;color:#4299e1;border-radius:14px;cursor:pointer;font-size:12px;font-weight:500;">
+                        🔵 批单 <span id="libTypeCntBatch" style="opacity:0.85;margin-left:3px;">·0</span>
+                    </button>
+                </div>
+
                 <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr)) 1fr 1fr 1fr;gap:8px;margin-bottom:12px;padding:12px;background:#f7fafc;border-radius:6px;">
                     <div style="display:flex;flex-direction:column;gap:2px;">
                         <label style="font-size:11px;color:#4a5568;">保单号（精确）</label>
@@ -1602,6 +1625,43 @@
         // === 保单库 ===
         let _libraryAllRows = { main: [], batch: [], unindexed: [] };   // 缓存最近一次加载的全量数据
         let _libraryLastQuery = {};                                       // 最近一次过滤条件
+        let _libraryTypeFilter = 'all';                                   // 'all' | 'main' | 'batch' — 前端类型筛选（接 server.policy_type 参数）
+
+        // 类型筛选切换（segment 控件）—— 仅更新按钮高亮 + 触发重新过滤（带 policy_type 参数请求服务端）
+        function setLibraryTypeFilter(t) {
+            _libraryTypeFilter = t;
+            const activeStyles = {
+                'all':   { bg: '#667eea', fg: 'white', border: '#667eea' },
+                'main':  { bg: '#48bb78', fg: 'white', border: '#48bb78' },
+                'batch': { bg: '#4299e1', fg: 'white', border: '#4299e1' },
+            };
+            const idleStyles = {
+                'all':   { bg: 'white', fg: '#667eea', border: '#cbd5e0' },
+                'main':  { bg: 'white', fg: '#48bb78', border: '#48bb78' },
+                'batch': { bg: 'white', fg: '#4299e1', border: '#4299e1' },
+            };
+            document.querySelectorAll('#libraryTypeFilterBar .lib-type-btn').forEach(btn => {
+                const ltype = btn.getAttribute('data-ltype');
+                const s = (ltype === t) ? activeStyles[ltype] : idleStyles[ltype];
+                btn.style.background = s.bg;
+                btn.style.color = s.fg;
+                btn.style.borderColor = s.border;
+                btn.classList.toggle('lib-type-btn-active', ltype === t);
+            });
+            // 重新过滤（buildLibraryUrl 会带上 policy_type 参数）
+            filterLibraryRows();
+        }
+
+        // 用当前 _libraryAllRows 更新顶部三个计数
+        function _refreshLibraryTypeCounts() {
+            const cntAll = (_libraryAllRows.main.length || 0) + (_libraryAllRows.batch.length || 0) + (_libraryAllRows.unindexed.length || 0);
+            const elAll = document.getElementById('libTypeCntAll');
+            const elMain = document.getElementById('libTypeCntMain');
+            const elBatch = document.getElementById('libTypeCntBatch');
+            if (elAll)   elAll.textContent   = '·' + cntAll;
+            if (elMain)  elMain.textContent  = '·' + (_libraryAllRows.main.length || 0);
+            if (elBatch) elBatch.textContent = '·' + (_libraryAllRows.batch.length || 0);
+        }
 
         function formatBytes(n) {
             if (!n || n < 0) return '-';
@@ -1635,6 +1695,8 @@
                 const c = data.counts || {};
                 document.getElementById('librarySummary').textContent =
                     `共 ${c.total ?? 0} 个文件（主保单 ${c.main ?? 0} · 批单 ${c.batch ?? 0} · 未索引 ${c.unindexed ?? 0}） · 库路径：${data.base_dir || ''}`;
+                // 更新顶部三按钮计数
+                _refreshLibraryTypeCounts();
                 // 重新应用过滤（保持之前输入）
                 filterLibraryRows();
             } catch (e) {
@@ -1648,7 +1710,8 @@
             document.getElementById('librarySearchCompany').value = '';
             document.getElementById('librarySearchDateMin').value = '';
             document.getElementById('librarySearchDateMax').value = '';
-            filterLibraryRows();
+            // 类型筛选也回到"全部"（setLibraryTypeFilter 内部会触发 filterLibraryRows）
+            setLibraryTypeFilter('all');
         }
 
         function buildLibraryUrl() {
@@ -1659,6 +1722,10 @@
             const company = (document.getElementById('librarySearchCompany').value || '').trim();
             const dateMin = document.getElementById('librarySearchDateMin').value || '';
             const dateMax = document.getElementById('librarySearchDateMax').value || '';
+            // 类型筛选（接 server /api/policy-library?policy_type=）
+            if (_libraryTypeFilter && _libraryTypeFilter !== 'all') {
+                params.set('policy_type', _libraryTypeFilter);
+            }
             if (mainNo) params.set('policy_number_exact', mainNo);
             if (batchNo) params.set('batch_number_exact', batchNo);
             if (company) params.set('company_fuzzy', company);
