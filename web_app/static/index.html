@@ -1628,6 +1628,11 @@
         let _libraryTypeFilter = 'all';                                   // 'all' | 'main' | 'batch' — 前端类型筛选（接 server.policy_type 参数）
 
         // 类型筛选切换（segment 控件）—— 仅更新按钮高亮 + 触发重新过滤（带 policy_type 参数请求服务端）
+        // 2026-09-22 增强：类型筛选联动输入框禁用
+        //   - 选「主保单」→ 禁用批单号框（清空其值，避免错乱请求）
+        //   - 选「批单」  → 禁用主保单号框（清空其值）
+        //   - 选「全部」  → 5 个输入框全部启用
+        //   - 公司名 / 起期 / 止期 不受类型筛选影响，始终可用
         function setLibraryTypeFilter(t) {
             _libraryTypeFilter = t;
             const activeStyles = {
@@ -1648,7 +1653,35 @@
                 btn.style.borderColor = s.border;
                 btn.classList.toggle('lib-type-btn-active', ltype === t);
             });
-            // 重新过滤（buildLibraryUrl 会带上 policy_type 参数）
+            // 联动输入框启用/禁用
+            const mainInput  = document.getElementById('librarySearchMain');
+            const batchInput = document.getElementById('librarySearchBatch');
+            const coInput    = document.getElementById('librarySearchCompany');
+            const dMinInput  = document.getElementById('librarySearchDateMin');
+            const dMaxInput  = document.getElementById('librarySearchDateMax');
+            const disabledStyle = 'padding:6px 10px;border:1px solid #cbd5e0;border-radius:4px;font-size:13px;background:#edf2f7;color:#a0aec0;cursor:not-allowed;';
+            const enabledStyle  = 'padding:6px 10px;border:1px solid #cbd5e0;border-radius:4px;font-size:13px;';
+            const disableMain  = (t === 'batch');   // 选「批单」 → 不允许按主保单号搜
+            const disableBatch = (t === 'main');    // 选「主保单」 → 不允许按批单号搜
+            if (mainInput) {
+                mainInput.disabled = disableMain;
+                mainInput.style.cssText = disableMain ? disabledStyle : enabledStyle;
+                mainInput.placeholder = disableMain ? '（选「全部」/「主保单」可启用）' : '如 8116013100260112989000';
+                if (disableMain && mainInput.value) mainInput.value = '';
+            }
+            if (batchInput) {
+                batchInput.disabled = disableBatch;
+                batchInput.style.cssText = disableBatch ? disabledStyle : enabledStyle;
+                batchInput.placeholder = disableBatch ? '（选「全部」/「批单」可启用）' : '如 7116013100260112989006';
+                if (disableBatch && batchInput.value) batchInput.value = '';
+            }
+            // 公司名/起止时间：始终可用
+            [coInput, dMinInput, dMaxInput].forEach(el => {
+                if (!el) return;
+                el.disabled = false;
+                el.style.cssText = enabledStyle;
+            });
+            // 重新过滤（buildLibraryUrl 会带上 policy_type 参数 + 被清空的字段）
             filterLibraryRows();
         }
 
