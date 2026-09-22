@@ -25384,6 +25384,112 @@
           "modification_type": "增保"
         }
       ]
+    },
+    {
+      "file_name": "保单_重庆恒财生态园林绿化有限公司_ASHH07037126FN0088T2.pdf",
+      "file_path": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\insurance_upload__s9gk66y\\保单_重庆恒财生态园林绿化有限公司_ASHH07037126FN0088T2.pdf",
+      "stored_path": "C:\\insurance-automation\\policy_library\\保单_重庆恒财生态园林绿化有限公司_ASHH07037126FN0088T2.pdf",
+      "policy_type": "保单",
+      "policy_number": "ASHH07037126FN0088T2",
+      "main_policy_number": "",
+      "company": "重庆恒财生态园林绿化有限公司",
+      "insurance_company": "中国太平洋财产保险",
+      "start_date": "2026-09-22",
+      "end_date": "2026-10-22",
+      "endorsement_effective_date": "",
+      "persons_count": 18,
+      "persons": [
+        {
+          "name": "郑远阳",
+          "id_number": "513031196709053770",
+          "modification_type": "增保"
+        },
+        {
+          "name": "蒋加权",
+          "id_number": "513031197504022799",
+          "modification_type": "增保"
+        },
+        {
+          "name": "谢文英",
+          "id_number": "513624198005112785",
+          "modification_type": "增保"
+        },
+        {
+          "name": "周月亮",
+          "id_number": "51303119731102347X",
+          "modification_type": "增保"
+        },
+        {
+          "name": "杜小林",
+          "id_number": "513031197110253017",
+          "modification_type": "增保"
+        },
+        {
+          "name": "谭钦明",
+          "id_number": "513031196908233272",
+          "modification_type": "增保"
+        },
+        {
+          "name": "王孝全",
+          "id_number": "522121196508243037",
+          "modification_type": "增保"
+        },
+        {
+          "name": "杜勇君",
+          "id_number": "513031197005252979",
+          "modification_type": "增保"
+        },
+        {
+          "name": "陈昌文",
+          "id_number": "513031196603132972",
+          "modification_type": "增保"
+        },
+        {
+          "name": "蒋四平",
+          "id_number": "513031197404162997",
+          "modification_type": "增保"
+        },
+        {
+          "name": "罗云",
+          "id_number": "512928197105107138",
+          "modification_type": "增保"
+        },
+        {
+          "name": "韩红胜",
+          "id_number": "512301197112292711",
+          "modification_type": "增保"
+        },
+        {
+          "name": "韩小强",
+          "id_number": "512301197310042692",
+          "modification_type": "增保"
+        },
+        {
+          "name": "邱志云",
+          "id_number": "513031196811053291",
+          "modification_type": "增保"
+        },
+        {
+          "name": "张少和",
+          "id_number": "512527196809182117",
+          "modification_type": "增保"
+        },
+        {
+          "name": "李学明",
+          "id_number": "510224197402273735",
+          "modification_type": "增保"
+        },
+        {
+          "name": "夏祥美",
+          "id_number": "512301196807042706",
+          "modification_type": "增保"
+        },
+        {
+          "name": "廖占树",
+          "id_number": "513031196612233599",
+          "modification_type": "增保"
+        }
+      ]
     }
   ]
 }
