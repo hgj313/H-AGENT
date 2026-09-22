@@ -246,6 +246,10 @@ class TableExtractor(BaseExtractor):
             # 6. 在身份证号附近提取工种
             #    2026-09-17 增补：中国人寿"被保险人变动清单"无工种列，
             #    需排除"增加主被保险人" / "减少连带被保险人" 等组合词（变动类型+被保险人类型拼接）
+            #    2026-09-22 修正：保持 post_region 优先（利宝/太保/华农等工种都在身份证号右边），
+            #      仅新增"建筑工"排除（见下）。北部湾"雇主责任险"格式的"备注"列
+            #      "建筑工程-建筑公司-油漆工、喷漆工"里也含正确工种"油漆工"，
+            #      排除"建筑工程"误匹配的"建筑工"后，post 优先仍能取到"油漆工"。
             job_title = ""
             for region in [post_region, pre_region]:
                 if job_title:
@@ -263,6 +267,13 @@ class TableExtractor(BaseExtractor):
                     # PyMuPDF 把列名拼接成一行 → "被保险人类型" 是匹配 _JOB_PATTERN
                     # 但同时也被算作黑名单（"被保险人"）之外的扩展词
                     if any(kw in candidate for kw in self._TABLE_HEADER_KEYWORDS):
+                        continue
+                    # 2026-09-22 新增：排除"建筑工程/建筑公司"职业分类路径的"建筑工"误匹配
+                    # 例：北部湾"备注"列值"建筑工程-建筑公司-油漆工、喷漆工"中，
+                    # _JOB_PATTERN 贪婪匹配"建筑"+"工"→"建筑工"（后跟"程"），
+                    # 这是职业分类层级路径的"建筑工程"，不是工种。
+                    nxt = region[job_match.end():job_match.end() + 1]
+                    if candidate == "建筑工" and nxt == "程":
                         continue
                     job_title = candidate
                     break
