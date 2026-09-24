@@ -32,6 +32,17 @@ _OVERALL_PATTERNS = [
     # 兼容两种字段顺序：生效→满期 或 满期→生效（统一在 _extract_block_kv_period 中处理）
 ]
 
+# 2026-09-24 新增：平安养老"批改人员清单"格式 — 两条独立字段"保险起期"+"保险止期"
+# 例：保险起期（北京时间）：2026 年06 月20 日00 时
+#     保险止期（北京时间）：2027 年06 月19 日24 时
+# 字段顺序固定为 起期→止期（先起后止）
+# 容忍"（北京时间）"括号内中文 + 日期数字间空格
+_OVERALL_SEPARATE_FIELDS = re.compile(
+    r"保险起期\s*（[^）]*）[：:\s]*(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日"
+    r"[\s\d:时分秒\u4e00-\u9fff]*"
+    r"\s*保险止期\s*（[^）]*）[：:\s]*(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日"
+)
+
 # 单点日期：2026-06-24 00:00:00  / 2026/06/24  / 2026年06月24日  / 2026年7月1日
 # 2026-09-17 增补：中国人寿"被保险人变动清单"批单使用 YYYY/MM/DD 斜杠分隔（生效日/终止日）
 _DATE_PATTERN = re.compile(
@@ -91,7 +102,13 @@ def extract_overall_insurance_period(text: str) -> tuple[Optional[str], Optional
             return normalize_date(m.group(1), m.group(2), m.group(3)), \
                    normalize_date(m.group(4), m.group(5), m.group(6))
 
-    # 2. 块状键值对双字段（中国人寿在保名单）
+    # 2. 平安养老"保险起期/保险止期"两条独立字段
+    m = _OVERALL_SEPARATE_FIELDS.search(text)
+    if m:
+        return normalize_date(m.group(1), m.group(2), m.group(3)), \
+               normalize_date(m.group(4), m.group(5), m.group(6))
+
+    # 3. 块状键值对双字段（中国人寿在保名单）
     return _extract_block_kv_period(text)
 
 

@@ -685,6 +685,20 @@ def upsert_insurance_personnel(persons: list[dict]) -> int:
     if not persons:
         return 0
 
+    # 2026-09-24 增强：同 batch 内 (name, id_number) 去重
+    # 原因：单份上传的 PDF 可能同人出现多次（例：平安养老"批改人员清单"含同名同人重复，
+    # 索引冲突 → IntegrityError 让整批不入库）。
+    # 保留首次出现的 row（end_date 等信息以首批为准，PDF 同 batch 内同人多次列示通常信息一致）
+    dedup = {}
+    for p in persons:
+        id_num = (p.get("id_number") or "").strip()
+        if not id_num:
+            continue
+        key = (p.get("name", "").strip(), id_num)
+        if key not in dedup:
+            dedup[key] = p
+    persons = list(dedup.values())
+
     with _lock:
         conn = get_connection()
         try:
@@ -708,13 +722,13 @@ def upsert_insurance_personnel(persons: list[dict]) -> int:
                         job_title, birth_date, insurance_company, policy_number,
                         source_file, status, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(name, id_number) WHERE id_number != '' DO UPDATE SET
+                    ON CONFLICT(id_number, policy_number) DO UPDATE SET
+                        name = excluded.name,
                         company = excluded.company,
                         start_date = excluded.start_date,
                         end_date = excluded.end_date,
                         job_title = excluded.job_title,
                         insurance_company = excluded.insurance_company,
-                        policy_number = excluded.policy_number,
                         source_file = excluded.source_file,
                         status = excluded.status,
                         created_at = excluded.created_at

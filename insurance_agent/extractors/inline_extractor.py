@@ -38,7 +38,9 @@ class InlineExtractor(BaseExtractor):
     _NAME_MARKER = "雇员姓名"
 
     # 身份证号正则
-    _ID_REGEX = re.compile(r"(\d{17}[\dXx])")
+    # 2026-09-24 增强：支持脱敏（星号遮蔽）身份证号 "412702********2432"
+    # 总长仍为 18，与正式身份证号等长
+    _ID_REGEX = re.compile(r"(\d{6}\*+\d{2,4}[\dXx]?)")
 
     # 姓名：2-4 个中文字符
     _NAME_REGEX = re.compile(r"[\u4e00-\u9fff]{2,4}")

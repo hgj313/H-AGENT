@@ -37,6 +37,9 @@ class TableExtractor(BaseExtractor):
     _JOB_PATTERN = re.compile(
         r"([\u4e00-\u9fff]{1,9}(?:工|员|师|者|人))"
     )
+    # 2026-09-24 新增：职业分类等级（一类~六类）模式
+    # 平安养老"批改人员清单"职业类别列就存 "六类" 这种值，应映射到 job_title
+    _OCCUPATION_CLASS_PATTERN = re.compile(r"([一二三四五六七八九十]\s*类)")
 
     # 工种误报黑名单（不是工种的词）
     _JOB_BLACKLIST = {
@@ -155,8 +158,10 @@ class TableExtractor(BaseExtractor):
             name = name_candidates[-1] if name_candidates else ""
 
             # 3.5 从身份证号中提取出生日期（第7-14位 YYYYMMDD）
+            # 2026-09-24 增强：脱敏身份证号（"412702********2432"）第 7-14 位是 *
+            # 不能用作出生日期 → 留空（PDF 中也无其他生日字段可参考）
             birth_date = ""
-            if len(id_number) >= 14:
+            if len(id_number) >= 14 and "*" not in id_number:
                 birth_year = id_number[6:10]
                 birth_month = id_number[10:12]
                 birth_day = id_number[12:14]
@@ -250,7 +255,12 @@ class TableExtractor(BaseExtractor):
             #      仅新增"建筑工"排除（见下）。北部湾"雇主责任险"格式的"备注"列
             #      "建筑工程-建筑公司-油漆工、喷漆工"里也含正确工种"油漆工"，
             #      排除"建筑工程"误匹配的"建筑工"后，post 优先仍能取到"油漆工"。
+            #    2026-09-24 增强：优先识别"X类"职业分类（平安养老"批改人员清单"列存"六类"），
+            #      比 _JOB_PATTERN 更精准，且 _JOB_PATTERN 不会匹配到 "类" 结尾。
             job_title = ""
+            occ_match = self._OCCUPATION_CLASS_PATTERN.search(post_region)
+            if occ_match:
+                job_title = occ_match.group(1).replace(" ", "")  # 去多余空格
             for region in [post_region, pre_region]:
                 if job_title:
                     break

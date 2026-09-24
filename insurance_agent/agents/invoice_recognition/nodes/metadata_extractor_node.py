@@ -22,7 +22,8 @@ logger = logging.getLogger(__name__)
 
 # 人员清单页定位标记
 _LIST_MARKERS = [
-    "人员清单", "雇员清单", "雇员人名清单", "人名清单",
+    # 2026-09-24 增强：加 "人员名单"（平安养老"批改人员清单"格式的 marker）
+    "人员清单", "人员名单", "雇员清单", "雇员人名清单", "人名清单",
     "被保险人清单", "员工清单", "被保险人名单",
     # 雇主责任险电子保单（安诚保险等）：雇员信息表
     "雇员信息", "雇员名单", "员工信息",
@@ -369,15 +370,21 @@ class MetadataExtractorNode:
         真实场景：大型保单清单分多页时，从第 2 页开始常**不再重复表头词**（节省版面）。
         此时用"含 ≥3 个 18 位身份证片段"作为强证据判断它仍是清单续页。
 
+        2026-09-24 增强：兼容脱敏身份证号 "412702********2432"（18 字符，含 8 个 *）。
+        平安养老"批改人员清单"等大型清单都使用了脱敏格式，需要纳入续页识别。
+
         返回 True 表示这页仍是清单的一部分（应继续扩展）。
         """
         if not text:
             return False
         # 先做跨行拼接（PyMuPDF 可能把 18 位 ID 拆成两行）
         joined = re.sub(r'(\d{3,})\n(\d|[Xx])', r'\1\2', text)
-        ids = re.findall(r'\d{17}[\dXx]', joined)
-        # 至少 3 个 18 位身份证 = 强烈的清单续页信号
-        return len(ids) >= 3
+        # 完整 18 位身份证
+        full_ids = re.findall(r'\d{17}[\dXx]', joined)
+        # 脱敏 18 位身份证（6位+\*+4位 = 18 字符）
+        masked_ids = re.findall(r'\d{6}\*+\d{2,4}[\dXx]?', joined)
+        # 至少 3 个身份证号（完整 + 脱敏合并计数）= 强烈的清单续页信号
+        return len(full_ids) + len(masked_ids) >= 3
 
     @staticmethod
     def _find_list_pages(pdf_doc: PDFDocument) -> list[int]:
