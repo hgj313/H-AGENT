@@ -35,7 +35,11 @@ class InlineExtractor(BaseExtractor):
     _REMOVE_MARKERS = ["删除雇员信息为", "减少雇员信息为", "减少人员", "删除人员", "批减"]
 
     # 雇员姓名标记（用于分割记录）
-    _NAME_MARKER = "雇员姓名"
+    # 2026-09-28 增强：兼容阳光保险"被保险人姓名"前缀（"被保险人姓名:杨仕亮,证件号码:..."）。
+    #              用 re.split 同时支持多个 marker：任一命中即切段。
+    _NAME_MARKERS = ["雇员姓名", "被保险人姓名"]
+    # 兼容旧版单 marker 字段名
+    _NAME_MARKER = _NAME_MARKERS[0]
 
     # 身份证号正则
     # 2026-09-24 增强：支持脱敏（星号遮蔽）身份证号 "412702********2432"
@@ -175,8 +179,9 @@ class InlineExtractor(BaseExtractor):
         """
         persons = []
 
-        # 按"雇员姓名"分割文本
-        parts = text.split(self._NAME_MARKER)
+        # 按"雇员姓名/被保险人姓名"分割文本（任一命中即切段，2026-09-28 增强）
+        split_pattern = re.compile("|".join(re.escape(m) for m in self._NAME_MARKERS))
+        parts = split_pattern.split(text)
         # parts[0] 是标记前的文本（通常无用），跳过
 
         for part in parts[1:]:

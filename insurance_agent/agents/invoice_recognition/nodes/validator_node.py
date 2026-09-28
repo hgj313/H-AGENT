@@ -187,6 +187,18 @@ class ValidatorNode:
         if result_dict.get("insurance_company") in ("", "unknown") and main_insurance_company:
             result_dict["insurance_company"] = main_insurance_company
 
+        # 2026-09-28 新增：补全投保人/用工单位（公司名）
+        # 阳光批单 PDF 正文里只有保险公司抬头，没列投保人（主保单里有）
+        # → 从主保单 record 取 company 并同步给所有 persons + result_dict
+        main_company = main_policy.company or ""
+        if main_company:
+            if not result_dict.get("policy_holder"):
+                result_dict["policy_holder"] = main_company
+            for p_dict in persons_dicts:
+                if not p_dict.get("company"):
+                    p_dict["company"] = main_company
+                    filled_count += 1
+
         # 补全整体保险期间（写到 result_dict 供 _persist_policy_result 使用）
         if not result_dict.get("overall_start_date") and added_start:
             result_dict["overall_start_date"] = added_start

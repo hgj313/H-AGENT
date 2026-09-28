@@ -188,6 +188,14 @@ def init_db() -> None:
             # 迁移：punch_records 唯一约束改为 (punch_date, identification_number)
             #   避免 ERP 推送缺 id 字段时 erp_id="" 互相覆盖
             _migrate_unique_to_identification_number(conn)
+            # 迁移：删除 `idx_person_name_id` UNIQUE INDEX（2026-09-28）
+            #   该索引是 8-26 加的 partial unique index `ON (name, id_number) WHERE id_number != ''`
+            #   当时设计意图是防止同人重复入库。但实际业务中"同一工人被多份保单承保"是常见且合理的
+            #   （例：胡志福在利宝 7116013100260082838002 和阳光 HGC... 主保单都被保）。
+            #   表级 UNIQUE(id_number, policy_number) 已足够（同保单同人唯一），同人不同保单应允许。
+            #   2026-09-28 阳光保单入库触发 IntegrityError('UNIQUE constraint failed: name, id_number')
+            #   即同人跨保单误判。
+            _migrate_drop_person_name_id_index(conn)
             logger.info("数据库初始化完成: %s", DB_PATH)
         finally:
             conn.close()
@@ -420,6 +428,25 @@ _PUNCH_TIME_KEYS = (
     "clockTime", "signTime", "signInTime", "attendTime",
     "checkInTime", "checkinTime", "打卡时间", "打卡日期",
 )
+
+
+def _migrate_drop_person_name_id_index(conn: sqlite3.Connection) -> None:
+    """迁移：删除 idx_person_name_id UNIQUE INDEX（2026-09-28）
+
+    8-26 加的 partial unique index `ON (name, id_number) WHERE id_number != ''`
+    错误限制了同人不同保单入库（业务中同一工人被多份保单承保是合理的）。
+    表级 UNIQUE(id_number, policy_number) + ON CONFLICT(id_number, policy_number)
+    已足够保护同人同保单唯一性。
+
+    迁移逻辑：幂等（IF EXISTS），删除后保留为非唯一 INDEX（用于查询加速）。
+    """
+    cursor = conn.cursor()
+    # 1. 删除 unique index（如果存在）
+    cursor.execute("DROP INDEX IF EXISTS idx_person_name_id")
+    # 2. 建非唯一 INDEX 保留查询性能
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_person_name_id ON insurance_personnel(name, id_number)")
+    conn.commit()
+    logger.info("idx_person_name_id 已迁移：UNIQUE → 普通 INDEX")
 
 
 def _pick_punch_time(r: dict) -> str:

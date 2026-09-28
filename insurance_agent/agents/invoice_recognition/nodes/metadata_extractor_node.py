@@ -35,7 +35,12 @@ _LIST_MARKERS = [
     "雇员信息表", "人员信息表", "人员清单表", "雇员清单表",
 ]
 # 行内格式标记
-_INLINE_MARKERS = ["雇员姓名：", "雇员姓名:", "雇员姓名：", "雇员姓名:", "替换为人员"]
+# 2026-09-28 增强：兼容阳光保险批单 "被保险人姓名:杨仕亮,证件号码:..." 格式
+_INLINE_MARKERS = [
+    "雇员姓名：", "雇员姓名:",
+    "被保险人姓名：", "被保险人姓名:",
+    "替换为人员",
+]
 # 个人保单格式标记（被保险人信息以键值对形式内嵌）
 _INDIVIDUAL_MARKERS = ["被保险人信息", "被保人信息"]
 # 不记名投保保单特征（灵工版等 — 只投总人数，不逐人记名 → 无清单）
@@ -52,7 +57,7 @@ _BLOCK_KV_MARKERS = [
 # 批单生效日期：自 2026年09月04日 零时起生效
 # 提取批单整体生效日（单点日期），用于减保记录的 end_date 补全
 _ENDORSEMENT_EFFECTIVE_PATTERN = re.compile(
-    r"自\s*(\d{4})年(\d{1,2})月(\d{1,2})日\s*零时起\s*生效"
+    r"自\s*(\d{4})[年\-/](\d{1,2})[月\-/](\d{1,2})(?:日)?\s*(?:零时起|0时起|起)\s*(?:生效)?"
 )
 
 
@@ -229,6 +234,18 @@ class MetadataExtractorNode:
             m_main = re.search(r"保险单号[：:\s]*([A-Z0-9]{16,30})", text)
             if m_main:
                 main_no = m_main.group(1)
+
+            # 2026-09-28 阳光保险批单特定格式：批单号 = "End.NO.<batch>"，保单号 = "PolicyNO.<main>"
+            # 标签和值之间可能隔行（如"批单号：\n保单号：\nEnd.NO.HGC...\nPolicyNO.HGC..."），
+            # 上面的标准正则无法跨越。
+            if not batch_no:
+                m_end = re.search(r"End\.NO\.([A-Z0-9_]{10,40})", text)
+                if m_end:
+                    batch_no = m_end.group(1)
+            if not main_no:
+                m_pol = re.search(r"PolicyNO\.([A-Z0-9]{10,40})", text)
+                if m_pol:
+                    main_no = m_pol.group(1)
 
             # 兜底：文件名解析（处理 BD 格式万年县盛美等）
             fname_info = parse_policy_filename(file_name)
