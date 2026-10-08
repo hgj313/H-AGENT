@@ -36,10 +36,12 @@ _LIST_MARKERS = [
 ]
 # 行内格式标记
 # 2026-09-28 增强：兼容阳光保险批单 "被保险人姓名:杨仕亮,证件号码:..." 格式
+# 2026-10-08 增强：兼容阳光保险批单《变更被保人》"被保险人姓名由X变更为Y" 格式
 _INLINE_MARKERS = [
     "雇员姓名：", "雇员姓名:",
     "被保险人姓名：", "被保险人姓名:",
     "替换为人员",
+    "变更为",   # 阳光批单《变更被保人》：姓名由X变更为Y,证件号码由A变更为B
 ]
 # 个人保单格式标记（被保险人信息以键值对形式内嵌）
 _INDIVIDUAL_MARKERS = ["被保险人信息", "被保人信息"]
@@ -308,8 +310,18 @@ class MetadataExtractorNode:
 
         关键场景：刘红才(1).pdf 文件名不含"批单"也不含"BD"，但内容是典型利宝批单。
         """
-        if "批单" in file_name or "BD" in file_name.upper():
+        if "批单" in file_name:
             return True
+        if "BD" in file_name.upper():
+            # BD 格式：公司名_保单号_BD.pdf（利宝约定：保单号首字符 8=主保单, 7=批单）
+            # 2026-09-30 修复：8 开头的 BD 文件是主保单（如上海洲杰 8116013100260126067000_BD.pdf），
+            # 旧逻辑"文件名含 BD 一律判批单"会把主保单错注册进批单表，
+            # 导致后续批单 find_main_policy_by_number 查主保单表落空、起止日期为空。
+            # 与 filename_parser 的 BD 解析（首字符判定）保持一致。
+            m_bd = re.search(r"(\d{16,30})_BD", file_name)
+            if m_bd and m_bd.group(1)[0] == "8":
+                return False  # 8 开头 = 主保单，不是批单
+            return True       # 7 开头=批单；字母号段（ASHH 等）沿用旧判定
         # 文本特征
         if "批单号" in text and "保险单号" in text:
             return True

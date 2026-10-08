@@ -67,12 +67,77 @@ class InlineExtractor(BaseExtractor):
             if persons:
                 return persons
 
+        # 检测"变更被保人"格式（阳光保险批单：被保险人姓名由 X 变更为 Y）
+        # 2026-10-08 新增：阳光批单《变更被保人》模板
+        #   被保险人姓名由陈洪变更为周润,证件号码由510218198207242535变更为500381200601135218,
+        if "变更为" in text and ("由" in text):
+            persons = self._extract_change(text, policy_holder)
+            if persons:
+                return persons
+
         # 将文本按增保/减保标记分段
         segments = self._split_by_modification_type(text)
 
         for seg_text, mod_type in segments:
             seg_persons = self._extract_from_segment(seg_text, policy_holder, mod_type)
             persons.extend(seg_persons)
+
+        return persons
+
+    def _extract_change(self, text: str, policy_holder: str = "") -> list[InsuredPerson]:
+        """提取"由 X 变更为 Y"格式（阳光保险批单《变更被保人》）
+
+        每个变更 = 1 个减保（原人员 X）+ 1 个增保（新人员 Y）。
+
+        文本特征：
+            《变更被保人》
+            被保险人姓名由陈洪变更为周润,
+            证件号码由510218198207242535变更为500381200601135218,
+
+        2026-10-08 新增：阳光保险 HGC 批单《变更被保人》模板。
+        同一份 PDF 可能含多组变更，每组由"姓名/身份证由...变更为..."成对出现。
+        """
+        persons = []
+
+        # 先合并跨行身份证号（同 _extract_replacement）
+        text = re.sub(r'(\d{3,})\n(\d|[Xx])', r'\1\2', text)
+
+        # 按"姓名由 X 变更为 Y"成对提取（一组 = 1 个变更）
+        # 用更宽松的正则，匹配多个变更
+        pattern = re.compile(
+            r"姓名由\s*([\u4e00-\u9fff]{2,4})\s*变更为\s*([\u4e00-\u9fff]{2,4})"
+            r"[\s\S]*?"
+            r"证件号码由\s*(\d{17}[\dXx])\s*变更为\s*(\d{17}[\dXx])",
+            re.MULTILINE,
+        )
+
+        for m in pattern.finditer(text):
+            old_name, new_name, old_id, new_id = m.groups()
+
+            # 减保原人员
+            persons.append(InsuredPerson(
+                name=old_name,
+                id_number=old_id.upper(),
+                id_type="身份证",
+                company=policy_holder,
+                start_date="",
+                end_date="",
+                job_title="",
+                confidence=0.9,
+                modification_type="减保",
+            ))
+            # 增保新人员
+            persons.append(InsuredPerson(
+                name=new_name,
+                id_number=new_id.upper(),
+                id_type="身份证",
+                company=policy_holder,
+                start_date="",
+                end_date="",
+                job_title="",
+                confidence=0.9,
+                modification_type="增保",
+            ))
 
         return persons
 

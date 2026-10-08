@@ -81,7 +81,24 @@ class PersonnelExtractorNode:
 
         else:
             # 文字层：table / inline / individual 格式
-            for page_num in list_pages:
+            # 2026-10-08 修复：当 format_hint 是 inline 但 list_pages 为空时（如阳光批单
+            # 《变更被保人》：单页 PDF 含 inline marker 但无传统清单页），需扫描所有页
+            # 找到含 inline marker 的页面提取，避免 0 人提取。
+            if not list_pages and format_hint == "inline":
+                from insurance_agent.agents.invoice_recognition.nodes.metadata_extractor_node import (
+                    _INLINE_MARKERS,
+                )
+                pages_to_extract = [
+                    p.page_number for p in pdf_doc.pages
+                    if any(m in p.text for m in _INLINE_MARKERS)
+                ]
+                if not pages_to_extract:
+                    # 兜底：扫所有页
+                    pages_to_extract = [p.page_number for p in pdf_doc.pages]
+            else:
+                pages_to_extract = list_pages
+
+            for page_num in pages_to_extract:
                 page = pdf_doc.pages[page_num - 1]
                 text = page.text
 
