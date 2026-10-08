@@ -31,14 +31,70 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 import time
 import traceback
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Optional
 
 import requests
+
+# 飞书多维表格"日期+时间"列期望的格式：YYYY/MM/DD HH:MM
+# （截图自 2026/01/30 14:00，斜杠分隔、不带秒）
+# 现状：调用方 / DB 里都是 "YYYY-MM-DD HH:MM:SS"（短横线分隔、带秒）→ 飞书侧
+# "因参数类型错误无法映射"，所以在 webhook 推送层做一次规范化，
+# 既不影响数据库、不影响调用方，又能让飞书多维表格正确接收。
+_FEISHU_DT_FORMAT = "%Y/%m/%d %H:%M"
+
+# 匹配多种常见时间串（兼容 ERP 原始 ISO 8601 / 中文串等），
+# 关键是"前 4 位年份 + 两位月份 + 两位日期 + 时分"。
+_PUNCH_TIME_PATTERNS = [
+    "%Y-%m-%d %H:%M:%S",
+    "%Y-%m-%d %H:%M",
+    "%Y/%m/%d %H:%M:%S",
+    "%Y/%m/%d %H:%M",
+    "%Y-%m-%dT%H:%M:%S",
+    "%Y-%m-%dT%H:%M",
+    "%Y-%m-%dT%H:%M:%S.%f",
+    "%Y-%m-%dT%H:%M:%SZ",
+    "%Y年%m月%d日 %H:%M",
+    "%Y年%m月%d日%H:%M",
+]
+
+
+def _format_punch_time_for_feishu(raw: str) -> str:
+    """把各种时间串统一格式化为飞书多维表格"日期+时间"列期望的 `YYYY/MM/DD HH:MM`。
+
+    无法解析时原样返回（避免吃掉有意义的字符串，让飞书侧自己报错更易定位）。
+    """
+    if not raw:
+        return ""
+    s = str(raw).strip()
+    if not s:
+        return ""
+    # 已经是目标格式直接返回（避免重复格式化引入的浮点误差）
+    if re.match(r"^\d{4}/\d{2}/\d{2} \d{2}:\d{2}$", s):
+        return s
+    for fmt in _PUNCH_TIME_PATTERNS:
+        try:
+            return datetime.strptime(s, fmt).strftime(_FEISHU_DT_FORMAT)
+        except ValueError:
+            continue
+    # 兜底：飞书侧经常接受 ISO 8601，试试 fromisoformat（3.11+ 支持 "Z" 后缀）
+    try:
+        iso = s.replace("Z", "+00:00") if s.endswith("Z") else s
+        dt = datetime.fromisoformat(iso)
+        # 带时区则转本地（这里取原始时区数值，避免被本机时区二次污染）
+        if dt.tzinfo is not None:
+            dt = dt.astimezone().replace(tzinfo=None)
+        return dt.strftime(_FEISHU_DT_FORMAT)
+    except Exception:
+        pass
+    # 实在解析不了，原样返回——让飞书侧报"类型错误"也比吃掉好排查
+    return s
+
 
 logger = logging.getLogger("feishu_webhook_pusher")
 
@@ -47,6 +103,10 @@ _BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__fi
 CONFIG_PATH = os.path.join(_BASE_DIR, ".feishu_webhook.json")
 DLQ_PATH = os.path.join(_BASE_DIR, "feishu_webhook_dlq.jsonl")
 LOG_PATH = os.path.join(_BASE_DIR, "feishu_webhook_pusher.log")
+# 本地持久化去重状态：记录「某天 + 身份证号」是否已推送过飞书。
+# 目的：实时链路与定时汇总链路共享同一去重集合，避免同一人同一天被重复推送
+#（飞书 Client-Token 幂等窗口仅 3 小时，跨实时/汇总两链路间隔常超 3 小时会失效）。
+DEDUP_PATH = os.path.join(_BASE_DIR, "feishu_push_dedup.json")
 
 # 模块级状态：单例 pusher（由 server.py 启动时初始化，其他模块直接 import 复用）
 _pusher_instance: Optional["FeishuWebhookPusher"] = None
@@ -82,6 +142,9 @@ class FeishuWebhookPusher:
         self.config = self._load_config()
         self._queue: "queue.Queue" = queue.Queue(maxsize=10000)
         self._stop = threading.Event()
+        # 本地持久化去重：{punch_date: {id_number: 推送时间}}（跨实时/汇总链路共享）
+        self._dedup_lock = threading.Lock()
+        self._dedup = self._load_dedup()
         self._worker = threading.Thread(
             target=self._run, daemon=True, name="feishu-pusher",
         )
@@ -123,17 +186,91 @@ class FeishuWebhookPusher:
             _log(f"配置已重载: enabled={self.config.get('enabled')}")
             return self.config
 
+    # ============ 本地持久化去重 ============
+
+    def _load_dedup(self) -> dict:
+        """加载去重状态 {punch_date: {id_number: 推送时间}}。"""
+        if not os.path.exists(DEDUP_PATH):
+            return {}
+        try:
+            with open(DEDUP_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _save_dedup(self) -> None:
+        try:
+            with open(DEDUP_PATH, "w", encoding="utf-8") as f:
+                json.dump(self._dedup, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            _log(f"保存去重状态失败: {e}")
+
+    def _is_duplicated(self, person: dict) -> bool:
+        """同一人同一天是否已推送过飞书（按 punch_date + id_number）。
+
+        与 AI 助手「按身份证号去重」保持一致，不区分项目。
+        """
+        idn = (person.get("id_number") or "").strip()
+        if not idn:
+            return False  # 无身份证号不去重（无法关联）
+        punch_date = person.get("punch_date") or datetime.now().strftime("%Y-%m-%d")
+        with self._dedup_lock:
+            return idn in self._dedup.get(punch_date, {})
+
+    def _mark_pushed(self, person: dict) -> None:
+        """标记某人在某天已推送飞书（入队成功后调用）。"""
+        idn = (person.get("id_number") or "").strip()
+        if not idn:
+            return
+        punch_date = person.get("punch_date") or datetime.now().strftime("%Y-%m-%d")
+        with self._dedup_lock:
+            self._dedup.setdefault(punch_date, {})[idn] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # 清理 7 天前的日期键，避免文件无限增长
+            cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+            for d in list(self._dedup.keys()):
+                if d < cutoff:
+                    del self._dedup[d]
+            self._save_dedup()
+
+    def _unmark_pushed(self, person: dict) -> None:
+        """清除去重标记（推送失败落 DLQ 时调用，允许后续重推）。
+
+        否则入队即标记会让「推送失败」的人被误判为「已推」，导致永不再推。
+        """
+        idn = (person.get("id_number") or "").strip()
+        if not idn:
+            return
+        punch_date = person.get("punch_date") or datetime.now().strftime("%Y-%m-%d")
+        with self._dedup_lock:
+            day = self._dedup.get(punch_date)
+            if day and idn in day:
+                del day[idn]
+                if not day:
+                    del self._dedup[punch_date]
+                self._save_dedup()
+
     def push(self, payload: dict, source: str = "realtime") -> bool:
-        """主线程调用：把一条记录丢进异步队列，立即返回（非阻塞）。"""
+        """主线程调用：把一条记录丢进异步队列，立即返回（非阻塞）。
+
+        注意：本方法**不修改 payload**——只把它原样塞进队列。
+        punch_time 的飞书格式化只在 worker 线程出站前一刻执行（_push_with_retry），
+        避免任何字段污染调用方对象，也避免 dedup/统计逻辑看到与发送不一致的数据。
+        """
         cfg = self.config
         if not cfg.get("enabled", False):
             return False
         if not cfg.get("bearer_token") or cfg.get("bearer_token") == "_YOUR_NEW_TOKEN_HERE_":
             _log(f"[{source}] bearer_token 未配置，跳过推送")
             return False
+        # 本地持久化去重：同一人同一天只推一次飞书（跨实时/汇总链路共享），
+        # 避免飞书 3 小时幂等窗口失效导致的重复添加。
+        if self._is_duplicated(payload):
+            return False
         try:
             self._queue.put_nowait((payload, source))
             self._stats["enqueued"] += 1
+            self._mark_pushed(payload)
             return True
         except queue.Full:
             _log(f"[{source}] 推送队列已满，丢弃本条")
@@ -177,8 +314,15 @@ class FeishuWebhookPusher:
             "Content-Type": "application/json; charset=utf-8",  # 显式声明 UTF-8，避免被中间网关按 GBK 兜底
             "Client-Token": _make_client_token(payload),  # 幂等
         }
+        # 规范化 punch_time 为飞书多维表格"日期+时间"列期望的 YYYY/MM/DD HH:MM。
+        # 改动只发生在**序列化这一行**——只构造发送字节，绝不修改原 payload、不动
+        # dedup / stats / 调用方对象。其它字段一个都不会丢。
+        send_payload = payload
+        if "punch_time" in payload:
+            send_payload = dict(payload)  # 浅拷贝，只动这一个 key
+            send_payload["punch_time"] = _format_punch_time_for_feishu(payload["punch_time"])
         # 显式 ensure_ascii=False 避免中文被转义成 \uXXXX（部分网关对转义序列二次解码会出错）
-        body_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        body_bytes = json.dumps(send_payload, ensure_ascii=False).encode("utf-8")
 
         last_error = None
         for attempt in range(max_retries):
@@ -200,7 +344,7 @@ class FeishuWebhookPusher:
                         self._stats["last_sent_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         _log(
                             f"[{source}] 推送成功 | client_token={headers['Client-Token'][:12]}... | "
-                            f"name={payload.get('name', '')}"
+                            f"name={payload.get('name', '')} | punch_time={payload.get('punch_time', '')}"
                         )
                         return
                     # 业务错误：不重试，落 DLQ
@@ -233,6 +377,8 @@ class FeishuWebhookPusher:
 
     def _write_dlq(self, payload: dict, source: str, reason: str):
         """失败记录落 DLQ（JSONL 格式，可手动重放）。"""
+        # 推送失败 → 清除去重标记，允许后续（下午汇总/手动重放）再次推送
+        self._unmark_pushed(payload)
         record = {
             "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "source": source,

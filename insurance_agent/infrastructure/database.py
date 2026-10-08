@@ -867,7 +867,8 @@ def add_insurance_personnel(persons: list[dict]) -> dict:
 
 
 def deactivate_insurance(id_numbers: list[str], end_date: str | None = None,
-                        policy_number: str | None = None) -> int:
+                        policy_number: str | None = None,
+                        main_policy_number: str | None = None) -> int:
     """减保：将指定身份证号的人员状态设为失效
 
     Args:
@@ -877,6 +878,9 @@ def deactivate_insurance(id_numbers: list[str], end_date: str | None = None,
                    通常由批单的"批单生效日期"提供（见 metadata_extractor 的 endorsement_effective_date）。
         policy_number: 2026-09-16 新增：批单号。提供时仅减保该保单下的记录，
                        避免跨保单误改（同身份证在不同保单下的记录）。
+        main_policy_number: 2026-09-18 新增：主保单号。提供时按主保单号族放宽匹配
+                        （中段 18 位同），用于"批单号与主保单号前缀不同（71/81）"
+                       但同属一个主保单族的减保场景（万年县盛美事件）。
 
     Returns:
         更新的条数

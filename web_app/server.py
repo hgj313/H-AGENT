@@ -4,6 +4,7 @@
 基于现有 insurance_agent 智能体，不修改 Agent 行为，仅做 Web 封装。
 """
 
+import asyncio
 import csv
 import io
 import json
@@ -870,7 +871,10 @@ async def upload_files(
         raise HTTPException(status_code=400, detail="未找到 PDF 文件")
 
     # 处理文件
-    results = process_files(saved_paths)
+    # 2026-10-08 修复：process_files 内部会同步调用 LLM 识别（OCR 扫描件每页 10-40s），
+    # 若在 async handler 中同步等待会阻塞 uvicorn 事件循环，导致 /api/health 无响应，
+    # watchdog 误判"假死"并强杀服务（识别中断）。改为丢线程池执行，事件循环保持可响应。
+    results = await asyncio.to_thread(process_files, saved_paths)
     _latest_results = results
 
     # 构建返回数据
@@ -1483,7 +1487,9 @@ async def sync_punch():
 
     punch_date = datetime.now().strftime("%Y-%m-%d")
     try:
-        result = coverage_check.sync_punch_data(_session_manager, punch_date)
+        # 2026-10-08 修复：同步拉取 ERP 打卡数据可能耗时（超时 30s），阻塞事件循环导致
+        # watchdog 误判假死。丢线程池执行。
+        result = await asyncio.to_thread(coverage_check.sync_punch_data, _session_manager, punch_date)
         return JSONResponse(result)
     except Exception as e:
         # "attempt to write a readonly database" 是沙箱环境特有（watchdog 子进程
@@ -1649,7 +1655,10 @@ async def daily_check(force: bool = False):
     force=true 时跳过「今日已发送过则跳过」的保护，强制重发（仅调试用）。
     """
     try:
-        result = run_daily_check(
+        # 2026-10-08 修复：run_daily_check 会同步调 ERP（超时 30s）+ 发邮件/短信，
+        # 阻塞事件循环导致 watchdog 误判假死。丢线程池执行。
+        result = await asyncio.to_thread(
+            run_daily_check,
             session_manager=_session_manager,
             force=force,
         )

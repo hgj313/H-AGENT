@@ -30,6 +30,9 @@ HEALTH_URL = "http://127.0.0.1:8765/api/health"
 HEALTH_INTERVAL = 15    # 运行中每隔多少秒做一次健康检查（秒）
 HEALTH_TIMEOUT = 5      # 单次健康检查超时（秒）
 STARTUP_GRACE = 20      # 启动后宽限期，宽限内只检测崩溃、不做健康检查（避免误杀尚未就绪的服务）
+# 2026-10-08 修复假死误判：单次健康检查失败不能判定假死（服务可能在处理长请求，
+# 事件循环被同步阻塞，例如 ERP 拉取超时/OCR 多页识别）。必须连续失败达到阈值才重启。
+HEALTH_FAIL_THRESHOLD = 3   # 连续失败 3 次（约 45 秒）才判定假死
 
 
 def _acquire_singleton_lock() -> bool:
@@ -343,6 +346,7 @@ def main():
 
                 # 监督循环：崩溃 + 假死 双检测（同时监督 server + bridge）
                 started_at = time.time()
+                consecutive_failures = 0   # 连续健康检查失败次数（2026-10-08 假死误判修复）
                 while True:
                     # 1) 服务崩溃检测
                     rc = proc.poll()  # None 表示仍在运行
@@ -359,15 +363,21 @@ def main():
                         if br_rc is not None:
                             log(f"bridge 异常退出（退出码 {br_rc}），{BRIDGE_RESTART_DELAY} 秒后重启 bridge...")
                             bridge_proc = _start_bridge()
-                    # 3) 服务健康检查（宽限期后启用）
-                    if time.time() - started_at > STARTUP_GRACE and not _health_ok():
-                        log("服务健康检查失败（可能假死），强制重启...")
-                        _safe_kill(proc)
-                        # 同步关闭 bridge（与服务同生命周期）
-                        if bridge_proc is not None:
-                            _kill_bridge(bridge_proc)
-                            bridge_proc = None
-                        break
+                    # 3) 服务健康检查（宽限期后启用；连续失败达到阈值才判定假死）
+                    if time.time() - started_at > STARTUP_GRACE:
+                        if _health_ok():
+                            consecutive_failures = 0
+                        else:
+                            consecutive_failures += 1
+                            log(f"服务健康检查失败（第 {consecutive_failures}/{HEALTH_FAIL_THRESHOLD} 次）...")
+                            if consecutive_failures >= HEALTH_FAIL_THRESHOLD:
+                                log("服务连续多次健康检查失败（判定假死），强制重启...")
+                                _safe_kill(proc)
+                                # 同步关闭 bridge（与服务同生命周期）
+                                if bridge_proc is not None:
+                                    _kill_bridge(bridge_proc)
+                                    bridge_proc = None
+                                break
                     time.sleep(HEALTH_INTERVAL)
                 time.sleep(RESTART_DELAY)
         finally:
