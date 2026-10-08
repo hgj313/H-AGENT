@@ -410,8 +410,11 @@ class MetadataExtractorNode:
         joined = re.sub(r'(\d{3,})\n(\d|[Xx])', r'\1\2', text)
         # 完整 18 位身份证
         full_ids = re.findall(r'\d{17}[\dXx]', joined)
-        # 脱敏 18 位身份证（6位+\*+4位 = 18 字符）
-        masked_ids = re.findall(r'\d{6}\*+\d{2,4}[\dXx]?', joined)
+        # 脱敏 18 位身份证（两种格式：6位+6~10星+0~4位 或 14位+4星）
+        # 2026-10-08 新增：平安产险格式 14+4（"51102519741110****"，尾部星号）
+        masked_ids = re.findall(
+            r'(?:\d{6}\*{6,10}\d{0,4}[\dXx]?|\d{14}\*{4})', joined
+        )
         # 至少 3 个身份证号（完整 + 脱敏合并计数）= 强烈的清单续页信号
         return len(full_ids) + len(masked_ids) >= 3
 

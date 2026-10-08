@@ -42,6 +42,13 @@ class TableExtractor(BaseExtractor):
     # 2026-09-24 新增：职业分类等级（一类~六类）模式
     # 平安养老"批改人员清单"职业类别列就存 "六类" 这种值，应映射到 job_title
     _OCCUPATION_CLASS_PATTERN = re.compile(r"([一二三四五六七八九十]\s*类)")
+    # 2026-09-30 新增：GB/T 6565 职业分类代码模式
+    # 中国人寿财产保险电子保单"被保险人名单"页职业类别列固定格式："7位数字-工种\n续行"
+    # 例："0702033-挖掘铲运和桩\n工机械司机" — 跨行 + 工种不以 工/员/师/者/人 结尾
+    # _JOB_PATTERN 直接匹配不到 → 必须显式捕获"7位数字-" 开头 + 后续 1-2 行中文
+    _OCCUPATION_CODE_PATTERN = re.compile(
+        r"\d{7}-([\u4e00-\u9fff]{1,9})\n?([\u4e00-\u9fff]{1,9})"
+    )
 
     # 工种误报黑名单（不是工种的词）
     _JOB_BLACKLIST = {
@@ -53,6 +60,9 @@ class TableExtractor(BaseExtractor):
         # 2026-09-28 新增：阳光批单 inline 格式里的角色词
         # 例 "《增加被保人》"、"电子保单签章核保人"、"录单员"、"制单人"、业务经办人
         "被保人", "核保人", "录单员", "制单人", "执业人",
+        # 2026-09-30 新增：中国人寿"被保险人名单"页脚 "签单日期：YYYY年M月D日\n保险人盖章"
+        # 跨行合并 → "日保险人"，原黑名单只有"保险人"（4字），新词不在 → 兜底
+        "日保险人", "日投保人", "日受益人", "日签章人",
     }
 
     # 减保标记
@@ -146,11 +156,52 @@ class TableExtractor(BaseExtractor):
         #        （后一行须以工/员/师/者/人结尾，且排除"雇员/员工/人员"等表头词，避免误合并表头）
         #        注意：前一行结尾不能是 雇佣性质 取值（是/否/有/无），否则会把
         #        "是\n石工" 误合并成 "是石工"。工种永远在第1列、雇佣性质在第末列，二者不会相邻。
+        #        2026-10-08 修正：在 4b 之前先把"X类职业"占位符化（"三类\n职业" → "三类职业"），
+        #          否则 4b 会把"三类职业\n绿化栽植工" 错误合并成"三类职业绿化栽植工"
+        #          （平安产险"电子保单"清单行格式）。占位符在合并后还原。
+        #          注：使用 U+E000（私有区字符，PDF 文本中绝不可能存在），
+        #          不用 \x00 因为 re.sub replacement string 会把 \x00 当成 regex 转义解析报错。
+        _PLACEHOLDER = ''
+        list_text = re.sub(
+            r'([一二三四五六七八九十])\s*类\s*职\s*业',
+            lambda m: m.group(1) + '类职业' + _PLACEHOLDER,
+            list_text,
+        )
         list_text = re.sub(
             r'((?!是|否|有|无)[\u4e00-\u9fff（])\n((?!雇员|员工|人员)[\u4e00-\u9fff]{1,8}(?:工|员|师|者|人))',
             r'\1\2',
             list_text,
         )
+        list_text = list_text.replace(_PLACEHOLDER, '')
+        # 5. 删除"签单日期 ... 保险人盖章"页脚（2026-09-30 新增）
+        #    中国人寿财产保险电子保单"被保险人名单"页固定页脚：
+        #        签单日期：YYYY年M月D日
+        #        保险人盖章
+        #        全国统一客户服务/投诉热线：95519/4008695519
+        #    必须放在"合并跨行工种"规则之前，否则：
+        #    (a) 表格最后一行（潘伟攀）post_region 包含"签单日期：2026年9月30日"
+        #        → 误填 start_date=2026-09-30（正确应是 2026-10-02 保险期间起始日）
+        #    (b) "日\n保险人"被规则 4b 合并成"日保险人"，_JOB_PATTERN 误匹配为 job_title
+        #        （不在原黑名单里），最终 job_title="日保险人"
+        #    这里只匹配"签单日期 + 日期 + 保险人盖章"完整三段，安全。
+        list_text = re.sub(
+            r'签单日期[：:]\s*\d{4}[年\-/]\d{1,2}[月\-/]\d{1,2}日?\s*\n?\s*保险人盖章[^\n]*',
+            '',
+            list_text,
+        )
+        # 6. 删除中国人寿财险电子保单"被保险人名单"页其它页脚（2026-09-30 新增）
+        #    这一段是公司抬头 + 客服热线 + 网址，不会出现在人员数据表格里，
+        #    但 PyMuPDF 跨页拼接时（25 页 PDF，page 4 → page 5 拼成一个 list_text），
+        #    最后一行（潘伟攀）的 post_region 会包含 page 5 段，触发 _JOB_PATTERN
+        #    误匹配 "中国人"、"第三条被保险人本人" 等噪声为 job_title。
+        list_text = re.sub(r'中国人寿财产保险股份有限公司[^\n]*', '', list_text)
+        list_text = re.sub(r'全国统一客户服务?[/／]?\s*投诉?热线?[：:]?\s*\d{3,5}[/\d]*[^\n]*', '', list_text)
+        list_text = re.sub(r'www\.chinalife-p\.com\.cn[^\n]*', '', list_text)
+        list_text = re.sub(r'95519[/\d]*[^\n]*', '', list_text)
+        list_text = re.sub(r'40086-95519[^\n]*', '', list_text)
+        list_text = re.sub(r'网址[：:][^\n]*', '', list_text)
+        # 删除中国人寿条款章节标题（防止 _JOB_PATTERN 把"第一条被保险人本人"误匹配）
+        list_text = re.sub(r'第[一二三四五六七八九十]条[^\n]*', '', list_text)
 
         # 1. 定位所有合法身份证号
         valid_ids = extract_chinese_id_from_text(list_text)
@@ -192,6 +243,16 @@ class TableExtractor(BaseExtractor):
                 if 0 < pos < next_id_pos:
                     next_id_pos = pos
             post_region = raw_post_region[:next_id_pos]
+
+            # 2026-09-30 关键修复：post_region 截断到第一个连续空行（页边界）前，
+            # 防止最后一行（潘伟攀）的 post_region 跨越到下一页条款段。
+            # PyMuPDF get_text() 在 PDF 页和页之间用 \n\n 或多个 \n 分隔，
+            # 表格内一行接一行是单 \n。"被保险人名单"清单页结尾后会有连续空行 → 页边界。
+            # 不截的话，post_region 含 page 5+ 条款段里的"能正常工作"、"订立本保险合同
+            # 时被保险人或投保人"等，被 _JOB_PATTERN 误匹配成 job_title。
+            blank_line_pos = post_region.find('\n\n')
+            if blank_line_pos > 0 and blank_line_pos < len(post_region):
+                post_region = post_region[:blank_line_pos]
 
             # 身份证号之前的文本（2026-09-17 新增）
             # 中国人寿"被保险人变动清单"格式：姓名/生效日/终止日/变动类型 都在 ID 之前
@@ -267,10 +328,27 @@ class TableExtractor(BaseExtractor):
             #      排除"建筑工程"误匹配的"建筑工"后，post 优先仍能取到"油漆工"。
             #    2026-09-24 增强：优先识别"X类"职业分类（平安养老"批改人员清单"列存"六类"），
             #      比 _JOB_PATTERN 更精准，且 _JOB_PATTERN 不会匹配到 "类" 结尾。
+            #    2026-10-08 修正：原代码把 _OCCUPATION_CLASS_PATTERN 命中值立即赋给 job_title，
+            #      在"职业类别 + 岗位名称"双列格式（平安产险"电子保单"）下 post_region 首个
+            #      X类 匹配后，下方 _JOB_PATTERN 匹配的"绿化栽植工"会被跳过。修复：
+            #      1) _OCCUPATION_CLASS_PATTERN 命中值 → occupation_class 字段（不放 job_title）
+            #      2) 继续尝试 _JOB_PATTERN 匹配（取"绿化栽植工"等岗位名称）作为 job_title
+            #      3) job_title 仍为空时再把 occupation_class 退化到 job_title（兼容 PEAC）
             job_title = ""
+            occupation_class = ""
             occ_match = self._OCCUPATION_CLASS_PATTERN.search(post_region)
             if occ_match:
-                job_title = occ_match.group(1).replace(" ", "")  # 去多余空格
+                occupation_class = occ_match.group(1).replace(" ", "")  # 去多余空格
+            # 2026-09-30 新增：识别"职业分类代码"格式（中国人寿"被保险人名单"职业类别列）
+            #   "0702033-挖掘铲运和桩\n工机械司机" → "挖掘铲运和桩工机械司机"
+            #   这种格式 _JOB_PATTERN 匹配不到（工种不以 工/员/师/者/人 结尾），
+            #   必须显式匹配"7位数字-"开头的工种代码段。
+            if not occupation_class:
+                occ_code_match = self._OCCUPATION_CODE_PATTERN.search(post_region)
+                if occ_code_match:
+                    candidate = (occ_code_match.group(1) + occ_code_match.group(2)).strip()
+                    if candidate and candidate not in self._JOB_BLACKLIST and candidate not in self._VARIATION_NOISE:
+                        occupation_class = candidate
             for region in [post_region, pre_region]:
                 if job_title:
                     break
@@ -298,6 +376,11 @@ class TableExtractor(BaseExtractor):
                     job_title = candidate
                     break
 
+            # 2026-10-08 兜底：job_title 仍为空时（PEAC 等只有职业类别列无岗位名称列的格式），
+            #   将 occupation_class 退化到 job_title，保持向后兼容。
+            if not job_title and occupation_class:
+                job_title = occupation_class
+
             persons.append(InsuredPerson(
                 name=name,
                 id_number=id_number,
@@ -306,6 +389,7 @@ class TableExtractor(BaseExtractor):
                 start_date=start_date,
                 end_date=end_date,
                 job_title=job_title,
+                occupation_class=occupation_class,
                 birth_date=birth_date,
                 confidence=0.85,
                 modification_type=mod_type_for_person,

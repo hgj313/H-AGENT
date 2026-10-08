@@ -44,6 +44,15 @@ _MASKED_ID_PATTERN = re.compile(r"(\d{6})\*{6,10}(\d{2,4}[\dXx]?)")
 # 严格 8 星（出生日期段），顺序/校验位可见：
 _MASKED_ID_PATTERN_FULL = re.compile(r"(\d{6})\*{8}(\d{3}[\dXx])")
 
+# 2026-10-08 新增：平安产险 PDF 中脱敏格式"51102519741110****"
+# 6位地区码 + 4位年 + 2位月 + 2位日 (共14位) + 4星(顺序+校验位)
+# 同样总长 18 字符，* 占末尾顺序/校验段
+_MASKED_ID_PATTERN_TAIL = re.compile(r"(\d{14})\*{4}")
+# 通用匹配（任一脱敏格式）：6地区+6-10星+0-4位 或 14位+4星
+_MASKED_ID_PATTERN_GENERIC = re.compile(
+    r"(?:\d{6}\*{6,10}\d{0,4}[\dXx]?|\d{14}\*{4})"
+)
+
 
 def normalize_id(raw: str) -> str:
     """统一身份证格式：去空白、X 转大写"""
@@ -70,7 +79,14 @@ def is_valid_chinese_id(raw: str) -> bool:
         prefix = text[:2]
         return prefix in VALID_AREA_PREFIXES
 
-    # 2. 完整格式：6位地区 + YYYYMMDD + 3位顺序 + 1位校验
+    # 2. 2026-10-08 新增：脱敏格式"6地区码+4年+2月+2日+4星"（平安产险）
+    #    例如 "51102519741110****"，总长 18，* 占末尾顺序/校验段
+    m_masked_tail = _MASKED_ID_PATTERN_TAIL.fullmatch(text)
+    if m_masked_tail:
+        prefix = text[:2]
+        return prefix in VALID_AREA_PREFIXES
+
+    # 3. 完整格式：6位地区 + YYYYMMDD + 3位顺序 + 1位校验
     m = _ID_PATTERN.fullmatch(text)
     if not m:
         return False
@@ -87,9 +103,10 @@ def is_valid_chinese_id(raw: str) -> bool:
 
 
 def extract_chinese_id_from_text(text: str) -> list[str]:
-    """从一段文本中提取所有合法的身份证号（支持完整 / 脱敏两种格式）
+    """从一段文本中提取所有合法的身份证号（支持完整 / 脱敏多种格式）
 
     2026-09-24 增强：识别形如 "412702********2432" 的脱敏身份证号。
+    2026-10-08 增强：识别形如 "51102519741110****" 的脱敏身份证号（平安产险）。
     保留为原始字符串（含 * 号），不自动用出生日期补全——
     用户的明确指令："身份证号已加密保护，提取出来的身份证也加密保护即可"，
     不应在入库前反推真实身份证号。
@@ -103,23 +120,28 @@ def extract_chinese_id_from_text(text: str) -> list[str]:
         candidate = m.group(0)
         if is_valid_chinese_id(candidate):
             results.append(normalize_id(candidate))
+
+    # 收集已匹配的完整 ID 位置（用于去重）
+    full_id_positions = {(m.start(), m.end()) for m in _ID_PATTERN.finditer(text)}
+
     # 再匹配脱敏身份证（按位置去重，避免重叠匹配）
+    # 2026-10-08 重构：合并两种脱敏格式（_MASKED_ID_PATTERN + _MASKED_ID_PATTERN_TAIL）
+    masked_matches = list(_MASKED_ID_PATTERN.finditer(text)) + list(_MASKED_ID_PATTERN_TAIL.finditer(text))
+
     if not results:
-        # 完全没匹配到时再尝试脱敏（避免重复扫描）
-        for m in _MASKED_ID_PATTERN.finditer(text):
+        # 完全没匹配到完整 ID 时直接用脱敏
+        for m in masked_matches:
             candidate = m.group(0)
             if is_valid_chinese_id(candidate):
                 results.append(normalize_id(candidate))
     else:
-        # 已经匹配到一些完整 ID，但仍可能在另一段文本里有脱敏 ID
-        # 用脱敏 pattern 找，但只取不与完整 ID 位置重叠的
-        id_positions = {(m.start(), m.end()) for m in _ID_PATTERN.finditer(text)}
-        for m in _MASKED_ID_PATTERN.finditer(text):
+        # 已匹配到一些完整 ID，用脱敏 pattern 找不重叠的
+        for m in masked_matches:
             candidate = m.group(0)
             if not is_valid_chinese_id(candidate):
                 continue
             # 检查是否与已有完整 ID 重叠
-            if any(s <= m.start() < e or s < m.end() <= e for s, e in id_positions):
+            if any(s <= m.start() < e or s < m.end() <= e for s, e in full_id_positions):
                 continue
             results.append(normalize_id(candidate))
     return results
