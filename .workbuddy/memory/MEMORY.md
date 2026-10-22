@@ -1,126 +1,132 @@
-# 保险单识别项目核心记忆（精简版）
+# 保险单识别项目核心记忆
 
 ## 项目目标
 从各种保险单 PDF 提取被保人员清单（姓名/证件号/所属公司/起始时间/起止时间/保险公司/批改类型[增保/减保]）。保单号字段需支持批单→主保单自动关联补全日期。
 
-## 保险单格式速查（精简表）
-| 保险公司 | 清单格式 | 逐人日期 | 用工单位 | 增减保 | 备注 |
+## 保险单格式速查（按保险公司）
+| 保险公司 | 清单格式 | 逐人日期 | 用工单位 | 增减保 | 关键备注 |
 |---|---|---|---|---|---|
-| 利宝-保单 | table(序号/姓名/证件号/工种/用工单位) | ❌整体 | ✅列 | 纯增 | |
-| 利宝-短期(1-3月) | table + 单"生效日期"列 | ❌整体(易触发 post_region 跨行 bug) | ✅列 | 纯增 | 修复:截断到下个身份证号前 |
-| 利宝-批单(普通) | inline | ❌批单生效日 | ✅行内 | 纯增 | 无逐人日期→主保单期间补全 |
-| 利宝-BD格式 | 公司名_保单号_BD.pdf | ✅批改日 | ✅ | 增/减 | filename_parser 正则 |
-| 太保-明细表 | table(序号/姓名/证件号/岗位/起期/止期) | ✅ | ❌ | 纯增 | |
-| 太保-人员清单 | table(无序号/无日期,用工=投保人) | ❌ | ❌ | 纯增 | |
-| 华农-保单 | table(方案/姓名/证件号/职业/用工单位) | ❌ | ✅ | 纯增 | |
-| 华农-批单 | inline(证件号:标签) | ✅批改日 | ✅ | 增/删 | |
-| 中国人寿-在保名单 | **block_kv**(每人独立键值对) | ✅逐人 | ✅从「投保人」标签 | 纯增/批=增减替 | BlockKVExtractor(9-17 新增) |
-| 中国人寿-变动清单 | table(双栏:增加+减少) | ✅ | ✅ | 增/减/替 | 「同期增减」减栏无 ID→无法去失效 |
-| **中国人寿财险-电子保单被保险人名单(9-30)** | table(序号/姓名/身份证/**0702033-职业分类代码+工种跨行**/承保方案) | ❌整体 | ❌ | 纯增 | 25 页 PDF→最后一行 post_region 跨页+页脚"签单日期...保险人盖章"误匹配→`_OCCUPATION_CODE_PATTERN`+post_region 截断到 `\n\n` 前 |
-| 国寿(其他) | table(序号/姓名/身份证号/职业类别) | ❌ | ❌ | 纯增 | |
-| 人保关爱保个人 | individual(键值对) | ❌ | ❌ | 纯增 | |
-| 黄河-批单 | table(变动清单) | ✅ | ✅ | 增/删 | |
-| 黄河-扫描件雇主责任险 | table OCR(序号/姓名/身份证/职务/工种/**共同被保险人**/风险等级) | ❌ | ✅"共同被保险人" | 主纯增/批=增 | **全扫描件 OCR**(9-20 新增)。多公司混保单,"工种类"易被误填 company→`_looks_like_company_name` 兜底 |
-| 华安-批单 | table(序号/方案/姓名/证件号/岗位/用工单位/职业等级/起止/批改时间) | ✅ | ✅ | 增/删 | 续保批改模式(P1 全部+P21-22 末尾页新增);用工单位跨行 |
+| 利宝-保单/短期/批单/BD | table / inline | ❌整体 | ✅ | 纯增 | 短期单"生效日期"列易触发 post_region 跨行 bug；BD 文件名 `公司名_保单号_BD.pdf` |
+| 太保(ASHH主/BSHH批) | table | ✅明细表 / ❌人员清单 | 明细❌ 清单=投保人 | 纯增 | 安诚已归太保(9-16 修正) |
+| 华农-保单/批单 | table / inline | ❌ / ✅批改日 | ✅ | 纯增 / 增删 | |
+| 中国人寿-在保名单 | **block_kv** | ✅逐人 | ✅「投保人」标签 | 增/减替 | BlockKVExtractor |
+| 中国人寿-变动清单 | table 双栏 | ✅ | ✅ | 增/减/替 | 「同期增减」减栏无 ID→无法去失效 |
+| 中国人寿财险-电子保单 | table | ❌整体 | ❌ | 纯增 | 25 页；`0702033-挖掘铲运和桩\n工机械司机` 跨行职业代码→`_OCCUPATION_CODE_PATTERN` |
+| 国寿(其他)/人保关爱保个人 | table / individual | ❌ | ❌ | 纯增 | |
+| 黄河-批单 | table 变动清单 | ✅ | ✅ | 增/删 | |
+| 黄河-扫描件雇主责任险 | table OCR | ❌ | ✅"共同被保险人" | 主纯增/批=增 | 全扫描件 OCR；"工种类"易误填 company→`_looks_like_company_name` 兜底 |
+| 华安-批单 | table | ✅ | ✅ | 增/删 | 续保批改(P1 全 + P21-22 末尾页)；用工单位跨行 |
+| 众安在线-非灵工 | table | ✅ | ✅ | 纯增 | 头词"人员名单"(非"清单")；PyMuPDF 拆身份证成两行 |
+| 众安灵工版 | no_list(不记名) | — | — | 总投 | |
+| 北部湾-雇主责任险 | table | ❌整体 | 投保人=被保险人 | 纯增 | 标签"保险单号码"(多"码"字)；职务·工种在 ID **左**，职业分类路径在 ID **右** |
+| 平安产险-雇主安心保-四川 | table | ❌整体 | 投保人=被保险人 | 纯增 | 20 位保单号；职业类别+岗位名称双列；清单在 P4-5 |
+| 平安养老-PEAC | table | ❌整体 | 投保人=被保险人 | 增/删 | 期间是"保险起期(北京时间)+保险止期"两条独立字段 |
+| 阳光保险-HGC | table + inline 批单 | ❌整体/❌批单生效日 | 投保人=被保险人 | 增/减 | 批单用英语标签 `End.NO.<batch>`/`PolicyNO.<main>`；工种带中文括号后缀 |
+| 阳光保险《变更被保人》 | inline | ❌批单生效日 | 投保人=被保险人 | 1减+1增 | `姓名由X变更为Y,证件号码由A变更为B` → `_extract_change` |
+| 中国大地财产保险-PZFZ | table | ❌整体 | 投保人=被保险人 | 纯增 | 9 页(9=雇员清单)；销售单位=中介被黑名单跳过；身份证跨行 |
+| 申能财产保险 | table | ❌整体 | 投保人=被保险人 | 纯增 | 11 页(2-3=雇员清单，4/10/11=条款含"注册号"假 ID)；期间"自**北京时间**…起至…止" |
 | 平安-投保单 | no_list | — | — | — | 仅条款 |
-| 安诚(ASHH) | table(投保人名称 空格分隔) | ❌ | 投保人 | 纯增 | ASHH=主,BSHH=批→均属太保(9-16 修正) |
-| 众安在线-非灵工 | table(序号/姓名/证件号/职业代码/方案/实际用人单位/起止/保费) | ✅ | ✅ | 纯增 | 头词"人员名单"(非"人员清单");PyMuPDF 拆身份证成两行→`re.sub` 跨行拼接 |
-| 众安灵工版 | no_list(不记名/总人数) | — | — | 总投 | |
-| 北部湾-雇主责任险(9-22) | table(序号/雇员姓名/性别/年龄/身份证号码/职务·工种/是否投保工伤保险/是否高空作业/方案号/**备注=职业分类路径**) | ❌整体 | 投保人=被保险人 | 纯增 | 标签"保险单号码"(多"码"字);日期"2026 年 10 月 01 日"带空格;职务·工种列在 ID **左**(pre_region),备注"建筑工程-建筑公司-油漆工"在 ID **右**(post_region)→"建筑工"误匹配排除 |
-| **平安养老-PEAC(9-24)** | table(序号/被保人姓名/**被保人身份证号(脱敏 `412702********2432`)**/职业类别 X 类/**批改类型**) | ❌整体 | 投保人=被保险人 | 增/删 | 整体期间是"保险起期(北京时间)+""保险止期(北京时间)+"两条独立字段(非"自X起至Y止");`id_validator` 加 `_MASKED_ID_PATTERN_FULL` 保留 * 号入库;`_OCCUPATION_CLASS_PATTERN` 提取"六类";同 batch dedup + 表级 `UNIQUE(id_number,policy_number)` 适配 |
-| **阳光保险-HGC(9-28)** | table(序号/姓名/证件类型/证件号码/出生日期/**职业类别(工种带中文括号后缀)**/受益人)+ inline 批单(`被保险人姓名:NAME,证件号码:ID,`) | ❌整体/❌批单生效日 | 投保人=被保险人 | 增/减(强标记白名单) | 号段`HGC`;批单英语标签`End.NO.<batch>`+`PolicyNO.<main>`(与国内常见中文标签不同);工种`水电工（非涉高）`→`_JOB_PATTERN` 加 `(?:（[^）\n]*）)?` 保留括号;条款段"批减"误判→强标记白名单兜底;`_INSURANCE_COMPANY_SUFFIXES` 跳过保险公司抬头;`idx_person_name_id` 错误 UNIQUE INDEX 已删除(同人跨保单合理) |
-| **阳光保险《变更被保人》(10-8)** | inline 批单《变更被保人》`被保险人姓名由X变更为Y,证件号码由A变更为B` | ❌批单生效日 | 投保人=被保险人 | 1 减保+1 增保 | 新格式：姓/证"由...变更为..."成对出现 → `_extract_change` 解析为 old=减保 / new=增保;`_INLINE_MARKERS` 加 `变更为`;**`personnel_extractor_node` 处理 inline marker 但 list_pages 为空时扫描所有页**(单页批单无传统清单页) |
-| **中国大地财产保险-PZFZ(9-28)** | table(序号/姓名/证件类型/**身份证跨行PyMuPDF**/年龄/组别号/职业细类/年工资额/**备注干扰列**/保险起期/保险止期) | ❌整体 | 投保人=被保险人 | 纯增 | 号段`PZFZ`(已加前缀兜底);**销售单位=中介"安澜保险经纪有限公司"被黑名单跳过**;**PyMuPDF 把身份证拆成两行**(510223197311+103531)→`re.sub` 跨行拼接(众安/中国大地都中招);工种`园林绿化工（园内）`括号后缀已支持;9 页结构(1=封面/2=明细/3-4=特别约定/5-7=条款/8=附加条款/9=**雇员清单**) |
-| **平安产险-雇主安心保-四川(10-8)** | table(序号/姓名/证件号码/**职业类别+岗位名称双列**)+ 17 页结构(4-5 页投保雇员清单) | ❌整体 | 投保人=被保险人 | 纯增 | 保单号 20 位数字;产品=雇主安心保-四川(电子保单)/平安雇主责任保险(A 款);**身份证脱敏 14+4 新格式** `51102519741110****`(6地区码+4年+2月+2日+4星,顺序/校验段被遮蔽),`_MASKED_ID_PATTERN_TAIL` + 通用 `(?:\d{6}\*{6,10}\d{0,4}[\dXx]?\|\d{14}\*{4})` 支持;职业类别列"三类职业"+岗位名称列"绿化栽植工"→`_OCCUPATION_CLASS_PATTERN` 命中值存 `occupation_class` 字段,`_JOB_PATTERN` 继续找岗位作为 `job_title`(避免旧的"job_title 立即被吃" bug);**跨行工种合并(4b)占位符保护**:`"三类\n职业"` 临时变 `"三类职业\ue000"` (\ue000=U+E000 私有区字符,绝不出现在 PDF 文本里,不能用 \x00 因 re.sub replacement 会当 regex 转义解析),合并后还原 |
 
 ## 关键识别规则
-- **文件名含"投保单"≠投保申请书**:仅当同时无保单号且无清单页才判 `no_list`。例"逸趣投保单.pdf"实为保险单。
-- **中介公司黑名单**:`广东美保保险经纪`/`保险经纪`/`代理公司`/`保险公估` → 跳到 `parse_policy_filename` 文件名提取。
-- **BD 格式文件名**:`^(.+?)_(\d{16,30})_BD$`。
-- **清单页定位(精确版)**:`_LIST_MARKERS` 命中 → `_is_real_list_page`(表头词+6位数字) → 排除 `_is_clause_page`(条款/附录);续页用 `_is_list_continuation_page`(≥3 个 18 位身份证)作强证据。
-- **`_is_real_list_page` header 收紧(9-22)**:主判据"姓名/雇员姓名";无姓名但含"证件号"且不含"统一社会信用代码"才兜底判清单页。防止北部湾"保险单主页"(含被保险人统一社会信用代码)被误判为清单页。
-- **table_extractor post_region 截断**:截到下个身份证号前,否则 next-person 生效日期被误填为当前 end_date(同一天 bug)。
-- **table_extractor post_region 截断到 `\n\n` 前(9-30,中国人寿财险修复)**:25 页 PDF 拼合后,清单页最后一行人员 post_region 跨越到下一页条款段 → 误匹配页脚"日\n保险人"和条款"中国人"/"能正常工"为 job_title。**`\n\n` 是 PDF 页和页之间的换行分界**,PyMuPDF get_text() 表格内一行接一行是单 `\n`,页和页之间才会有连续 `\n`。这一条规则是通用兜底,不只针对中国人寿。
-- **table_extractor 预处理删中国人寿财险电子保单固定页脚(9-30)**:`签单日期 + 日期 + 保险人盖章` 段(防 start_date 错填);`中国人寿财产保险股份有限公司` 公司抬头(防"中国人"误匹配);`95519` / `40086-95519` / `www.chinalife-p.com.cn` / `网址：` / `第X条`(条款章节标题)。这套规则只针对中国人寿财险;其他公司保单遇到相似页脚格式时按同样思路加。
-- **table_extractor 工种 post 优先 + "建筑工"排除(9-22)**:保持 post_region 优先(利宝/太保/华农工种都在 ID 右);排除"建筑工程"职业分类路径里"建筑工"(`candidate=="建筑工" and 后跟"程"`)。⚠️ 不能改成 pre 优先——pre_region 会混入前一人 post 数据+表头"用工单位",导致利宝第1人误报"计划用工"。
-- **`_OCCUPATION_CODE_PATTERN` 识别 GB/T 6565 职业分类代码格式(9-30)**:`\d{7}-中文\n续行` (中国人寿"被保险人名单"职业类别列) → 拼接成完整工种。`_JOB_PATTERN` 不识别(以"工/员/师/者/人"结尾),需独立模式。例:`0702033-挖掘铲运和桩\n工机械司机` → `挖掘铲运和桩工机械司机`。
-- **批单 inline 格式无逐人日期**:用主保单 start/end_date 兜底补全。
-- **保单号标签兼容"保险单号码"(9-22)**:北部湾用"保险单号码:"(多"码"字),正则用 `保险单号码?` 兼容。
-- **整体期间日期空格兼容(9-22)**:北部湾"2026 年 10 月 01 日"数字间带空格,date_parser 在"年/月/日"两侧加 `\s*`。
-- **`inline_extractor._ID_REGEX` 完整+脱敏双匹配(9-28 修复回归 bug)**:9-24 加脱敏支持时改为 `(\d{6}\*+\d{2,4}[\dXx]?)` 仅匹配脱敏 → 9-24 之后所有 inline 格式批单(利宝/粤灿完整 18 位 ID)0 人提取。修复后:`(\d{17}[\dXx]|\d{6}\*{6,10}\d{2,4}[\dXx]?)`。教训:扩展正则必须写回归测试覆盖旧格式+新格式+混合,防类似回归。回归测试:`tests/test_inline_extractor_id_regex.py`(5/5)。
-- **身份证脱敏 ID 三种格式(10-8)**:**完整 18 位** `\d{17}[\dXx]`;**6+8+4(平安养老 PEAC)** `412702********2432`;**14+4(平安产险,新)** `51102519741110****`。通用正则:`(?:\d{6}\*{6,10}\d{0,4}[\dXx]?|\d{14}\*{4})`。校验时都进 `_MASKED_ID_PATTERN_TAIL` 分支(`is_valid_chinese_id` 仅校验地区码前缀)。**保留 * 号入库,不反推**(用户明确指令)。
-- **`table_extractor` job_title vs occupation_class 分离(10-8)**:旧逻辑把 `_OCCUPATION_CLASS_PATTERN` 命中值立即赋给 job_title,在"职业类别+岗位名称"双列格式(平安产险)下导致岗位名"绿化栽植工"被吞。修复:1) `_OCCUPATION_CLASS_PATTERN` 命中值 → occupation_class 字段;2) 继续尝试 `_JOB_PATTERN` 匹配作为 job_title;3) job_title 空时退化到 occupation_class(兼容 PEAC 只有职业类别列的格式)。⚠️ 同步 `_OCCUPATION_CODE_PATTERN` 也走 occupation_class(中国人寿电子保单 GB/T 6565 代码)。
-- **跨行工种合并(4b)占位符保护(10-8)**:`table_extractor` 的"合并跨行工种"规则会贪婪匹配 `X类职业\n工种` → 错误合并"三类职业绿化栽植工"。修复:4b 之前先把"X类职业"中的"职业"后插入 `\ue000`(U+E000 私有区字符,re.sub replacement 需用 lambda 注入,因为 `\x00` 会被 re.sub 当 regex 转义解析报错);合并规则不跨越 \ue000;还原占位符。位置关键:必须放"职业"之后(不是中间),否则前段"业"+"\n"+后段仍匹配。
-- **服务 kill 工具对比(10-8)**:`Stop-Process -Id <pid> -Force` / PowerShell `taskkill /F /T` 在某些场景返回 exit code 1 但**进程实际未终止**(可能 shell 权限隔离)。**唯一可靠方式**:Python `ctypes.windll.kernel32.TerminateProcess(handle, 1)`。教训:遇到代码改动 reload 不生效时,不要反复调 `/api/agent/reload`,直接 Win32 API 强杀进程让 watchdog 重启。
+- **文件名含"投保单"≠投保申请书**：仅当同时无保单号且无清单页才判 `no_list`。
+- **中介公司黑名单**：`保险经纪`/`代理公司`/`保险公估` → 跳到 `parse_policy_filename`。
+- **清单页定位**：`_LIST_MARKERS` → `_is_real_list_page`(表头词+6位数字) → 排除 `_is_clause_page`；续页 `_is_list_continuation_page`(≥3 个身份证，含脱敏) 作强证据。
+- **`_is_real_list_page` header 收紧**：主判据"姓名/雇员姓名"；无姓名但含"证件号"且不含"统一社会信用代码"才兜底。
+- **table_extractor post_region 双重截断**：① 截到下个身份证号前（防 next-person 日期）；② 截到 `\n\n` 前（**\n\n 是 PDF 页边界**，防跨页抓到页脚/条款当工种）。
+- **table_extractor 工种 post 优先 + "建筑工"排除**：排除"建筑工程"路径里的"建筑工"。⚠️ 不能改 pre 优先（会混入前一人 post 数据 + 表头"用工单位"）。
+- **PyMuPDF 身份证跨行**：常把身份证拆成两行（510223197311+103531）→ `re.sub` 跨行拼接（众安/中国大地/申能都中招）。
+- **保单号标签**：`保险单号码?` 兼容多"码"字。
+- **日期空格**：`2026 年 10 月 01 日` → date_parser 在年/月/日两侧加 `\s*`。
+
+## date_parser 整体期间格式矩阵（关键）
+- 「自X起至Y止」：`自(\d{4})年(\d{1,2})月(\d{1,2})日…起…至…止`（日期间允许任意中文+数字+时间词）
+- 「自北京时间X起至Y止」：⚠️ **"自"与年份之间可能插入时区口径词**（北京时间/当地时间/世界时/标准时）。旧正则要求"自"后紧跟数字 → 申能保单整体期间解析返回 (None,None) → 9 人日期全 NULL。修复：`_TIMEZONE_PREFIX` 可选前缀 + **必配回归测试**（test_date_parser_timezone_prefix.py）。
+- 「保险起期（北京时间）：X 保险止期（北京时间）：Y」：两条独立字段（平安养老）；括号可有可无。
+- block_kv 双字段：「保险合同生效日期/满期日期」（中国人寿在保名单，顺序不固定 → 取 min/max）。
+
+## 身份证脱敏 ID 四种格式
+| 格式 | 样例 | 来源 |
+|---|---|---|
+| 完整 18 位 | `110101199001011234` | 多数保单 |
+| 6+8+4 | `412702********2432` | 平安养老 PEAC |
+| 14+4 | `51102519741110****` | 平安产险 / 申能财险 |
+| 通用正则 | `(?:\d{6}\*{6,10}\d{0,4}[\dXx]?\|\d{14}\*{4})` | inline_extractor / metadata_extractor_node |
+
+- 校验都进 `_MASKED_ID_PATTERN_TAIL` 分支（仅校验地区码前缀）；**保留 * 号入库，不反推**（用户明确指令）。
+- ⚠️ **扩展正则必须写回归测试覆盖旧+新+混合**，否则易回归。两次教训：`inline_extractor._ID_REGEX`（9-24 改脱敏后旧格式全 0 人）、`date_parser._OVERALL_PATTERNS`（9-28 加时区词前要求"自"后紧跟数字）。
+
+## table_extractor 工种字段分离（10-8）
+1. `_OCCUPATION_CLASS_PATTERN` 命中 → `occupation_class` 字段（不再吞掉 job_title）
+2. `_JOB_PATTERN` 继续匹配 → `job_title`（工种带中文括号后缀，如 `水电工（非涉高）`）
+3. `job_title` 空时退化到 `occupation_class`（兼容只有职业类别列的格式）
+- `_OCCUPATION_CODE_PATTERN`（GB/T 6565 七位数字代码）也走 `occupation_class`。
+
+## 跨行工种合并（4b）+ 占位符保护
+规则 `X类职业\n工种` 会被贪婪合并成错误结果（如"三类职业绿化栽植工"）。修复：合并前先把"职业"后插入 `\ue000`（U+E000 私有区字符），合并后还原。
+- ⚠️ 不能用 `\x00`（re.sub replacement 会当 regex 转义解析报错），必须用 lambda 注入。
+- ⚠️ 占位符必须放"职业"**之后**而非中间，否则前段"业"+"\n"+后段仍匹配。
 
 ## 技术方案
-- PDF 解析:PyMuPDF 文字层 + 扫描件 MiniMax-M3 视觉 OCR
-- LangGraph:policy_parser → metadata_extractor → personnel_extractor → validator → output
-- Extractors:table / inline / individual / **block_kv**(中国人寿在保名单) / ocr
-- LLM:MiniMax-M3 (Anthropic协议,H-AGENT/.env)
-- 服务:FastAPI (web_app/server.py :8765) + watchdog (service_watchdog.py) + 一键启动服务.bat
+- PDF：PyMuPDF 文字层 + 扫描件 MiniMax-M3 视觉 OCR
+- LangGraph：policy_parser → metadata_extractor → personnel_extractor → validator → output
+- Extractors：table / inline / individual / block_kv / ocr
+- LLM：MiniMax-M3（Anthropic 协议，H-AGENT/.env）
+- 服务：FastAPI（web_app/server.py :8765）+ service_watchdog.py
 
-## 关键设计/模块
-- **批单→主保单关联(L1+L2+L3)**:
-  - L1 validator `_link_to_main_policy`:读 `working_memory["policy_type"]=="批单"` → 用 `main_policy_number` 精确查主保单表 → 不匹配时按 `_policy_numbers_compatible(批次号, 主保单号)` 前缀兼容(利宝批单 `71XX` 与主保单 `81XX` 第 2 位同 + 第 3-20 位同)
-  - L2 `policy_library._policy_numbers_compatible` 兜底校验
-  - L3 `_process_single_pdf` 上传时主保单缺失/不匹配直接 return error
-- **保单库双表(`policy_library.py`)**:`PolicyRecord` 加 `main_policy_number` + `endorsement_effective_date`;`register()` 按 `policy_type` 分流入 `index_main.json` / `index_batch.json`;`find_main_policy_by_number` 精确匹配主表
-- **`ExtractionResult` 字段透传**:新增 `batch_policy_number` / `main_policy_number` / `policy_type` 三个字段;`personnel_extractor_node` 从 `state.get("working_memory", {})` 读 → 写 ExtractionResult → server.py 收到
-- **`_detect_endorsement(text, file_name)`**:文件名无"批单/BD"时,从 PDF 文本特征("批单号"+"保险单号"同存,或"本次批改"/"批文"/"批单生效日期")判定
+## 关键设计
+- **批单→主保单关联（L1+L2+L3）**：L1 validator `_link_to_main_policy` 用 `main_policy_number` 查主表，不匹配时按 `_policy_numbers_compatible` 前缀兼容（利宝批单 71XX vs 主保单 81XX）；L2 `policy_library` 兜底；L3 上传时主保单缺失直接 return error。
+- **保单库双表**：`policy_library.register()` 按 policy_type 分流 `index_main.json` / `index_batch.json`。
+- **ExtractionResult 字段透传**：`batch_policy_number` / `main_policy_number` / `policy_type` / `endorsement_effective_date`。
+- **公司识别 3 层**：L1 `_COMPANY_PATTERNS` 长关键词优先 → L2 按命中次数加权 → L3 `detect_insurance_company_by_policy_number` 号段兜底（号段=承保机构硬证据，最强）。已注册号段见 `company_extractor._POLICY_NUMBER_PREFIX_TO_COMPANY`（613010104=华安 / 81160=利宝 / 81160&61160=安诚 / ASHH,BSHH,X44,SHBX=太保 / 804147=北部湾 / PEAC=平安养老 / PZFZ=大地 / 6513=申能）。
 
-## Bug 修复要点(按时间倒序,只留核心)
-- **万年县盛美 4 条 NULL 期孤儿批单(9-18,commit b61d325)**:`find_main_policy_by_company` 第一个匹配错回旧保单;`_link_to_main_policy` `main_policy.policy_number != policy_number` 严格相等误判 71/81 不同→拒绝。修复:`find_main_policy_by_company_compatible(company, batch_policy_number)` 按兼容性迭代过滤;严格不等再用 `_policy_numbers_compatible` 二次放行。教训:严格相等不适合 71/81 设计差异(应兼容性前缀)
-- **刘红才(1).pdf 缺日期优化(9-21)**:3-part 优化:① 保单库双表 + UI 双表 + 字段拆分+精确搜索;② 批单上传时自动查主保单补全日期(检测批单不只看文件名,也看文本特征);③ 刘红才入库时因 `upsert_insurance_personnel` 的 WHERE 子句 `end_date >= 旧 end_date` 在旧 end_date=NULL 时所有比较→NULL→rowcount=0 → 修复:包 `COALESCE(end_date, '1900-01-01')`。**3 层防御已经到位**:L1/L2/L3
-- **中国人寿 block_kv + 变动清单双格式(9-17)**:`extractors/block_kv_extractor.py` 新建;table_extractor 加 pre_region 日期 + per-row mod_type(`同期增减/替换/置换`→增保);OCR prompt 加 `job_title`+`occupation_class`;`pymupdf_parser._detect_insurance_company` 改按命中次数加权(防"中国人寿财产"包含"中国人寿"重复计数) + 长关键词优先;品牌名 PDF 只写"国寿"→keywords 双轨。教训:① 跨行字段别用 `\S+`,必须 lookahead 捕获下个字段标签;② server.py `from ... import` reload 不更新→需 kill watchdog 重启 server
-- **metadata_extractor logger NameError + BSHH 号段映射错(9-16)**:`BSHH` 实际是太保批单前缀,不是安诚。修复:补 `import logging` + 号段映射 ASHH→太保主/BSHH→太保批
-- **段小平 insurance_company 误识"黄河"(9-16)**:`_COMPANY_PATTERNS` 缺"华安"+首次命中无加权+无号段映射。3 层修复:L1 加华安 pattern 顺序长关键词优先 / L2 按命中次数加权 / L3 `tools/company_extractor.detect_insurance_company_by_policy_number` 号段兜底(号段=承保机构发行的硬证据,最强)
-- **谭建芬反序+批单号错+减保跨保单+SQL 参数错位(9-16,4 bug)**:①反序:批单生效日未透传→降级用主保单起期→end<start;②批单号全错 81:`_extract_policy_number` 总匹配"保险单号";③`deactivate_insurance(ids)` 按 id 全表改,跨保单误改;④**参数顺序错位隐性炸弹**:`where_sql` 含 `policy_number=?` 但 params 顺序 `[end_date, *params, *id_numbers]` 拼错位置,SQLite 静默返回 rowcount=0。修复:db 加 `policy_number` 参数 + 改 params 顺序为 `[end_date, *id_numbers, *params]`。教训:SQLite 静默成功 0 行调试必须用 `db.get_connection()` 复现 + 对照 rowcount
-- **status 脏数据→误判未参保→误发邮件(9-16)**:段小平等 7 条 status='增保' → `status='正常'` 严格等值漏匹配 → 连续 3 天误发"未参保"邮件。3 层修复:L1 `db.normalize_person_status()` 白名单归一(白名单原样→批改类型映射→未知值按 end_date 推断);L2 `_parse_personnel_excel` 调用同样归一;L3 `get_active_insurance_by_id` 改排除式 `(status IS NULL OR status='' OR status!='失效')`
-- **deactivate_insurance 不更新 end_date(9-15)**:`deactivate_insurance()` 只更新 status 不动 end_date;validator fallback 把 overall 填充为主保单起止日。修复:加 `end_date` 参数 + `_ENDORSEMENT_EFFECTIVE_PATTERN = r"自\s*(\d{4})年(\d{1,2})月(\d{1,2})日\s*零时起\s*生效"`
-- **大型保单跨页漏人(>100人,9-14)**:续页强制表头词,大型清单常省略。修复:`_is_list_continuation_page()` 用「≥3 个 18 位身份证」作强证据
-- **table_extractor 起止同天(9-14)**:post_region 跨入下一个人,`dates[1]` 取到 next 人的生效日期。修复:截到下个身份证号前
+## 数据库与去重
+- 表 `insurance_personnel`；判重键 `(name, id_number)` + partial unique index `WHERE id_number != ''`
+- ⚠️ `idx_person_name_id` UNIQUE INDEX 已删除（同人跨保单合理）。
+- **upsert 保险型覆盖规则**：`WHERE (end_date='' OR excluded.end_date='' OR excluded.end_date >= COALESCE(insurance_personnel.end_date,'1900-01-01'))` — 空 end_date 视为可被任何新值覆盖。
+- **status 白名单**：`db.normalize_person_status()`（正常/失效/增保/减保/替换…），未知值按 end_date 推断；否则会误判未参保 → 误发邮件。
+- `deactivate_insurance(ids, end_date, main_policy_number)` — 加参数时必须 grep 所有调用点。
 
-## ERP / MQ / 短信 关键开关与陷阱
-- **page_size 加大**:fetch_all_punch_data=500、fetch_project_orders=500、fetch_user_list=1000
-- **MQ bridge**:topic=`JS_PROD_MQ`、group=`insurance-automation`;HTTP endpoint 必须 `http://${INSTANCE_ID}.mqrest.cn-<region>-public.aliyuncs.com:80`(`-public` 后缀必备);错误码 10060=TCP 拦、SignatureDoesNotMatch=AK/SK、InvalidHost=host 不带 http://、AccessDenied=group 未建
-- **双 dedup**:`last_daily_check.punch_date`(force 可绕过)+ `daily_sms_sent_today.phones`(force 不可绕过,per-phone)
-- **通知发送安全规则**:`/api/summary/trigger?force=true` / `/api/reminder/check-expiry` / `/api/daily-check?force=true` / 改 `notification_test_mode` 前必须问用户;唯一例外=scheduler 自动定时任务
+## ERP / MQ / 短信
+- page_size：fetch_all_punch_data=500、fetch_project_orders=500、fetch_user_list=1000
+- MQ：topic=`JS_PROD_MQ`、group=`insurance-automation`；endpoint 必须带 `-public` 后缀；group 与 ERP 隔离（GID_INSURANCE_AGENT_PROCESS）
+- **双 dedup**：`last_daily_check.punch_date`（force 可绕）+ `daily_sms_sent_today.phones`（force 不可绕）
+- ⚠️ **通知发送安全规则**：`/api/summary/trigger?force=true`、`/api/reminder/check-expiry`、`/api/daily-check?force=true`、改 `notification_test_mode` 前**必须问用户**；唯一例外=scheduler 定时任务。
+- 生产/测试双开关勿混淆：A=`punch_table_for_sms`（数据来源），B=`notification_test_mode`（通知路由）。
 
 ## 服务稳定性
-- 双击「一键启动服务.bat」启动;agent 启动的进程会被会话回收
-- watchdog 崩溃自重启;重启不再每启动发邮件(last_run_date 持久化)
-- bridge 与 server 生命周期联动
-- 本地常驻:计划任务 `InsuranceAgentWatchdog`(SYSTEM 身份、开机自启)跑 `pythonw service_watchdog.py`
-- 8765 **仅本机 127.0.0.1 监听**,无公网地址、无 Cloudflare Tunnel
+- 8765 **仅本机 127.0.0.1 监听**，无公网
+- 本地常驻：计划任务 `InsuranceAgentWatchdog`（SYSTEM 身份开机自启）跑 `pythonw service_watchdog.py`
+- ⚠️ **async handler 里禁止同步调耗时操作**（upload_files / daily_check / sync_punch）→ 用 `await asyncio.to_thread(...)`，否则阻塞 uvicorn 事件循环 → watchdog 判假死 → 无限重启循环
+- watchdog `HEALTH_FAIL_THRESHOLD=3`（连续 3 次约 45s 才重启）
 
-## 数据表 生产/测试 切换(两种独立开关,勿混淆)
-- 开关 A(数据来源):`punch_table_for_sms` → punch_records=生产 / punch_records_test=测试
-- 开关 B(通知路由):`notification_test_mode` → 真实经理 vs 测试联系人
-- 白名单:punch_records / punch_records_test / punch_records_backup_*,防 SQL 注入
-- 切回:删 `punch_table_for_sms` 字段,重启服务即生效
+## 热重载与进程管理
+- 节点代码（nodes/*）：`POST /api/agent/reload` 用 importlib.reload 重载，无需重启
+- ⚠️ **server.py 自身改动必须重启服务**；叶子层（pymupdf_parser/company_extractor/tools/filename_parser/date_parser）需在 `_reload_graph_dependencies` 注册
+- ⚠️ **模块级 `from X import Y` reload 后仍指向旧 class object** → 必须强杀进程让 watchdog 重启
+- ⚠️ **杀进程唯一可靠方式**：`ctypes.windll.kernel32.TerminateProcess(handle, 1)`。`Stop-Process` / `taskkill /F /T` 某些场景返回 exit 1 但进程未终止。
 
-## 保单人员去重 + upsert
-- 判重键 `(name, id_number)` + partial unique index `WHERE id_number != ''`
-- ⚠️ **upsert 保险型覆盖规则**:`ON CONFLICT ... DO UPDATE SET ... WHERE (insurance_personnel.end_date = '' OR excluded.end_date = '' OR excluded.end_date >= COALESCE(insurance_personnel.end_date, '1900-01-01'))`(9-21 修复 NULL 兼容);empty end_date 视为可被任何新值覆盖
+## Windows .bat 踩坑
+- 用户系统 GBK 代码页：bat 写中文必须 ASCII（rem 注释除外）
+- 检查换行用 Python 二进制：`open(p,'rb').read().count(b'\r\n')`
+- UAC 自提权：`net session >nul 2>&1` 失败 → `Start-Process -Verb RunAs`；mshta vbscript 自提权不可靠（沙箱无桌面会永久挂起）
+- 端口锁 PID 复用陷阱：`QueryFullProcessImageNameW` 验证 PID 指向 `\python.exe`/`\pythonw.exe`
+- 鉴权用客户端 IP（`_client_ip`）别用 Host 头
 
-## Windows .bat 脚本踩坑
-- 用户系统 GBK 代码页:bat 写中文必须 ASCII(rem 注释除外)
-- 检查换行用 Python 二进制:`open(p,'rb').read().count(b'\r\n')`,不要用 grep/git-bash
-- UAC 自提权:`net session >nul 2>&1` 失败 → `powershell -Command "Start-Process -FilePath '%~f0' -Verb RunAs"`
-- mshta vbscript 自提权不可靠:UAC 拒绝一闪而关,沙箱无桌面永久挂起 → 让用户右键管理员运行
-- 端口锁 PID 复用陷阱:`QueryFullProcessImageNameW` 验证 PID 指向 `\python.exe`/`\pythonw.exe`,否则视为死锁
-- 重启 SYSTEM 服务用 ctypes:`OpenProcess(PROCESS_TERMINATE=0x0001) + TerminateProcess(h, 0)` 强杀,taskkill 大概率"拒绝访问"
-- 鉴权用客户端 IP 别用 Host 头:`_client_ip(request)` 走 CF-Connecting-IP → X-Forwarded-For → socket 地址,本机+RFC1918 私有网段全放行
+## 测试环境
+- 可用解释器：项目根 `.venv/Scripts/python.exe`（有 pytest + pymupdf）；`H-AGENT/.venv` **无 pytest**，系统 python 也无
+- 保险测试集：`tests/test_{shenyong,date_parser_timezone_prefix,dadi,change_endorsement,pingan_property}_*.py` + `test_inline_extractor_id_regex` + `test_yangguang_extraction`（27 passed）
+- ⚠️ **脚本式测试不要在模块顶层 `sys.exit()`** → pytest 收集时 INTERNALERROR。必须包 `if __name__ == "__main__":`
+- ⚠️ **写提取测试只喂 list_pages 文本，不要喂全文** → 条款页"注册号：6230912026..."等 18 位数字会被当身份证（申能保单实测多出 3 个 name='注册号' 垃圾人）
+- 已知历史失败（与提取无关，缺模块）：`tests/test_llm_model`、`test_p6*_oss*`、`test_phase_b_memory`、`test_p5_recursive_tool_chain`
 
-## 代码热重载 + 必重启边界
-- 节点代码(nodes/*):`GET /api/agent/info` 看版本 → `POST /api/agent/reload` 用 importlib.reload 重载关键模块,无需重启
-- ⚠️ **server.py 自身改动必须重启服务**(reload 不会 reload server.py);同理 utils/ 叶子层(pymupdf_parser/company_extractor/tools/filename_parser)需在 `_reload_graph_dependencies` 注册
-- 杀进程用 `ctypes.windll.kernel32.TerminateProcess`(psutil.kill Windows 不可靠)
-- 模块级 `from X import Y` reload 后仍指向旧 class object → 必须 kill watchdog 启动的 server → watchdog 自动重启
-
-## 服务假死 + 同步阻塞（10-08 修复）
-- ⚠️ **async handler 里同步调耗时操作会阻塞 uvicorn 事件循环**：`upload_files`(LLM识别/OCR)、`daily_check`(ERP拉取30s+发邮件)、`sync_punch`(ERP同步) 都曾在 `async def` 里同步调用 → /api/health 无响应 → watchdog 判定"假死"强杀 → 重启期间 health 又失败 → **无限假死循环**。修复：`await asyncio.to_thread(func, ...)` 丢线程池。
-- ⚠️ **watchdog 假死判定不能单次失败就重启**：`service_watchdog.py` 加 `HEALTH_FAIL_THRESHOLD=3`（连续 3 次约 45s 才重启），否则长请求期间被误杀。
-- ⚠️ **改函数签名必须同步函数体+调用方**：`deactivate_insurance` 函数体有 `elif main_policy_number:` 分支但签名漏了该参数，server.py 调用传 `main_policy_number=` → 所有减保批单入库 `TypeError`。教训：加参数时 grep 所有调用点。
-- 诊断假死循环方法：`tail watchdog.log` 看"假死→重启"频率；用 `H-AGENT/.venv/Scripts/python.exe -c "import requests; requests.get(health)"` 连测 3 次，若出现 ConnectionReset(10054)/ConnectionRefused(10061)/200 交替即证明服务在反复重启。
+## Bug 修复要点（只留有复用价值的）
+- **参数顺序错位隐性炸弹（9-16）**：SQL `where_sql` 含 `policy_number=?` 但 params 拼错位置，SQLite **静默返回 rowcount=0**。调试必须用 `db.get_connection()` 复现 + 打印 rowcount。
+- **续页漏人（>100人，9-14）**：大型清单续页常省略表头 → `_is_list_continuation_page` 用「≥3 个身份证」作强证据。
+- **起止同天（9-14）**：post_region 跨入下一个人 → 截到下个身份证号前。
+- **段小平 company 误识"黄河"（9-16）**：`华安` 缺 pattern + 首次命中无加权 → 3 层修复（补 pattern / 加权 / 号段兜底）。
+- **status 脏数据误发邮件（9-16）**：`status='增保'` 未归一 → 连续 3 天误发"未参保"。修复：`normalize_person_status` 白名单 + `get_active_insurance_by_id` 排除式判断。
+- **NULL 期孤儿批单（9-18）**：`find_main_policy_by_company` 第一个匹配错回旧保单 → 改 `find_main_policy_by_company_compatible` 按兼容性过滤。
+- **脱敏 ID 校验（9-24 / 10-8）**：平安养老 6+8+4、平安产险/申能 14+4 三种格式统一进 `_MASKED_ID_PATTERN_TAIL` 分支。
+- **job_title 被 occupation_class 吞掉（10-8）**：双列格式下岗位名丢失 → 拆两个字段。
+- **跨行工种合并误吞（10-8）**：`X类职业\n工种` 贪婪合并 → `\ue000` 占位符保护。
+- **整体期间时区词致日期全 NULL（9-28）**：`自北京时间2026年...` → `_TIMEZONE_PREFIX` 可选前缀。

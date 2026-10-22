@@ -11,7 +11,7 @@ PDF: 电子保单_成都林盛鑫屹园林绿化工程有限公司_小微_126524
 5. 保单号 20 位数字（`12652416800201450969`），保险公司识别为"中国平安"
 
 修复点：
-1. id_validator.py 新增 _MASKED_ID_PATTERN_TAIL = (\d{14})\*{4} 支持 14+4 脱敏
+1. id_validator.py 新增 _MASKED_ID_PATTERN_TAIL（14 位数字 + 4 个星号）支持 14+4 脱敏
 2. metadata_extractor_node.py _is_list_continuation_page 正则扩展支持 14+4 续页识别
 3. inline_extractor.py _ID_REGEX 扩展支持 14+4
 4. table_extractor.py job_title 提取逻辑改造：

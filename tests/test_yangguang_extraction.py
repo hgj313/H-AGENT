@@ -73,4 +73,6 @@ for desc, text, fmt, policy_holder, expected_persons in cases:
 
 print()
 print(f"通过: {passed}/{len(cases)} | 失败: {failed}/{len(cases)}")
-sys.exit(0 if failed == 0 else 1)
+# 2026-09-28：加 __name__ 守卫，避免 pytest 收集时把模块顶层 sys.exit 当成 SystemExit 崩溃
+if __name__ == "__main__":
+    sys.exit(0 if failed == 0 else 1)
