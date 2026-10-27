@@ -14,6 +14,7 @@ PDF 文件空间: data/policy_pdfs/
 
 import logging
 import os
+import re
 import sqlite3
 import threading
 from datetime import datetime
@@ -168,7 +169,11 @@ def init_db() -> None:
                     source_file TEXT,                  -- 来源PDF文件
                     status TEXT DEFAULT '正常',        -- 状态：正常 / 失效
                     created_at TEXT,
-                    UNIQUE(id_number, policy_number)
+                    -- 2026-10-27：唯一键加入 name。
+                    -- 脱敏 ID 精度不足时不同人会撞车（张超与蔡明明都是 34**************18），
+                    -- 只用 (id_number, policy_number) 会让后者覆盖前者 → 人员静默丢失。
+                    -- 含 name 后：同人同保单仍唯一，同人跨保单仍允许，撞车不同人可共存。
+                    UNIQUE(name, id_number, policy_number)
                 )
             """)
 
@@ -196,6 +201,12 @@ def init_db() -> None:
             #   2026-09-28 阳光保单入库触发 IntegrityError('UNIQUE constraint failed: name, id_number')
             #   即同人跨保单误判。
             _migrate_drop_person_name_id_index(conn)
+            # 迁移：insurance_personnel 唯一键加入 name（2026-10-27）
+            #   脱敏 ID 精度不足时不同人会撞车（如张超与蔡明明都是 34**************18），
+            #   旧键 (id_number, policy_number) 会让后者覆盖前者 → 人员静默丢失。
+            #   新键 (name, id_number, policy_number) 既保持"同人同保单唯一"，
+            #   又允许撞车的不同人共存；同人跨保单仍允许（含 policy_number）。
+            _migrate_personnel_unique_key(conn)
             logger.info("数据库初始化完成: %s", DB_PATH)
         finally:
             conn.close()
@@ -227,7 +238,7 @@ def _migrate_insurance_personnel(conn: sqlite3.Connection) -> None:
                 source_file TEXT,
                 status TEXT DEFAULT '正常',
                 created_at TEXT,
-                UNIQUE(id_number, policy_number)
+                UNIQUE(name, id_number, policy_number)
             )
         """)
 
@@ -449,11 +460,141 @@ def _migrate_drop_person_name_id_index(conn: sqlite3.Connection) -> None:
     logger.info("idx_person_name_id 已迁移：UNIQUE → 普通 INDEX")
 
 
+def _migrate_personnel_unique_key(conn: sqlite3.Connection) -> None:
+    """迁移：insurance_personnel 唯一键 (id_number, policy_number) → (name, id_number, policy_number)
+
+    2026-10-27 新增。
+
+    **背景**：脱敏身份证只暴露极少数字符（平安产险互联网版格式
+    "41**************16" 仅可见 4 位数字），不同人极容易撞车。
+    实测案例：平安产险"平安放心意外尊享方案(互联网版)"同一保单内
+        张超   → 34**************18
+        蔡明明 → 34**************18
+    旧唯一键 (id_number, policy_number) 无法区分二人 →
+    INSERT ... ON CONFLICT(id_number, policy_number) DO UPDATE 让后写入的
+    蔡明明覆盖张超 → 5 人只入库 4 人（人员静默丢失！）。
+
+    **为什么必须加 name**：
+    - 同一人 + 同一脱敏 ID + 同一保单 → 仍是同一条（name 相同，约束仍生效）
+    - 同一人 + 不同保单 → 仍允许（约束含 policy_number）
+    - 不同人 + 撞车脱敏 ID + 同一保单 → 现在可以共存（name 不同）✅
+    业务规则"同一 (name, id_number) 视为同一人"（见 upsert_insurance_personnel 文档）
+    本来就要求 name 参与判重，旧表级唯一键与该规则不一致。
+
+    **迁移方式**：SQLite 不支持直接改 UNIQUE 约束，需重建表。
+    幂等：检测到已是新键则跳过。数据全量复制，不丢行。
+    """
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(insurance_personnel)")
+    rows = cursor.fetchall()
+    if not rows:
+        return
+
+    cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='insurance_personnel'")
+    row = cursor.fetchone()
+    if not row or not row[0]:
+        return
+    create_sql = row[0]
+
+    # 注意：先去掉所有空白再比对，否则 "UNIQUE(id_number, policy_number)" 里的
+    # 空格会导致 replace(" ", "") 后匹配不上（迁移静默跳过）
+    normalized_sql = "".join(create_sql.split())
+    has_old = "UNIQUE(id_number,policy_number)" in normalized_sql
+    has_new = "UNIQUE(name,id_number,policy_number)" in normalized_sql
+    if has_new or not has_old:
+        # 已是新键，或结构与预期不符 → 不动（避免误伤）
+        return
+
+    logger.info("迁移 insurance_personnel 唯一键: (id_number, policy_number) → (name, id_number, policy_number)")
+
+    # 1. 备份表名
+    backup = "insurance_personnel_old_uk"
+    cursor.execute(f"DROP TABLE IF EXISTS {backup}")
+    cursor.execute("ALTER TABLE insurance_personnel RENAME TO insurance_personnel_old_uk")
+
+    # 2. 按新键重建表（字段与原表一致）
+    cursor.execute("""
+        CREATE TABLE insurance_personnel (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT,
+            id_number TEXT,
+            id_type TEXT DEFAULT '身份证',
+            company TEXT,
+            start_date TEXT,
+            end_date TEXT,
+            job_title TEXT,
+            birth_date TEXT,
+            insurance_company TEXT,
+            policy_number TEXT,
+            source_file TEXT,
+            status TEXT DEFAULT '正常',
+            created_at TEXT,
+            UNIQUE(name, id_number, policy_number)
+        )
+    """)
+
+    # 3. 全量复制数据
+    cursor.execute("""
+        INSERT INTO insurance_personnel (
+            id, name, id_number, id_type, company, start_date, end_date,
+            job_title, birth_date, insurance_company, policy_number,
+            source_file, status, created_at
+        )
+        SELECT id, name, id_number, id_type, company, start_date, end_date,
+            job_title, birth_date, insurance_company, policy_number,
+            source_file, status, created_at
+        FROM insurance_personnel_old_uk
+    """)
+
+    # 4. 删除旧表 + 重建索引
+    cursor.execute(f"DROP TABLE {backup}")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ins_idnum ON insurance_personnel(id_number)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_person_name_id ON insurance_personnel(name, id_number)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ins_policy ON insurance_personnel(policy_number)")
+    conn.commit()
+    logger.info("insurance_personnel 唯一键迁移完成")
+
+
+# punchTime 合法值：纯数字时间戳（10 位秒 / 13 位毫秒）
+_PUNCH_TIME_TS_RE = re.compile(r"^\d{10,13}$")
+_PUNCH_TIME_STD_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2})(:\d{2})?$")
+
+
+def normalize_punch_time(raw) -> str:
+    """把 ERP punchTime 统一归一化为 'YYYY-MM-DD HH:MM:SS'。
+
+    2026-10-10 起 ERP 实时消息体的 punchTime 从 "2026-10-10 09:16" 字符串
+    变成了毫秒时间戳（如 1791594971000），导致入库存时间戳、飞书表格显示
+    一串数字。这里统一转换，入库 / MQ 推送 / 飞书推送三层共用。
+    无法识别时原样返回（不吞数据）。
+    """
+    if raw in (None, ""):
+        return ""
+    s = str(raw).strip()
+    if not s:
+        return ""
+    # 1) 纯数字时间戳：13 位=毫秒，10 位=秒
+    if _PUNCH_TIME_TS_RE.match(s):
+        ts = int(s)
+        if len(s) >= 13:
+            ts = ts / 1000.0  # 毫秒 → 秒
+        try:
+            return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+        except (ValueError, OSError, OverflowError):
+            return s
+    # 2) 已是标准格式（带/不带秒）
+    m = _PUNCH_TIME_STD_RE.match(s)
+    if m:
+        return s if m.group(2) else s + ":00"
+    # 3) 其他格式原样返回，交给下游（feishu formatter）处理
+    return s
+
+
 def _pick_punch_time(r: dict) -> str:
     for k in _PUNCH_TIME_KEYS:
         v = r.get(k)
         if v not in (None, ""):
-            return str(v)
+            return normalize_punch_time(v)
     return ""
 
 
@@ -749,8 +890,7 @@ def upsert_insurance_personnel(persons: list[dict]) -> int:
                         job_title, birth_date, insurance_company, policy_number,
                         source_file, status, created_at
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id_number, policy_number) DO UPDATE SET
-                        name = excluded.name,
+                    ON CONFLICT(name, id_number, policy_number) DO UPDATE SET
                         company = excluded.company,
                         start_date = excluded.start_date,
                         end_date = excluded.end_date,

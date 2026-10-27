@@ -18,6 +18,7 @@ import re
 from insurance_agent.domain import InsuredPerson
 from insurance_agent.tools import (
     extract_chinese_id_from_text,
+    extract_chinese_id_with_positions,
     extract_names_near,
     extract_dates_near,
     extract_company_name,
@@ -204,13 +205,17 @@ class TableExtractor(BaseExtractor):
         list_text = re.sub(r'第[一二三四五六七八九十]条[^\n]*', '', list_text)
 
         # 1. 定位所有合法身份证号
-        valid_ids = extract_chinese_id_from_text(list_text)
-        if not valid_ids:
+        # 2026-10-27 关键修复：改用带位置的版本。
+        # 脱敏精度不足时不同人的脱敏 ID 可能完全相同（平安产险互联网版：
+        # 张超与蔡明明都是 "34**************18"），只按 ID 列表 + find() 会
+        # 只定位到首次出现的位置 → 漏掉第 5 人且名字错配。必须按出现位置逐个遍历。
+        id_with_pos = extract_chinese_id_with_positions(list_text)
+        if not id_with_pos:
             return persons
+        valid_ids = [i for i, _ in id_with_pos]
 
-        # 2. 找到每个身份证号在 list_text 中的位置
-        for id_number in valid_ids:
-            id_pos = list_text.find(id_number)
+        # 2. 按出现位置逐个处理每个身份证号
+        for id_number, id_pos in id_with_pos:
             if id_pos < 0:
                 continue
 

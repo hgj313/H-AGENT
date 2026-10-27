@@ -13,6 +13,41 @@ _COMPANY_PATTERN = re.compile(
     r"([\u4e00-\u9fff]+(?:有限公司|集团(?:公司)?|股份有限公司|责任公司|公司))"
 )
 
+# 2026-10-27 新增：表头词剥离。
+# PDF 表格中"列标题"与"列内容"常被 PyMuPDF 拼成同一行，导致公司名前粘连表头词。
+# 例：平安产险"平安放心意外尊享方案(互联网版)"投保人信息区：
+#     "投保人姓名/证件类型/证件号码/手机号码" 是表头，
+#     下一行才是 "浙江珩瑞装饰工程有限公司"（投保人名）
+#   → 通用正则 [\u4e00-\u9fff]+ 贪婪匹配出 "手机号码浙江珩瑞装饰工程有限公司"
+# 修法：匹配到公司名后，剥掉开头连续的已知表头词。
+_TABLE_HEADER_PREFIXES = (
+    "手机号码", "手机号", "联系电话", "电话", "证件类型", "证件号码",
+    "统一社会信用代码", "投保人姓名", "投保人名称", "被保险人姓名",
+    "受益人", "购买份数", "方案名称", "其他信息", "序号",
+    "证件类型及号码", "名称", "地址", "性别", "国籍",
+)
+
+
+def _strip_table_header_prefix(name: str) -> str:
+    """剥离公司名开头粘连的表头词
+
+    2026-10-27：平安产险互联网版格式实测
+        原始匹配: "手机号码浙江珩瑞装饰工程有限公司"
+        剥离后:   "浙江珩瑞装饰工程有限公司"
+    反复剥离，直到前缀不再匹配（可能粘连多个表头词）。
+    """
+    if not name:
+        return name
+    changed = True
+    while changed:
+        changed = False
+        for prefix in _TABLE_HEADER_PREFIXES:
+            if name.startswith(prefix) and len(name) > len(prefix):
+                name = name[len(prefix):]
+                changed = True
+                break
+    return name
+
 # 标签后提取（如 "投保人名称：XXX" / "投保人名称 XXX"）
 # 说明：
 #   - 大多数保单标签后可能是冒号或空格（如"投保人名称 杭州班王..."），故允许 [：:\s]*。
@@ -91,7 +126,8 @@ def extract_company_name(text: str) -> Optional[str]:
         return None
 
     for m in _COMPANY_PATTERN.finditer(text):
-        name = m.group(1)
+        # 2026-10-27：剥离开头粘连的表头词（"手机号码浙江珩瑞装饰工程有限公司"）
+        name = _strip_table_header_prefix(m.group(1))
         if _is_valid_company_name(name):
             return name
     return None
@@ -109,7 +145,8 @@ def extract_company_after_label(text: str) -> Optional[str]:
     for pattern in _LABEL_PATTERNS:
         m = pattern.search(text)
         if m:
-            name = m.group(1).strip()
+            # 2026-10-27：标签后同样可能粘连表头词
+            name = _strip_table_header_prefix(m.group(1).strip())
             if _is_intermediary_company(name):
                 # 跳过中介公司，继续匹配下一个标签
                 continue

@@ -33,6 +33,11 @@ _LIST_MARKERS = [
     # 众安在线等新格式：人员名单表 / 雇员明细表 / 雇员信息表 / 人员信息表
     "人员名单", "雇员明细表", "雇员明细", "人员明细",
     "雇员信息表", "人员信息表", "人员清单表", "雇员清单表",
+    # 2026-10-27 新增：平安产险"平安放心意外尊享方案(互联网版)"格式
+    # 章节标题为 "2、被保险人信息"，表头：序号/被保险人姓名/证件类型/证件号码/
+    # 方案名称/购买份数/其他信息/受益人（无"名单/清单"字样，故需显式登记）
+    # ⚠️ 不要加"投保人信息"——那是投保人章节，会把无清单的保单误判为有清单
+    "被保险人信息", "被保险人信息表",
 ]
 # 行内格式标记
 # 2026-09-28 增强：兼容阳光保险批单 "被保险人姓名:杨仕亮,证件号码:..." 格式
@@ -410,10 +415,11 @@ class MetadataExtractorNode:
         joined = re.sub(r'(\d{3,})\n(\d|[Xx])', r'\1\2', text)
         # 完整 18 位身份证
         full_ids = re.findall(r'\d{17}[\dXx]', joined)
-        # 脱敏 18 位身份证（两种格式：6位+6~10星+0~4位 或 14位+4星）
+        # 脱敏 18 位身份证（三种格式：6位+6~10星+0~4位 / 14位+4星 / 2位+14星+2位）
         # 2026-10-08 新增：平安产险格式 14+4（"51102519741110****"，尾部星号）
+        # 2026-10-27 新增：平安产险互联网版 2+14+2（"41**************16"，末位可为 X）
         masked_ids = re.findall(
-            r'(?:\d{6}\*{6,10}\d{0,4}[\dXx]?|\d{14}\*{4})', joined
+            r'(?:\d{6}\*{6,10}\d{0,4}[\dXx]?|\d{14}\*{4}|\d{2}\*{14}[\dX]{2})', joined
         )
         # 至少 3 个身份证号（完整 + 脱敏合并计数）= 强烈的清单续页信号
         return len(full_ids) + len(masked_ids) >= 3
@@ -517,11 +523,37 @@ class MetadataExtractorNode:
 
         特征：包含"被保险人信息" + "中文姓名" + "证件号码" 且
         不包含人员清单/表格标记（否则走 table/inline 路径）。
+
+        2026-10-27 修正：原判据会被"表格型被保险人清单"误命中。
+        平安产险"平安放心意外尊享方案(互联网版)"章节标题就叫"2、被保险人信息"，
+        表头含"被保险人姓名"+"证件号码"+"序号" → 三项判据全中 → 误判为 individual
+        → 走 individual 提取器 → 0 人。
+        修正：命中"表格清单表头"时判为 table 格式，不走 individual。
+
+        ⚠️ 表格判据用**表头词组合**而非单个"序号"——个人保单的条款正文里
+        也可能出现"序号"二字，单词判据会误伤真正的个人保单。
         """
         has_insured_section = any(m in text for m in _INDIVIDUAL_MARKERS)
         has_name_label = "中文姓名" in text or "被保险人姓名" in text
         has_id_label = "证件号码" in text or "身份证号" in text
-        return has_insured_section and has_name_label and has_id_label
+        if not (has_insured_section and has_name_label and has_id_label):
+            return False
+        # 2026-10-27：表格清单表头 → 不是键值对格式
+        if MetadataExtractorNode._has_table_list_header(text):
+            return False
+        return True
+
+    @staticmethod
+    def _has_table_list_header(text: str) -> bool:
+        """检测是否存在"表格型人员清单"表头
+
+        表格清单表头是**成组出现**的列名（序号 + 姓名 + 证件类型/证件号码），
+        键值对格式则没有"序号"列。必须成组判断，避免条款正文里的"序号"误伤。
+        """
+        has_index = "序号" in text
+        has_name_col = "被保险人姓名" in text or "雇员姓名" in text or "人员姓名" in text
+        has_id_col = "证件类型" in text or "证件号码" in text
+        return has_index and has_name_col and has_id_col
 
     @staticmethod
     def _find_individual_pages(pdf_doc: PDFDocument) -> list[int]:

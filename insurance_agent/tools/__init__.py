@@ -7,6 +7,7 @@
 from .id_validator import (
     is_valid_chinese_id,
     extract_chinese_id_from_text,
+    extract_chinese_id_with_positions,
     normalize_id,
 )
 from .id_reconstructor import (
@@ -61,6 +62,7 @@ __all__ = [
     # ID
     "is_valid_chinese_id",
     "extract_chinese_id_from_text",
+    "extract_chinese_id_with_positions",
     "normalize_id",
     # ID Reconstruction
     "is_masked_id",
