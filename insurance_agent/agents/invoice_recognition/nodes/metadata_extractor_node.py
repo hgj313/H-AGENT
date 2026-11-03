@@ -46,8 +46,24 @@ _INLINE_MARKERS = [
     "雇员姓名：", "雇员姓名:",
     "被保险人姓名：", "被保险人姓名:",
     "替换为人员",
-    "变更为",   # 阳光批单《变更被保人》：姓名由X变更为Y,证件号码由A变更为B
 ]
+# 2026-10-27 修正：把裸的"变更为"从 _INLINE_MARKERS 移除，改为**人员变更专用正则**。
+#
+# 根因："变更为"是保单正文的高频词，任何金额/保额/人数变更都会命中：
+#   - 阳光批单："总保费由26334变更为30638.82"、"投保人数由18变更为21"
+#   - 黄河批单："保险金额由500000.00变更为750000.00"
+# 导致本该走 table 提取器的**表格型批单**被误判为 inline → inline 提取器
+# 在表格文本上找不到"姓名:ID"键值对 → 0 人。
+#
+# 真正需要 inline 路径的只有**人员变更句式**：
+#   - "被保险人姓名由陈洪变更为周润,证件号码由A变更为B"（阳光《变更被保人》）
+#   - "雇员姓名由李国高变更为杨国辉,证件号码由A变更为B"（北部湾批单）
+#   - "出生日期由1986-11-19变更为1971-11-16"（同一句中的字段变更）
+# 因此要求"变更为"必须与**人员/证件字段名**同句出现。
+_INLINE_PERSON_CHANGE_PATTERN = re.compile(
+    r"(?:姓名|证件号码|身份证号|出生日期|年龄)"
+    r"[^。；\n]{0,40}?由[^。；\n]{0,40}?变更为"
+)
 # 个人保单格式标记（被保险人信息以键值对形式内嵌）
 _INDIVIDUAL_MARKERS = ["被保险人信息", "被保人信息"]
 # 不记名投保保单特征（灵工版等 — 只投总人数，不逐人记名 → 无清单）
@@ -134,7 +150,13 @@ class MetadataExtractorNode:
 
         if list_pages:
             # 有人员清单页 → 真实保单，优先按清单格式识别
-            if any(marker in all_text for marker in _INLINE_MARKERS):
+            # 2026-10-27 修正：表格清单表头优先于 inline 判定。
+            # 黄河财险《雇员变动清单》表头含"姓名"+"证件号"+"状态"列，是表格；
+            # 但正文里出现"变更为"（金额变更）曾被误判为 inline → 0 人。
+            if self._has_table_list_header(all_text):
+                format_hint = "table"
+            elif any(marker in all_text for marker in _INLINE_MARKERS) or \
+                    _INLINE_PERSON_CHANGE_PATTERN.search(all_text):
                 format_hint = "inline"
             elif any(marker in all_text for marker in _BLOCK_KV_MARKERS):
                 # 块状键值对清单（2026-09-17 新增：中国人寿"在保名单"绿洲团体意外险等）
@@ -447,10 +469,12 @@ class MetadataExtractorNode:
                     candidate_page_nums.append(page.page_number)
                     break
             else:
-                for marker in _INLINE_MARKERS:
-                    if marker in page.text:
-                        candidate_page_nums.append(page.page_number)
-                        break
+                # inline 清单页候选：命中 inline 标记，或人员变更句式
+                # （"姓名由X变更为Y" / "证件号码由A变更为B"）
+                if any(marker in page.text for marker in _INLINE_MARKERS) or \
+                        _INLINE_PERSON_CHANGE_PATTERN.search(page.text):
+                    candidate_page_nums.append(page.page_number)
+                    break
 
         # 2) 真实清单筛选
         list_page_nums = []
@@ -547,13 +571,42 @@ class MetadataExtractorNode:
     def _has_table_list_header(text: str) -> bool:
         """检测是否存在"表格型人员清单"表头
 
-        表格清单表头是**成组出现**的列名（序号 + 姓名 + 证件类型/证件号码），
-        键值对格式则没有"序号"列。必须成组判断，避免条款正文里的"序号"误伤。
+        表格清单表头是**成组出现**的列名，键值对格式没有这些列。
+        必须成组判断，避免条款正文里的"序号""姓名"等词误伤。
+
+        覆盖两类已验证的表头：
+        A. 平安产险互联网版：序号 / 被保险人姓名 / 证件类型 / 证件号码 / 方案名称 …
+        B. 黄河财险《雇员变动清单》：序号 / 姓名 / 证件号 / 职业代码 / 职业/工种 / 状态 / 备注
+
+        ⚠️ 判据用**列名组合**而非单词：
+           - 只看"序号"会误伤条款正文（很多保单条款正文写"序号"）
+           - 只看"姓名"会误伤键值对格式（"被保险人姓名:张三,证件号码:..."）
+           必须同时具备"序号"+（姓名列）+（证件列），且证件列用**列名形式**
+           （"证件号"/"证件号码"/"证件类型"），而非键值对形式（"证件号码:"）。
         """
         has_index = "序号" in text
-        has_name_col = "被保险人姓名" in text or "雇员姓名" in text or "人员姓名" in text
-        has_id_col = "证件类型" in text or "证件号码" in text
-        return has_index and has_name_col and has_id_col
+        if not has_index:
+            return False
+
+        # 姓名列名（不含"被保险人姓名:"这种键值对形式）
+        name_col = any(c in text for c in ("被保险人姓名", "雇员姓名", "人员姓名", "员工姓名"))
+        # 单独的"姓名"列（黄河批单表头就是"姓名"）——但要排除键值对形式
+        if not name_col:
+            name_col = "姓名" in text and not re.search(r"姓名\s*[:：]", text)
+        if not name_col:
+            return False
+
+        # 证件列名（列名形式，不是 "证件号码:" 键值对）
+        id_col = any(c in text for c in ("证件号码", "证件号", "证件类型", "身份证号"))
+        if not id_col:
+            return False
+
+        # ⚠️ 键值对格式（inline）不会有"序号"列，已在前面排除；
+        #    这里再排除"序号"只出现在条款正文的情况：要求至少再有一个
+        #    典型的表格列名（职业/工种/状态/备注/方案/购买份数等）
+        table_cols = ("职业", "工种", "状态", "备注", "方案名称", "购买份数",
+                      "职业代码", "投保险额", "保险金额", "保费", "责任")
+        return any(c in text for c in table_cols)
 
     @staticmethod
     def _find_individual_pages(pdf_doc: PDFDocument) -> list[int]:

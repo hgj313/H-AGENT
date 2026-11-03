@@ -83,15 +83,33 @@ def test_extract_change_multiple_groups():
     print("✅ test_extract_change_multiple_groups")
 
 
-def test_inline_markers_includes_biangengwei():
-    """测试 _INLINE_MARKERS 包含 '变更为'"""
+def test_inline_markers_excludes_bare_biangengwei():
+    """测试 _INLINE_MARKERS 不含裸的 '变更为'（10-27 修正）
+
+    背景：「变更为」是保单正文高频词（"总保费由26334变更为30638.82"），
+    裸标记会让表格型批单被误判为 inline → 提取器找不到"姓名:ID"键值对 → 0 人。
+    人员变更句式改由 _INLINE_PERSON_CHANGE_PATTERN 精确识别（必须与人员/证件字段名同句）。
+    """
     from insurance_agent.agents.invoice_recognition.nodes.metadata_extractor_node import (
         _INLINE_MARKERS,
+        _INLINE_PERSON_CHANGE_PATTERN,
     )
 
-    assert "变更为" in _INLINE_MARKERS, f"_INLINE_MARKERS 缺 '变更为': {_INLINE_MARKERS}"
+    assert "变更为" not in _INLINE_MARKERS, (
+        f"_INLINE_MARKERS 不应含裸 '变更为'（会误判表格型批单）: {_INLINE_MARKERS}"
+    )
 
-    print("✅ test_inline_markers_includes_biangengwei")
+    # 人员变更句式仍能被精确识别
+    hit = _INLINE_PERSON_CHANGE_PATTERN.search(
+        "被保险人姓名由陈洪变更为周润,证件号码由510218198207242535变更为500381200601135218"
+    )
+    assert hit, "_INLINE_PERSON_CHANGE_PATTERN 应匹配人员变更句式"
+
+    # 金额/保额变更句式不应被误判为人员变更
+    no_hit = _INLINE_PERSON_CHANGE_PATTERN.search("总保费由26334变更为30638.82")
+    assert not no_hit, "金额变更不应命中人员变更正则"
+
+    print("✅ test_inline_markers_excludes_bare_biangengwei")
 
 
 def test_extract_routes_to_change():
