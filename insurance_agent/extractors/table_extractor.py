@@ -77,6 +77,15 @@ class TableExtractor(BaseExtractor):
     # 没有身份证号，extractor 只能抓到「增加」一侧；mod_type 一律标 增保
     _SIMULTANEOUS_MARKERS = ["同期增减", "同期替换", "同期置换"]
 
+    # 批单"生效日"语境标记（2026-11-03 新增）
+    # 利宝批单正文里同一个生效日会被描述两次：
+    #   「批单生效日期 自2026年11月04日零时起生效」
+    #   「兹经双方同意,自2026年11月04日零时起,对本保单作如下批改」
+    # 两次都被 pre_region 回溯窗口吃进去 → 日期抽取得到 [X, X]
+    # → 起止同天 = 减保特征，会把增保人员误判为减保，
+    #   且止期被锁死成生效日，validator 无法用主保单止期回填。
+    _EFFECTIVE_DATE_CONTEXT = ("零时起生效", "起生效", "生效日期", "零时起")
+
     # 变动清单格式表头（中国人寿"被保险人变动清单"批单专用，2026-09-17 新增）
     # 用于在 ID 之前定位每人的"变动类型"+"被保险人类型"+"姓名"+"个人编号"+"生效日"+"终止日"
     # 这些字段全部在 ID 之前（与利宝保单相反），不能仅搜 post_region
@@ -293,6 +302,17 @@ class TableExtractor(BaseExtractor):
             # 兜底：起始时间晚于起止时间（识别反了）时交换
             if start_date and end_date and start_date > end_date:
                 start_date, end_date = end_date, start_date
+            # 2026-11-03 修复（利宝批单）：起止同天且该日期在区域内被重复描述
+            # → 说明抽到的是「批单生效日」被写了两遍，不是真正的保险期间。
+            #   清空起止，交由 validator 按批改类型从主保单回填：
+            #     增保 → start=批单生效日, end=主保单止期
+            #     减保 → start=主保单起期, end=批单生效日
+            #   不清空的话：增保人员起止同天（=减保特征）被误判，
+            #   且止期锁死为生效日，永远拿不到主保单止期。
+            if start_date and end_date and start_date == end_date:
+                if self._is_repeated_effective_date(pre_region + post_region, start_date):
+                    start_date = ""
+                    end_date = ""
 
             # 4.5 (2026-09-17 新增) 每行 mod_type 检测
             # 中国人寿"被保险人变动清单"在 pre_region 含变动类型列（增加/减少/替换），
@@ -427,6 +447,10 @@ class TableExtractor(BaseExtractor):
             return "增保"  # 默认增保（主保单/纯增）
 
         # 2. 强证据存在，按弱标记判断（"增加"/"减少"/"批增"/"批减"）
+        #    2026-11-03：先剔除「减少：0人」这类零数量汇总句
+        #    （利宝批单 7116013100260140830001 森得尔：「方案5增加：2人，减少：0人」
+        #      实际两人都是增保，"减少"字样导致文件级被误判为减保）
+        text = cls._strip_zero_count_remove_markers(text)
         for marker in cls._REMOVE_MARKERS:
             if marker in text:
                 return "减保"
@@ -434,6 +458,79 @@ class TableExtractor(BaseExtractor):
             if marker in text:
                 return "增保"
         return "增保"
+
+    @classmethod
+    def _strip_zero_count_remove_markers(cls, region: str) -> str:
+        """剔除「零数量」的减保描述，避免汇总句污染行级判定。
+
+        2026-11-03 修复（利宝批单 7116013100260140830001 森得尔）：
+          批单原文含汇总句「方案5增加：2人，减少：0人,保费变化(CNY): 356.00」，
+          随后是明细段「<<增加人员信息明细>>」里的 2 名增保人员。
+          table_extractor 的 pre_region 会回溯 200 字符，**第一条人员记录
+          （廖世建）的 pre_region 吞进了这句汇总**，"减少"字样先于"增加"命中
+          → 该行被误判为「减保」（起止日期相同 = 减保特征），
+          实际两人都是增保 → 廖世建被漏入库、且日期被错填。
+
+          修复：把「减少：0人」「批减0人」这类**数量为 0** 的减保描述**整段剔除**
+        （数量 > 0 的减保描述仍然有效）。
+        ⚠️ 必须整段替换掉标记词本身 —— 只把「0人」换成占位符的话，
+        「减少」二字仍会命中 _REMOVE_MARKERS，减保误判依旧存在。
+        """
+        if not region:
+            return region
+        # 「减少/批减/删除/减员/注销」后面紧跟「:0人 / 0 人 / ：0人」→ 数量为 0，
+        # 不是真实减保 → 整段替换为不含任何标记词的中性占位符
+        # ⚠️ 只匹配数字 0（用前后否定断言避免误伤 "10人"/"100人"）
+        return re.sub(
+            r"(删除|减少|批减|减保|注销|减员)\s*[：:]?\s*(?<![0-9０])[0０](?![0-9０])\s*人",
+            "__ZERO_COUNT__",
+            region,
+        )
+
+    @classmethod
+    def _is_repeated_effective_date(cls, region: str, date_str: str) -> bool:
+        """判断某个日期是否是「批单生效日被重复描述」而非真正的保险期间端点
+
+        2026-11-03 新增。利宝批单的正文会把同一个生效日写两遍：
+            「批单生效日期 自2026年11月04日零时起生效」
+            「兹经双方同意,自2026年11月04日零时起,对本保单作如下批改」
+        由于 pre_region 回溯 200 字符，两处都落在同一个人的区域内 →
+        日期抽取得到 [X, X] → 起止同天（减保特征），止期被锁死成生效日，
+        validator 无法用主保单止期回填，增保人员被误判成减保。
+
+        判据（三个条件同时满足，避免误伤真实的单日保单）：
+          1. 区域内该日期**出现 ≥ 2 次**（同一日期被描述了多遍）
+          2. 区域内含生效日语境标记（零时起生效 / 起生效 / 生效日期 / 零时起）
+          3. 该日期的两次出现**不在同一句**里（真期间是"自X起至Y止"同句）
+
+        真实保单的单日期间（起=止）通常在「自X起至X止」同一句中出现，
+        或区域里根本没有生效日语境，因此不会被误判。
+        """
+        if not region or not date_str:
+            return False
+        # 条件 2：生效日语境
+        if not any(mk in region for mk in cls._EFFECTIVE_DATE_CONTEXT):
+            return False
+        # 条件 1 & 3：统计该日期出现次数，并检查是否分布在不同句子
+        cn = date_str.replace("-", "年", 1).replace("-", "月", 1) + "日"
+        occurrences = []
+        for variant in {date_str, cn}:
+            start = 0
+            while True:
+                pos = region.find(variant, start)
+                if pos < 0:
+                    break
+                occurrences.append(pos)
+                start = pos + len(variant)
+        if len(occurrences) < 2:
+            return False
+        # 条件 3：至少两次出现位于不同句子（不同行/不同句读）
+        for i in range(len(occurrences)):
+            for j in range(i + 1, len(occurrences)):
+                between = region[occurrences[i]:occurrences[j]]
+                if "\n" in between or "，" in between or "," in between or "。" in between:
+                    return True
+        return False
 
     @classmethod
     def _detect_row_modification_type(cls, region: str) -> str:
@@ -450,9 +547,13 @@ class TableExtractor(BaseExtractor):
         关键场景：「7月31替换人 (1).pdf」变动类型列值为「同期增减」，
         但 pre_region 也包含列标题「减少被保险人」——必须先匹配「同期增减」，
         否则会被「减少」抢先误判为减保。
+
+        2026-11-03 增强：先剔除「减少：0人」这类零数量汇总句，
+        再走原有优先级（否则纯增批单的汇总句会误伤第一条人员记录）。
         """
         if not region:
             return ""
+        region = cls._strip_zero_count_remove_markers(region)
         # 1. 同期替换/同期增减 优先于「减少」（避免被「减少被保险人」列标题误判）
         if any(m in region for m in cls._SIMULTANEOUS_MARKERS):
             return "增保"
