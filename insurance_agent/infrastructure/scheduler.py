@@ -22,6 +22,9 @@
     "summary_afternoon_enabled": true,  # 是否启用下午汇总
     "cleanup_time": "00:00",            # 打卡数据清理时间（午夜）
     "cleanup_enabled": true,            # 是否启用打卡数据清理
+    "snapshot_time": "03:00",           # 数据库快照时间（2026-11-03 新增）
+    "snapshot_enabled": true,           # 是否启用数据库快照
+    "snapshot_keep_days": 30,           # 快照保留天数
 }
 """
 
@@ -55,6 +58,11 @@ DEFAULT_CONFIG = {
     # 打卡数据定时清理（每日 00:00 删除昨日及更早的 punch_records）
     "cleanup_time": "00:00",
     "cleanup_enabled": True,
+    # 数据库定时快照（每日 03:00 备份 app.db，出问题可回滚）
+    # 2026-11-03 加固：Excel「替换」上传误操作导致全库丢失后新增
+    "snapshot_time": "03:00",
+    "snapshot_enabled": True,
+    "snapshot_keep_days": 30,
 }
 
 # 全局调度器实例（供 web 层使用）
@@ -220,6 +228,8 @@ class Scheduler:
             if name == "afternoon_summary" and not config.get("summary_afternoon_enabled", True):
                 continue
             if name == "daily_cleanup" and not config.get("cleanup_enabled", True):
+                continue
+            if name == "daily_snapshot" and not config.get("snapshot_enabled", True):
                 continue
 
             time_str = config.get(time_key, "08:00")

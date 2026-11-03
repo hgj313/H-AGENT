@@ -2059,9 +2059,48 @@ async def _read_personnel_excel(file: UploadFile) -> list[dict]:
 
 
 @app.post("/api/personnel/upload-excel")
-async def upload_personnel_excel(file: UploadFile = File(...)):
-    """上传 Excel 模板文件，替换全部保单人员数据"""
+async def upload_personnel_excel(request: Request, file: UploadFile = File(...)):
+    """上传 Excel 模板文件，替换全部保单人员数据
+
+    ⚠️ 破坏性操作（2026-11-03 加固）：
+        本接口会**清空整张表**再写入新数据。11-03 曾因误点一次导致
+        3500+ 条保单人员数据全丢。现加三道防线：
+          1. 必须带 confirm=true 查询参数（前端二次确认弹窗携带）
+          2. 清空前自动生成数据库快照（可一键回滚）
+          3. 导入条数低于现有数据的 30% 时拒绝执行（防传错文件）
+    """
     persons = await _read_personnel_excel(file)
+
+    # 防线 1：必须显式确认
+    confirm = request.query_params.get("confirm", "").lower() in ("1", "true", "yes")
+    if not confirm:
+        raise HTTPException(
+            status_code=400,
+            detail="该操作会清空全部保单人员数据，需带 confirm=true 参数二次确认",
+        )
+
+    # 统计现有数据量（用于防线 3）
+    existing_total = db.get_insurance_personnel_count()
+
+    # 防线 3：导入条数明显少于现有数据 → 拒绝（防误传空表/错表）
+    if existing_total > 50 and len(persons) < existing_total * 0.3:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"拒绝执行：Excel 只有 {len(persons)} 条，而库中有 {existing_total} 条"
+                f"（不足 30%）。如确认要全量替换，请用「追加」模式或确认数据源正确。"
+            ),
+        )
+
+    # 防线 2：清空前自动快照（出问题时可回滚）
+    snapshot_path = ""
+    try:
+        from insurance_agent.tools.db_snapshot import backup_database
+        snapshot_path = backup_database(tag="before_replace")
+        logger.warning("[upload-excel] 清空前已备份数据库: %s", snapshot_path)
+    except Exception as e:  # noqa: BLE001
+        logger.error("[upload-excel] 备份失败，中止替换: %r", e)
+        raise HTTPException(status_code=500, detail=f"备份失败，已中止替换操作: {e}")
 
     # 替换：清空旧数据，写入新数据
     removed = db.clear_insurance_personnel()
@@ -2072,6 +2111,7 @@ async def upload_personnel_excel(file: UploadFile = File(...)):
         "message": f"替换成功：清空 {removed} 条旧数据，导入 {stored} 条新数据",
         "total": stored,
         "removed": removed,
+        "snapshot": snapshot_path,
     })
 
 
@@ -2103,6 +2143,63 @@ class ManualAddSchema(BaseModel):
     insurance_company: str = ""
     policy_number: str = ""
     status: str = "正常"
+
+
+# ==================== 数据库快照（2026-11-03 加固） ====================
+
+@app.get("/api/db/snapshots")
+async def list_db_snapshots():
+    """列出数据库快照列表（供前端查看与回滚）"""
+    from insurance_agent.tools.db_snapshot import list_snapshots
+    snaps = list_snapshots()
+    return JSONResponse({
+        "success": True,
+        "total": len(snaps),
+        "snapshots": snaps,
+    })
+
+
+@app.post("/api/db/snapshot")
+async def create_db_snapshot():
+    """手动创建一份数据库快照"""
+    from insurance_agent.tools.db_snapshot import backup_database
+    try:
+        path = backup_database(tag="manual")
+        return JSONResponse({
+            "success": True,
+            "message": f"快照已创建: {os.path.basename(path)}",
+            "path": path,
+            "size": os.path.getsize(path),
+        })
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"创建快照失败: {e}")
+
+
+@app.post("/api/db/restore")
+async def restore_db_snapshot(name: str, confirm: str = ""):
+    """从快照恢复数据库（危险操作，需 confirm=true）
+
+    恢复前会自动把当前库另存一份，避免用错快照导致二次丢失。
+    """
+    if confirm.lower() not in ("1", "true", "yes"):
+        raise HTTPException(status_code=400, detail="恢复操作需带 confirm=true 二次确认")
+
+    from insurance_agent.tools.db_snapshot import restore_from_snapshot, SNAPSHOT_DIR
+    # 防路径穿越：只允许恢复 snapshots 目录下的文件
+    safe_name = os.path.basename(name)
+    path = os.path.join(SNAPSHOT_DIR, safe_name)
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail=f"快照不存在: {safe_name}")
+
+    result = restore_from_snapshot(path, confirm=True)
+    if not result.get("success"):
+        raise HTTPException(status_code=500, detail=result.get("error", "恢复失败"))
+    return JSONResponse({
+        "success": True,
+        "message": f"已从快照恢复: {safe_name}（恢复前已备份当前库）",
+        "restored_from": result.get("restored_from", ""),
+        "backup_path": result.get("backup_path", ""),
+    })
 
 
 @app.post("/api/personnel/manual-add")
@@ -2304,12 +2401,20 @@ async def startup_event():
     def daily_cleanup_task():
         return run_daily_cleanup(days_to_keep=1)
 
+    # 任务6：数据库每日快照（每日 03:00）→ 备份 app.db，出问题可回滚
+    # 2026-11-03 加固：Excel「替换」上传误操作导致全库数据丢失后新增此任务
+    def daily_snapshot_task():
+        from insurance_agent.tools.db_snapshot import run_daily_snapshot
+        cfg = scheduler_mod.load_scheduler_config()
+        return run_daily_snapshot(keep_days=cfg.get("snapshot_keep_days", 30))
+
     scheduler_mod.create_scheduler()
     scheduler_mod.get_scheduler().add_task("daily_check", daily_task, "sync_time")
     scheduler_mod.get_scheduler().add_task("expiry_reminder", expiry_task, "expiry_time")
     scheduler_mod.get_scheduler().add_task("morning_summary", morning_summary_task, "summary_morning_time")
     scheduler_mod.get_scheduler().add_task("afternoon_summary", afternoon_summary_task, "summary_afternoon_time")
     scheduler_mod.get_scheduler().add_task("daily_cleanup", daily_cleanup_task, "cleanup_time")
+    scheduler_mod.get_scheduler().add_task("daily_snapshot", daily_snapshot_task, "snapshot_time")
     scheduler_mod.get_scheduler().start()
 
     # 实时打卡事件消费者：ERP 每推送一条打卡，秒级核对保险并通知项目经理/保险管理人员

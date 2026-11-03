@@ -11,5 +11,8 @@
   "summary_morning_enabled": true,
   "summary_afternoon_enabled": true,
   "cleanup_time": "00:00",
-  "cleanup_enabled": true
+  "cleanup_enabled": true,
+  "snapshot_time": "03:00",
+  "snapshot_enabled": true,
+  "snapshot_keep_days": 30
 }

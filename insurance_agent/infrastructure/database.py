@@ -1125,6 +1125,22 @@ def get_insurance_personnel() -> list[dict]:
             conn.close()
 
 
+def get_insurance_personnel_count() -> int:
+    """统计保单人员总数（用于替换前的安全校验）。
+
+    2026-11-03 加固：Excel「替换」上传接口在清空前会对比条数，
+    避免用户误传空表/错表导致整表数据丢失。
+    """
+    with _lock:
+        conn = get_connection()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM insurance_personnel")
+            return cursor.fetchone()[0]
+        finally:
+            conn.close()
+
+
 def find_inconsistent_deactivations(today: str | None = None) -> list[dict]:
     """查找 status=失效 但 end_date > today 的不一致记录。
 
