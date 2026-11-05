@@ -425,12 +425,22 @@ def _persist_policy_result(result_dict: dict, fpath: str):
         })
 
     # 增保：新增或更新
+    # 写侧去重（2026-11-05）：同名同证件只保留一条，新数据起止「更久」才替换，
+    # 否则跳过不新增 —— 从源头杜绝重复数据再生。
     if add_rows:
-        n = db.upsert_insurance_personnel(add_rows)
+        report = db.upsert_insurance_personnel_detailed(add_rows)
         logger.info(
-            "[persist] file=%s 增保 add_rows=%d upsert_n=%d first_row=%r",
-            source_file, len(add_rows), n, add_rows[0] if add_rows else None,
+            "[persist] file=%s 增保 add_rows=%d 新增=%d 替换=%d 收敛历史重复=%d 跳过=%d first_row=%r",
+            source_file, len(add_rows), report["added"], report["updated"],
+            report["collapsed"], report["skipped"],
+            add_rows[0] if add_rows else None,
         )
+        if report["skipped"] or report["collapsed"]:
+            logger.debug(
+                "[persist] 去重明细(前5): %r",
+                [d for d in report["details"][:5]
+                 if d["action"] in ("skipped", "collapsed")],
+            )
 
     # 减保：状态改失效 + 同步 end_date 为批单生效日（2026-09-15 修复 秦克智事件）
     if remove_ids:
@@ -2117,16 +2127,26 @@ async def upload_personnel_excel(request: Request, file: UploadFile = File(...))
 
 @app.post("/api/personnel/upload-excel-add")
 async def upload_personnel_excel_add(file: UploadFile = File(...)):
-    """上传 Excel 模板文件，新增保单人员数据（同名同身份证则更新最新起止日期）"""
+    """上传 Excel 模板文件，新增保单人员数据
+
+    写侧去重（2026-11-05）：同名同身份证视为同一人，库中最多保留一条；
+    新数据起止「更久」才替换旧记录，否则跳过（不新增、不覆盖）。
+    """
     persons = await _read_personnel_excel(file)
 
     result = db.add_insurance_personnel(persons)
 
     return JSONResponse({
         "success": True,
-        "message": f"新增成功：新增 {result['added']} 条，更新 {result['updated']} 条",
+        "message": (
+            f"新增成功：新增 {result['added']} 条，替换 {result['updated']} 条，"
+            f"收敛历史重复 {result['collapsed']} 条，跳过 {result['skipped']} 条"
+        ),
         "added": result["added"],
         "updated": result["updated"],
+        "collapsed": result["collapsed"],
+        "skipped": result["skipped"],
+        "written": result["written"],
     })
 
 

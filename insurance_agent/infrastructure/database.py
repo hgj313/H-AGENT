@@ -207,6 +207,11 @@ def init_db() -> None:
             #   新键 (name, id_number, policy_number) 既保持"同人同保单唯一"，
             #   又允许撞车的不同人共存；同人跨保单仍允许（含 policy_number）。
             _migrate_personnel_unique_key(conn)
+            # 迁移：insurance_personnel 加 partial UNIQUE INDEX（2026-11-05）
+            #   强制「同一 (姓名, 身份证号) 只留一条」，从 DB 层杜绝重复数据再生。
+            #   覆盖 2026-09-28「同人跨保单应允许」的旧判断 —— 该判断正是本次
+            #   「本地未参保 11 人 vs 飞书 22 人」统计失真的根因。
+            _migrate_personnel_name_id_unique(conn)
             logger.info("数据库初始化完成: %s", DB_PATH)
         finally:
             conn.close()
@@ -555,6 +560,61 @@ def _migrate_personnel_unique_key(conn: sqlite3.Connection) -> None:
     logger.info("insurance_personnel 唯一键迁移完成")
 
 
+def _migrate_personnel_name_id_unique(conn: sqlite3.Connection) -> None:
+    """迁移：加 partial UNIQUE INDEX，强制「一人一行」（2026-11-05）
+
+    **背景**：11-05 排查「本地今日未参保 11 人 vs 飞书多维表格 22 人」时发现，
+    同一 (姓名, 身份证号) 在库中会积累多条记录（实测 218 组），
+    其中 195 组的保单号是「一条有 + 一条空」—— 同一份保单被入库了两次。
+    根源是表级唯一键 UNIQUE(name, id_number, policy_number)：
+    保单号不同时走 INSERT 新增行而非替换 → 重复数据不断再生。
+
+    **用户决策（2026-11-05）**：一条重复记录会让「未参保人数」统计口径失真，
+    业务规则确定为「同一姓名同一身份证号只保留一条」。
+
+    2026-09-28 曾把 idx_person_name_id 从 UNIQUE 降为普通索引，理由是
+    "同一工人被多份保单承保是常见且合理的"（阳光保单入库触发 IntegrityError）。
+    该判断已被 2026-11-05 的用户决策覆盖 —— 一人多条记录正是本次统计失真的根因。
+
+    **为什么用 partial 索引**：
+      · WHERE id_number != '' → id_number 为空的行不参与约束
+        （写入侧本就跳过空 id_number，不应因约束把整批入库打挂）
+      · 约束含 name → 脱敏 ID 撞车的「不同人」仍可共存
+        （10-27 教训：张超与蔡明明的脱敏 ID 都是 34**************18）
+
+    **幂等与安全**：检测到库中已有冲突行时跳过建索引并告警（不阻断启动），
+    需先执行 tools/dedupe_insurance_personnel.py --apply 清理后重启服务。
+    """
+    cursor = conn.cursor()
+    cursor.execute(
+        "SELECT name FROM sqlite_master WHERE type='index' AND name='idx_person_name_id_uniq'"
+    )
+    has_unique = cursor.fetchone() is not None
+
+    if not has_unique:
+        dup = cursor.execute(
+            """SELECT name, id_number, COUNT(*) c FROM insurance_personnel
+               WHERE id_number != '' GROUP BY name, id_number HAVING c > 1 LIMIT 20"""
+        ).fetchall()
+        if dup:
+            logger.error(
+                "[迁移] insurance_personnel 存在 %d+ 组 (姓名, 身份证号) 重复，"
+                "跳过唯一索引创建。请先执行 tools/dedupe_insurance_personnel.py --apply "
+                "清理重复数据后重启服务。",
+                len(dup),
+            )
+            return
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_person_name_id_uniq "
+            "ON insurance_personnel(name, id_number) WHERE id_number != ''"
+        )
+        logger.info("insurance_personnel 已启用唯一索引 idx_person_name_id_uniq（一人一行）")
+
+    # 唯一索引已覆盖 (name, id_number) 的查询，普通索引冗余 → 删除
+    cursor.execute("DROP INDEX IF EXISTS idx_person_name_id")
+    conn.commit()
+
+
 # punchTime 合法值：纯数字时间戳（10 位秒 / 13 位毫秒）
 _PUNCH_TIME_TS_RE = re.compile(r"^\d{10,13}$")
 _PUNCH_TIME_STD_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2})(:\d{2})?$")
@@ -836,154 +896,198 @@ def update_punch_manager_info(punch_date: str, manager_map: dict) -> int:
 
 # ==================== 保单人员数据操作 ====================
 
-def upsert_insurance_personnel(persons: list[dict]) -> int:
-    """批量写入保单人员数据（增保：新增或更新）
+# ---- 写侧去重规则（2026-11-05 新增）----
+#
+# 背景：11-05 排查「本地今日未参保 11 人 vs 飞书多维表格 22 人」时定位到两个根因：
+#   ① 时序竞态：飞书推送发生在保单入库之前（用户已确认推送侧不整改）
+#   ② 重复数据：同一 (姓名, 身份证号) 在库中有多条记录（实测 218 组），
+#      其中 195 组的保单号是「一条有 + 一条空」—— 同一份保单被入库了两次。
+#
+# 根因 ② 的机制：表级唯一键是 UNIQUE(name, id_number, policy_number)，
+#   保单号不同时走 INSERT 新增行而非替换 → 重复数据不断再生。
+#
+# 用户约定（2026-11-05 原话）：
+#   "新入库的如果原数据库中存在且起止日期更久的，替换原数据。
+#    不然不需要新增。避免出现重复数据"
+#
+# 落地方案：
+#   · 写侧按 (name, id_number) 查库：有则「更久才替换」，无则新增
+#   · 替换时字段按「非空优先、新数据优先」合并；日期为空则保留原记录日期
+#   · 替换前删除同 (name, id_number) 的其余行（一人一行）
+#   · 加 partial UNIQUE INDEX 兜底（DB 层强制一人一行）
 
-    去重规则（用户约定 2026-08-26）：
-    - 同一 (name, id_number) 视为同一人
-    - 用 end_date 最新的那条数据替换 end_date 老的那条
-    - 仅当新数据 end_date >= 旧数据 end_date 时才覆盖（保险：避免老保单回退覆盖新保单）
+# 视为「参保有效」的状态（与 tools/dedupe_insurance_personnel.py 保持一致）
+_EFFECTIVE_STATUSES = ("正常", "增保", "替换")
+
+# 替换时允许由新数据覆盖的字段。
+# ⚠️ start_date / end_date 不在其中：日期取舍由 _merge_period 单独处理
+#    （新数据日期为空时保留原记录日期，避免在保人员被误降为失效 —— 11-03 踩过）
+_UPSERT_MERGE_FIELDS = (
+    "policy_number", "company", "insurance_company", "job_title",
+    "birth_date", "source_file", "id_type",
+)
+
+
+def _normalize_incoming_person(p: dict) -> dict:
+    """把调用方传入的人员 dict 归一化为 DB 列名字典。
+
+    兼容两套来源：
+      · PDF 入库（web_app/server.py _persist_result）用 "file_name"
+      · Excel 导入（_parse_personnel_excel）用 "source_file"
+    """
+    return {
+        "name": (p.get("name") or "").strip(),
+        "id_number": (p.get("id_number") or "").strip(),
+        "id_type": (p.get("id_type") or "身份证").strip() or "身份证",
+        "company": (p.get("company") or "").strip(),
+        "start_date": (p.get("start_date") or "").strip(),
+        "end_date": (p.get("end_date") or "").strip(),
+        "job_title": (p.get("job_title") or "").strip(),
+        "birth_date": (p.get("birth_date") or "").strip(),
+        "insurance_company": (p.get("insurance_company") or "").strip(),
+        "policy_number": (p.get("policy_number") or "").strip(),
+        "source_file": (p.get("file_name") or p.get("source_file") or "").strip(),
+        "status": (p.get("status") or "").strip(),
+    }
+
+
+def _personnel_rank(rec: dict) -> tuple:
+    """承保区间排序键：值越大表示「保得更久 / 更该保留」。
+
+    1. end_date 越晚越优先（空值视为 9999-12-31，即「止期未知 = 长期有效」）
+    2. start_date 越晚越优先（空值视为 9999-12-31，即「后补批单日期未知视为最新」）
+    3. status 有效优先（正常/增保/替换 > 失效）
+    4. policy_number 非空优先
+    5. id 靠后
+
+    ⚠️ 与 tools/dedupe_insurance_personnel.py 的 sort_key 只差「end / start 顺序」：
+       离线工具按 start_date 优先，写侧按 end_date 优先。
+       原因：写侧必须以「当前是否在保」为准 —— 若按起期优先，会选中
+       「起期更晚但止期更早」的短区间记录，把在保人员误降为失效。
+       2026-11-05 在 218 组实测数据上两种顺序的保留结果完全一致（0 组分歧）。
+    """
+    status = (rec.get("status") or "").strip()
+    eff = 1 if status in _EFFECTIVE_STATUSES else 0
+    sd = (rec.get("start_date") or "").strip() or "9999-12-31"
+    ed = (rec.get("end_date") or "").strip() or "9999-12-31"
+    has_pol = 1 if (rec.get("policy_number") or "").strip() else 0
+    return (ed, sd, eff, has_pol, rec.get("id") or 0)
+
+
+def _merge_period(new_rec: dict, old_rec: dict) -> tuple[str, str]:
+    """合并起止日期：新数据为空则保留原记录日期。
+
+    ⚠️ 这是 11-03 踩过的坑：把「日期未解析出」的后补批单写回时，
+       若用新数据的空日期覆盖旧记录的真实止期，在保人员会被误降为失效。
+    """
+    sd = (new_rec.get("start_date") or "").strip() or (old_rec.get("start_date") or "").strip()
+    ed = (new_rec.get("end_date") or "").strip() or (old_rec.get("end_date") or "").strip()
+    return sd, ed
+
+
+def _decide_replace(new_rec: dict, old_rec: dict, today: str) -> tuple[bool, str]:
+    """判断新数据是否应替换库中已有记录（用户约定 2026-11-05）。
+
+    ⚠️ 比较时只取排序键的前 4 项（不含 id）：id 仅用于在「多条历史遗留行」之间
+       挑选替换目标；若把它算进比较，库中已有行会在区间相等时永远赢过
+       "本次新读到的数据"，导致新数据永远无法替换。
+
+    判定顺序：
+      1. 新数据排序键更大（保得更久）→ 替换
+      2. 新数据排序键更小（旧数据更久）→ 跳过；
+         例外：旧记录止期未知（空）而新数据仍在有效期内 → 用更具体的数据替换
+      3. 两者完全等价 → 仅当新数据能补齐旧记录的某个空字段时才替换（字段合并）
+
+    Returns:
+        (是否替换, 中文原因)
+    """
+    rn = _personnel_rank(new_rec)[:4]
+    ro = _personnel_rank(old_rec)[:4]
+
+    if rn > ro:
+        return True, (
+            f"新数据保得更久（止期 {new_rec.get('end_date') or '(空)'} "
+            f"> 旧 {old_rec.get('end_date') or '(空)'}）"
+        )
+
+    if rn < ro:
+        ed_old = (old_rec.get("end_date") or "").strip()
+        ed_new = (new_rec.get("end_date") or "").strip()
+        # 例外：旧记录止期未知（PDF 未解析出），新数据仍在有效期内 → 用更具体的数据替换
+        if not ed_old and ed_new and ed_new >= today:
+            return True, "旧记录止期未知，新数据在有效期内 → 用更具体的数据替换"
+        return False, f"库中记录保得更久（止期 {ed_old or '(空)'}），不新增、不覆盖"
+
+    # 完全等价：仅当新数据能补齐旧记录的某个空字段时才替换
+    for f in _UPSERT_MERGE_FIELDS:
+        if (new_rec.get(f) or "").strip() and not (old_rec.get(f) or "").strip():
+            return True, f"区间等价，新数据可补齐空字段 {f}"
+
+    return False, "区间等价且无字段可补齐 → 跳过（不产生重复）"
+
+
+def upsert_insurance_personnel_detailed(persons: list[dict]) -> dict:
+    """批量写入保单人员数据（增保：新增或替换）—— 写侧去重核心
+
+    去重规则（用户约定 2026-11-05）：
+        - 同一 (name, id_number) 视为同一人，库中最多保留一条
+        - 新数据的起止时间「更久」→ 替换原记录
+        - 否则 → 不新增、不修改（避免重复数据再生）
+        - 替换时字段按「非空优先、新数据优先」合并；日期为空时保留原记录日期
 
     Args:
         persons: 人员列表，每个 dict 需包含 status 字段（"正常"/"失效"）
 
     Returns:
-        写入条数（新增+更新）
+        {"written": 写入条数(新增+替换+收敛), "added": 新增, "updated": 替换,
+         "collapsed": 收敛历史重复行, "skipped": 跳过, "details": [逐人明细，最多 50 条]}
     """
     if not persons:
-        return 0
+        return {"written": 0, "added": 0, "updated": 0, "collapsed": 0,
+                "skipped": 0, "details": []}
 
-    # 2026-09-24 增强：同 batch 内 (name, id_number) 去重
-    # 原因：单份上传的 PDF 可能同人出现多次（例：平安养老"批改人员清单"含同名同人重复，
-    # 索引冲突 → IntegrityError 让整批不入库）。
-    # 保留首次出现的 row（end_date 等信息以首批为准，PDF 同 batch 内同人多次列示通常信息一致）
-    dedup = {}
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # 1) 批内按 (name, id_number) 去重 —— 保留「保得更久」的那条
+    #    （原实现保留首次出现的那条，会让同批内更优的记录被丢弃）
+    batch: dict[tuple[str, str], dict] = {}
     for p in persons:
-        id_num = (p.get("id_number") or "").strip()
-        if not id_num:
+        rec = _normalize_incoming_person(p)
+        if not rec["id_number"]:
             continue
-        key = (p.get("name", "").strip(), id_num)
-        if key not in dedup:
-            dedup[key] = p
-    persons = list(dedup.values())
+        key = (rec["name"], rec["id_number"])
+        cur = batch.get(key)
+        if cur is None or _personnel_rank(rec) > _personnel_rank(cur):
+            batch[key] = rec
+    normalized = list(batch.values())
 
     with _lock:
         conn = get_connection()
         try:
             cursor = conn.cursor()
             created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            count = 0
-            for p in persons:
-                name = (p.get("name") or "").strip()
-                id_num = (p.get("id_number") or "").strip()
-                policy_number = (p.get("policy_number") or "").strip()
-                if not id_num:
-                    continue
-                new_start = p.get("start_date", "")
-                new_end = p.get("end_date", "")
-                # status 归一化到白名单 {正常, 失效}（防御批改类型/Excel 任意文本污染）
-                status = _normalize_status(p.get("status"), new_end)
+            added = 0
+            updated = 0
+            collapsed = 0
+            skipped = 0
+            details: list[dict] = []
 
-                cursor.execute("""
-                    INSERT INTO insurance_personnel (
-                        name, id_number, id_type, company, start_date, end_date,
-                        job_title, birth_date, insurance_company, policy_number,
-                        source_file, status, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(name, id_number, policy_number) DO UPDATE SET
-                        company = excluded.company,
-                        start_date = excluded.start_date,
-                        end_date = excluded.end_date,
-                        job_title = excluded.job_title,
-                        insurance_company = excluded.insurance_company,
-                        source_file = excluded.source_file,
-                        status = excluded.status,
-                        created_at = excluded.created_at
-                    WHERE
-                        -- 仅在「新数据 end_date 更晚」时覆盖（保险型语义）
-                        -- 同时把空/NULL end_date 当作 1900-01-01 兜底，保证老记录可被更新
-                        -- 2026-09-21 修复：刘红才历史记录的 end_date 为 NULL 时所有比较都 → NULL，
-                        --     导致 upsert 返回 rowcount=0，新正确数据写不进去。COALESCE 兜底
-                        (COALESCE(insurance_personnel.end_date, '') = '' OR
-                         COALESCE(excluded.end_date, '') = '' OR
-                         excluded.end_date >= COALESCE(insurance_personnel.end_date, '1900-01-01'))
-                """, (
-                    name, id_num,
-                    p.get("id_type", "身份证"), p.get("company", ""),
-                    new_start, new_end,
-                    p.get("job_title", ""), p.get("birth_date", ""),
-                    p.get("insurance_company", ""), policy_number,
-                    p.get("file_name", p.get("source_file", "")),
-                    status, created_at,
-                ))
-                if cursor.rowcount > 0:
-                    count += 1
-            conn.commit()
-            return count
-        finally:
-            conn.close()
+            for rec in normalized:
+                name = rec["name"]
+                id_num = rec["id_number"]
 
+                rows = [
+                    dict(r) for r in cursor.execute(
+                        "SELECT * FROM insurance_personnel WHERE name=? AND id_number=? ORDER BY id",
+                        (name, id_num),
+                    )
+                ]
 
-def add_insurance_personnel(persons: list[dict]) -> dict:
-    """新增保单人员数据（同名同身份证则更新最新起止日期）
-
-    匹配规则：name + id_number 相同视为同一人。
-    - 不存在 → 新增记录
-    - 存在 → 更新 start_date、end_date 为最新（并重算 status），
-      同时刷新 company/job_title/insurance_company/policy_number 等字段为最新。
-
-    Args:
-        persons: 人员列表，每个 dict 需包含 status 字段
-
-    Returns:
-        {"added": 新增条数, "updated": 更新条数}
-    """
-    added = 0
-    updated = 0
-    with _lock:
-        conn = get_connection()
-        try:
-            cursor = conn.cursor()
-            created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            for p in persons:
-                name = (p.get("name") or "").strip()
-                id_num = (p.get("id_number") or "").strip()
-                if not id_num:
-                    continue
-
-                start_date = p.get("start_date", "")
-                end_date = p.get("end_date", "")
-                # status 归一化到白名单 {正常, 失效}（防御批改类型/Excel 任意文本污染）
-                status = _normalize_status(p.get("status"), end_date)
-                company = p.get("company", "")
-                job_title = p.get("job_title", "")
-                insurance_company = p.get("insurance_company", "")
-                policy_number = (p.get("policy_number") or "").strip()
-                source_file = p.get("file_name", p.get("source_file", ""))
-
-                cursor.execute(
-                    "SELECT id FROM insurance_personnel WHERE name = ? AND id_number = ?",
-                    (name, id_num),
-                )
-                row = cursor.fetchone()
-
-                if row:
-                    # 同名同身份证 → 更新最新起止日期
-                    cursor.execute("""
-                        UPDATE insurance_personnel SET
-                            start_date = ?, end_date = ?, status = ?,
-                            company = ?, job_title = ?, insurance_company = ?,
-                            policy_number = ?, source_file = ?
-                        WHERE id = ?
-                    """, (
-                        start_date, end_date, status,
-                        company, job_title, insurance_company,
-                        policy_number, source_file,
-                        row["id"],
-                    ))
-                    updated += 1
-                else:
-                    # 新增
+                # ---------- 该人首次入库 → 新增 ----------
+                if not rows:
+                    status = _normalize_status(rec["status"], rec["end_date"], today)
+                    if rec["end_date"] and rec["end_date"] < today:
+                        status = "失效"
                     cursor.execute("""
                         INSERT INTO insurance_personnel (
                             name, id_number, id_type, company, start_date, end_date,
@@ -991,19 +1095,143 @@ def add_insurance_personnel(persons: list[dict]) -> dict:
                             source_file, status, created_at
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
-                        name, id_num,
-                        p.get("id_type", "身份证"), company,
-                        start_date, end_date,
-                        job_title, p.get("birth_date", ""),
-                        insurance_company, policy_number,
-                        source_file, status, created_at,
+                        name, id_num, rec["id_type"], rec["company"],
+                        rec["start_date"], rec["end_date"], rec["job_title"],
+                        rec["birth_date"], rec["insurance_company"],
+                        rec["policy_number"], rec["source_file"], status, created_at,
                     ))
                     added += 1
+                    if len(details) < 50:
+                        details.append({"name": name, "id_number": id_num,
+                                        "action": "added", "reason": "首次入库"})
+                    continue
+
+                # ---------- 已存在：选替换目标（排序键最大的一行）----------
+                target = max(rows, key=_personnel_rank)
+                should, reason = _decide_replace(rec, target, today)
+
+                # 历史遗留的重复行（一人一行是用户 2026-11-05 明确的业务规则；
+                # 迁移建唯一索引时若发现已有重复会跳过并告警，写侧须能自行收敛）
+                others = [r for r in rows if r["id"] != target["id"]]
+
+                # ---------- 合并字段：先吸收历史重复行的非空字段 ----------
+                merged = dict(target)
+                for extra in others:
+                    for f in _UPSERT_MERGE_FIELDS:
+                        if not (merged.get(f) or "").strip() and (extra.get(f) or "").strip():
+                            merged[f] = extra[f]
+
+                if not should and not others:
+                    skipped += 1
+                    if len(details) < 50:
+                        details.append({"name": name, "id_number": id_num,
+                                        "action": "skipped", "reason": reason})
+                    continue
+
+                if should:
+                    # ---------- 新数据覆盖非空字段 ----------
+                    for f in _UPSERT_MERGE_FIELDS:
+                        if rec.get(f):
+                            merged[f] = rec[f]
+                    merged["start_date"], merged["end_date"] = _merge_period(rec, target)
+                    raw_status = rec["status"] or target.get("status") or ""
+                    merged["status"] = _normalize_status(raw_status, merged["end_date"], today)
+                    # 区间已过期 → 强制失效（与 web_app/server.py 入库口径一致）
+                    if merged["end_date"] and merged["end_date"] < today:
+                        merged["status"] = "失效"
+                    action = "replaced"
+                else:
+                    # 仅收敛历史重复行，不改字段（库中记录保得更久 → 不覆盖）
+                    action = "collapsed"
+                    merged["status"] = target.get("status") or "正常"
+
+                # ---------- 删除同 (name, id_number) 的其余行（一人一行）----------
+                # 先删后改：避免 policy_number 变更时撞表级 UNIQUE(name,id_number,policy_number)
+                if others:
+                    cursor.executemany(
+                        "DELETE FROM insurance_personnel WHERE id=?",
+                        [(r["id"],) for r in others],
+                    )
+
+                cursor.execute("""
+                    UPDATE insurance_personnel SET
+                        id_type = ?, company = ?, start_date = ?, end_date = ?,
+                        job_title = ?, birth_date = ?, insurance_company = ?,
+                        policy_number = ?, source_file = ?, status = ?, created_at = ?
+                    WHERE id = ?
+                """, (
+                    merged.get("id_type") or "身份证", merged.get("company") or "",
+                    merged["start_date"], merged["end_date"],
+                    merged.get("job_title") or "", merged.get("birth_date") or "",
+                    merged.get("insurance_company") or "", merged.get("policy_number") or "",
+                    merged.get("source_file") or "", merged["status"], created_at,
+                    target["id"],
+                ))
+                if should:
+                    updated += 1
+                else:
+                    collapsed += 1
+                if len(details) < 50:
+                    details.append({"name": name, "id_number": id_num,
+                                    "action": action, "reason": reason,
+                                    "removed_duplicates": len(others)})
 
             conn.commit()
-            return {"added": added, "updated": updated}
+            return {
+                "written": added + updated + collapsed,
+                "added": added,
+                "updated": updated,
+                "collapsed": collapsed,
+                "skipped": skipped,
+                "details": details,
+            }
         finally:
             conn.close()
+
+
+def upsert_insurance_personnel(persons: list[dict]) -> int:
+    """批量写入保单人员数据（增保：新增或替换）
+
+    去重规则（用户约定 2026-11-05，详见 upsert_insurance_personnel_detailed）：
+    - 同一 (name, id_number) 视为同一人，库中最多保留一条
+    - 新数据起止时间「更久」→ 替换原记录；否则不新增、不修改
+    - 替换时字段「非空优先、新数据优先」合并，日期为空保留原记录日期
+
+    Args:
+        persons: 人员列表，每个 dict 需包含 status 字段（"正常"/"失效"）
+
+    Returns:
+        写入条数（新增 + 替换）
+    """
+    return upsert_insurance_personnel_detailed(persons)["written"]
+
+
+def add_insurance_personnel(persons: list[dict]) -> dict:
+    """新增保单人员数据（同名同身份证则按「起止更久才替换」规则处理）
+
+    2026-11-05 起与 upsert_insurance_personnel 共用同一套写侧去重规则：
+    - 不存在 → 新增记录
+    - 存在且新数据起止「更久」→ 替换原记录（并删除该人其余重复行）
+    - 存在且旧数据更久 → 跳过（不新增、不修改）
+
+    ⚠️ 原实现在"已存在"分支无条件覆盖 start_date/end_date，
+       会用较旧的止期把在保人员降级为失效 —— 现已统一到写侧规则。
+
+    Args:
+        persons: 人员列表，每个 dict 需包含 status 字段
+
+    Returns:
+        {"added": 新增条数, "updated": 替换条数, "collapsed": 收敛条数,
+         "skipped": 跳过条数, "written": 写入条数}
+    """
+    report = upsert_insurance_personnel_detailed(persons)
+    return {
+        "added": report["added"],
+        "updated": report["updated"],
+        "collapsed": report["collapsed"],
+        "skipped": report["skipped"],
+        "written": report["written"],
+    }
 
 
 def deactivate_insurance(id_numbers: list[str], end_date: str | None = None,
