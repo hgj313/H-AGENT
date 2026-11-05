@@ -77,6 +77,15 @@ def _format_punch_time_for_feishu(raw: str) -> str:
     # 已经是目标格式直接返回（避免重复格式化引入的浮点误差）
     if re.match(r"^\d{4}/\d{2}/\d{2} \d{2}:\d{2}$", s):
         return s
+    # 兜底：纯数字时间戳（2026-10-10 ERP 改版后 DB 历史脏数据可能是 13 位毫秒 / 10 位秒）
+    if re.match(r"^\d{10,13}$", s):
+        ts = int(s)
+        if len(s) >= 13:
+            ts = ts / 1000.0  # 毫秒 → 秒
+        try:
+            return datetime.fromtimestamp(ts).strftime(_FEISHU_DT_FORMAT)
+        except (ValueError, OSError, OverflowError):
+            return s
     for fmt in _PUNCH_TIME_PATTERNS:
         try:
             return datetime.strptime(s, fmt).strftime(_FEISHU_DT_FORMAT)
@@ -344,7 +353,8 @@ class FeishuWebhookPusher:
                         self._stats["last_sent_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         _log(
                             f"[{source}] 推送成功 | client_token={headers['Client-Token'][:12]}... | "
-                            f"name={payload.get('name', '')} | punch_time={payload.get('punch_time', '')}"
+                            f"name={send_payload.get('name', '')} | punch_time={send_payload.get('punch_time', '')}"
+                            f"（原始值: {payload.get('punch_time', '')}）"
                         )
                         return
                     # 业务错误：不重试，落 DLQ

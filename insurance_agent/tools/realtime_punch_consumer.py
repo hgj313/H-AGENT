@@ -410,7 +410,8 @@ def _process_events(events: list):
             "project_manager": mgr.get("project_manager", ""),
             "manager_phone": mgr.get("manager_phone", ""),
             "manager_email": mgr.get("manager_email", ""),
-            "punch_time": e.get("punchTime", ""),  # 补：让飞书表格"打卡时间"列有数据
+            # 补：让飞书表格"打卡时间"列有数据（normalize_punch_time 防时间戳原样透传）
+            "punch_time": db.normalize_punch_time(e.get("punchTime", "")),
         })
 
     _STATS["last_processed"] = len(norm)
