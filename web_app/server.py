@@ -1803,6 +1803,59 @@ async def feishu_webhook_test():
     })
 
 
+# ==================== 飞书多维表格全量打卡同步 ====================
+
+@app.get("/api/feishu-bitable/status")
+async def feishu_bitable_status():
+    """查看多维表格同步配置状态（凭证脱敏）。"""
+    from insurance_agent.tools.punch_bitable_sync import PunchBitableSync
+    sync = PunchBitableSync()
+    cfg = sync._config.copy()
+    for key in ("app_secret", "app_id"):
+        val = cfg.get(key)
+        if val:
+            cfg[key] = (val[:4] + "***" + val[-4:]) if len(val) > 8 else "***"
+    return JSONResponse({
+        "enabled": sync.enabled,
+        "config": cfg,
+        "mapping_columns": list(sync._mapping.keys()),
+    })
+
+
+@app.post("/api/feishu-bitable/probe")
+async def feishu_bitable_probe():
+    """连通性自检：验 token、列表、字段名（不写任何数据）。
+
+    用于部署后确认凭证与列名映射是否正确。
+    """
+    from insurance_agent.tools.punch_bitable_sync import PunchBitableSync
+    sync = PunchBitableSync()
+    result = await asyncio.to_thread(sync.probe)
+    return JSONResponse(result)
+
+
+@app.post("/api/feishu-bitable/reload")
+async def feishu_bitable_reload():
+    """热加载 .feishu_bitable.json（改完凭证/映射无需重启服务）。"""
+    from insurance_agent.tools.punch_bitable_sync import PunchBitableSync
+    sync = PunchBitableSync()
+    cfg = sync.reload_config()
+    return JSONResponse({"ok": True, "enabled": bool(cfg.get("enabled"))})
+
+
+@app.post("/api/punch/sync-to-bitable")
+async def punch_sync_to_bitable(punch_date: str = None):
+    """把某天打卡数据同步到飞书多维表格（默认今天）。
+
+    幂等：以「打卡日期+身份证号」为主键，重复调用只更新不新增。
+    """
+    from insurance_agent.tools.punch_bitable_sync import PunchBitableSync
+    sync = PunchBitableSync()
+    # 同步可能耗时（几百条 + 网络往返），丢线程池避免阻塞事件循环触发 watchdog 重启
+    result = await asyncio.to_thread(sync.sync_date, punch_date)
+    return JSONResponse(result)
+
+
 @app.post("/api/summary/trigger")
 async def summary_trigger(period: str = "morning", force: bool = True):
     """手动触发未参保人员汇总（用于测试 + 紧急补发）。
@@ -2428,6 +2481,15 @@ async def startup_event():
         cfg = scheduler_mod.load_scheduler_config()
         return run_daily_snapshot(keep_days=cfg.get("snapshot_keep_days", 30))
 
+    # 任务7：打卡数据同步到飞书多维表格（每日 16:45，打卡同步完成后跑）
+    # 复用 punch_records 表作为数据源，不重复拉 ERP
+    def feishu_bitable_sync_task():
+        from insurance_agent.tools.punch_bitable_sync import PunchBitableSync
+        sync = PunchBitableSync()
+        if not sync.enabled:
+            return {"success": False, "disabled": True, "error": "多维表格同步未启用"}
+        return sync.sync_date()
+
     scheduler_mod.create_scheduler()
     scheduler_mod.get_scheduler().add_task("daily_check", daily_task, "sync_time")
     scheduler_mod.get_scheduler().add_task("expiry_reminder", expiry_task, "expiry_time")
@@ -2435,6 +2497,7 @@ async def startup_event():
     scheduler_mod.get_scheduler().add_task("afternoon_summary", afternoon_summary_task, "summary_afternoon_time")
     scheduler_mod.get_scheduler().add_task("daily_cleanup", daily_cleanup_task, "cleanup_time")
     scheduler_mod.get_scheduler().add_task("daily_snapshot", daily_snapshot_task, "snapshot_time")
+    scheduler_mod.get_scheduler().add_task("feishu_bitable_sync", feishu_bitable_sync_task, "feishu_sync_time")
     scheduler_mod.get_scheduler().start()
 
     # 实时打卡事件消费者：ERP 每推送一条打卡，秒级核对保险并通知项目经理/保险管理人员

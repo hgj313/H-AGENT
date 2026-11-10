@@ -1,0 +1,33 @@
+{
+  "enabled": false,
+  "app_id": "cli_xxxxxxxxxxxxxxxx",
+  "app_secret": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "app_token": "bascnxxxxxxxxxxxxxx",
+  "table_id": "",
+  "table_name": "",
+  "timeout": 15,
+  "field_mapping": {
+    "姓名": "member_name",
+    "身份证号": "identification_number",
+    "项目名称": "project_name",
+    "班组": "team_name",
+    "劳务公司": "supplier_name",
+    "劳务分类": "category_name",
+    "审核状态": "examination_status",
+    "年龄": "age",
+    "电话": "telephone",
+    "项目经理": "project_manager",
+    "项目经理手机": "manager_phone",
+    "项目经理邮箱": "manager_email",
+    "打卡日期": "punch_date",
+    "打卡时间": "punch_time"
+  },
+  "notes": [
+    "1. enabled: true 才执行同步；false 时 /api/punch/sync-to-bitable 直接返回 disabled。",
+    "2. app_token 从多维表格 URL 的 /base/ 后面取；table_id 可留空用 table_name 按名字查。",
+    "3. 权限要求：bitable:app（查看、评论、编辑和管理多维表格）；自建应用需发布版本后生效。",
+    "4. field_mapping 左侧是飞书列名（必须与表里的列名完全一致），右侧是本地 punch_records 字段名。",
+    "5. 日期列（打卡日期/打卡时间）自动转 13 位毫秒时间戳；数字列（年龄）自动转数字。",
+    "6. 修改本文件后调用 POST /api/punch/sync-to-bitable 或 /api/feishu-bitable/probe 会自动热加载。"
+  ]
+}

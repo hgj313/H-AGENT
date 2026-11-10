@@ -63,6 +63,9 @@ DEFAULT_CONFIG = {
     "snapshot_time": "03:00",
     "snapshot_enabled": True,
     "snapshot_keep_days": 30,
+    # 打卡数据同步到飞书多维表格（每日 16:45，打卡同步 16:00 之后）
+    "feishu_sync_time": "16:45",
+    "feishu_sync_enabled": True,
 }
 
 # 全局调度器实例（供 web 层使用）
@@ -230,6 +233,8 @@ class Scheduler:
             if name == "daily_cleanup" and not config.get("cleanup_enabled", True):
                 continue
             if name == "daily_snapshot" and not config.get("snapshot_enabled", True):
+                continue
+            if name == "feishu_bitable_sync" and not config.get("feishu_sync_enabled", True):
                 continue
 
             time_str = config.get(time_key, "08:00")
