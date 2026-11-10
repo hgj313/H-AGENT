@@ -49,11 +49,12 @@ def default_config() -> Dict[str, Any]:
             "secret_key": "",
             "topic": "JS_PROD_MQ",
             "tag": "CLOCK_RECORD_CREATE",
-            # ⚠️ 必须与现有 MQ 桥接（GID_INSURANCE_AGENT_PROCESS）使用**不同的消费组**，
+            # ⚠️ 必须与现有 MQ 桥接（insurance-automation）使用**不同的消费组**，
             #    否则两条链路会互相抢消息，导致各自只收到一半。
-            # ⚠️ 阿里云 RocketMQ 的消费组必须**先在控制台创建**，否则连接报
+            # ⚠️ 阿里云 RocketMQ 的消费组必须**先在控制台创建**，否则消费时报
             #    AccessDenied: resource MQ_INST_xxx%<group> not created。
-            "group": "GID_FEISHU_DIRECT_SYNC",
+            #    命名风格与现有实例保持一致（无 GID_ 前缀）。
+            "group": "feishu-direct-sync",
             "use_tls": False,
             "max_consecutive_errors": 5,
         },

@@ -31,7 +31,7 @@
 ```
 ERP 打卡
    ↓  MQ: JS_PROD_MQ / tag=CLOCK_RECORD_CREATE
-   ↓  消费组: GID_FEISHU_DIRECT_SYNC（独立，不抢桥接的消息）
+   ↓  消费组: feishu-direct-sync（独立，不抢桥接的消息）
 ┌──────────────────────────────────────┐
 │ erp_feishu_direct.consumer（独立进程）│
 │  ├─ 攒批：3 秒窗口 / 单批 ≤500 条      │
@@ -42,6 +42,12 @@ ERP 打卡
    ↓  POST /bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_update
 飞书多维表格
 ```
+
+> **消费者程序跑在哪里？**
+> 飞书开放平台**不提供常驻进程运行环境**，也无法主动订阅外部 MQ —— 它是「被调用方」。
+> 所以消费者程序**不在飞书端跑**，仍跑在能同时访问「阿里云 RocketMQ 公网 HTTP 接入点」
+> 和「飞书开放平台」的机器上（即你的本机 Windows）。
+> 飞书端要做的只是**授权 + 建目的地**（见步骤 2、3）。
 
 ---
 
@@ -94,34 +100,51 @@ ERP 的 MQ 消息可能重复投递（网络重试、消费者重启、消息重
 
 ## 五、接入步骤
 
+### 0. 先读这一段：谁跑在哪
+
+| 组件 | 跑在哪 | 说明 |
+|---|---|---|
+| ERP 打卡推送 | ERP 服务器（现有） | 往 `JS_PROD_MQ` 推 `CLOCK_RECORD_CREATE` |
+| **消费者程序** | **你的本机 Windows** | `erp_feishu_direct\consumer.py`，后台常驻 |
+| 多维表格 | 飞书云端 | 数据最终落地的地方 |
+| 飞书开放平台 | 飞书云端 | **只提供 API，不跑你的程序** |
+
+飞书端**没有**「部署消费者程序」这个动作 —— 飞书开放平台不提供常驻进程环境，
+也不能主动去订阅外部 MQ。飞书端要做的是把**目的地**和**授权**准备好。
+
 ### 1. 阿里云 RocketMQ 创建消费组 ⚠️ 必做
 
 **控制台 → 消费者组（Group）→ 新建**，组名填：
 
 ```
-GID_FEISHU_DIRECT_SYNC
+feishu-direct-sync
 ```
+
+订阅表达式填 `CLOCK_RECORD_CREATE`。
 
 不创建会直接报：
 
 ```
 AccessDenied  MQServerException
 "valid resource owner failed. maybe the resource
- MQ_INST_1756405205604856_BX7N4khY%GID_FEISHU_DIRECT_SYNC not created"
+ MQ_INST_1756405205604856_BX7N4khY%feishu-direct-sync not created"
 ```
 
 这一步已实测确认 —— 不预建消费组，MQ 连接直接被拒。
 
-> 已有组 `GID_INSURANCE_AGENT_PROCESS` 是给现有桥接用的，**不要复用**。
+> ⚠️ **现有桥接的组名是 `insurance-automation`（实测有效），绝对不要复用。**
+> 同一个消费组内会互相抢消息，两条链路各收一半。
+> 自检脚本 `probe.py` 会拦截重名配置。
 
 ### 2. 飞书开放平台建自建应用
 
-开通权限 **`bitable:app`**（查看、评论、编辑和管理多维表格）→ **发布版本**
-（自建应用必须发布后才生效）。
+1. 开发者后台 → 创建企业自建应用
+2. **权限管理** → 开通 **`bitable:app`**（查看、评论、编辑和管理多维表格）
+3. **版本管理与发布** → 创建版本 → **发布**
+   （自建应用不发布，API 调用会直接返回权限错误）
+4. 「应用凭证」页拿 `app_id` / `app_secret`
 
-从「应用凭证」页拿 `app_id` / `app_secret`。
-
-### 3. 建目标多维表格
+### 3. 建目标多维表格并授权给应用
 
 **列名**要和默认映射完全一致：
 
@@ -143,6 +166,22 @@ AccessDenied  MQServerException
 
 从表格 URL 取 `app_token`：`https://xxx.feishu.cn/base/bascnXXXX` → 取 `bascnXXXX`。
 
+**然后把应用加为这张表的协作者**（这一步最容易漏）：
+
+```
+多维表格页面 → 右上角「...」→「...更多」→「添加文档应用」
+   → 搜索你的应用 → 权限选「可管理」
+```
+
+> 飞书是**双层权限**：应用权限（bitable:app，需管理员审批 + 发布）
+> **⊕** 文档权限（必须显式把应用加为这张表的「可管理」协作者）。
+> 只开应用权限而不做「添加文档应用」，会出现
+> 「查询记录成功但数据为空」或 1254043。
+>
+> 前提：添加文档应用前，应用至少要开通一个多维表格 API 权限，
+> 否则搜索框里根本找不到这个应用。
+> 表格若开启了**高级权限**，必须给「可管理」权限，否则同样操作不了。
+
 ### 4. 写配置
 
 ```bash
@@ -160,7 +199,29 @@ FEISHU_APP_TOKEN=bascnXXXXXXXXXXXX
 
 `ROCKETMQ_ACCESS_KEY` / `ROCKETMQ_SECRET_KEY` 你的 `.env` 里已经有了。
 
-### 5. 启动
+### 5. 自检（强烈建议先跑这步）
+
+```bash
+H-AGENT\.venv\Scripts\python.exe -m erp_feishu_direct.probe --write-test
+```
+
+这个脚本**不依赖 8765 服务**，会逐项体检：
+
+| 检查项 | 失败含义 |
+|---|---|
+| 凭证齐备 | `.env` 缺 key |
+| 飞书鉴权 | app_id / app_secret 不对 |
+| app_token + 数据表列表 | 没做「添加文档应用」，或 app_token 填错 |
+| 目标表定位 | table_id / table_name 都没配 |
+| 13 列是否齐全 | 缺列 → 写入报 1254045 |
+| 日期列类型 | 不是「日期」→ 写入报 1254064 |
+| RocketMQ 消费组 | 组没建 → 报 AccessDenied not created |
+| 与桥接组重名 | 会互相抢消息，直接拦截 |
+| `--write-test` 写→读→删 | 验证写权限，测试记录自动清理 |
+
+全绿再启动消费者，能省掉大量试错。
+
+### 6. 启动
 
 ```bash
 powershell -ExecutionPolicy Bypass -File "C:\insurance-automation\一键启动直连同步.ps1"
@@ -171,7 +232,7 @@ powershell -ExecutionPolicy Bypass -File "C:\insurance-automation\一键启动�
 **必须用 `H-AGENT\.venv`** —— `mq_http_sdk` 只装在这个 venv 里，
 项目根 `.venv` 没有。
 
-### 6. 看日志
+### 7. 看日志
 
 ```bash
 tail -f C:\insurance-automation\erp_feishu_direct.log
@@ -181,14 +242,14 @@ tail -f C:\insurance-automation\erp_feishu_direct.log
 
 ```
 ERP → 飞书多维表格 直连消费者
-  MQ: topic=JS_PROD_MQ tag=CLOCK_RECORD_CREATE group=GID_FEISHU_DIRECT_SYNC
+  MQ: topic=JS_PROD_MQ tag=CLOCK_RECORD_CREATE group=feishu-direct-sync
   飞书: app_token=bascnXXX table=tblXXX
   攒批: 窗口 3s / 单批上限 500
 收到 MQ 消息 3 条（累计 3）
 [写入飞书] 本批 3 条 → 新增 3 / 更新 0 / 跳过 0 / 失败 0（攒批窗口 3.0s）
 ```
 
-### 7. 停止
+### 8. 停止
 
 ```bash
 powershell -ExecutionPolicy Bypass -File "C:\insurance-automation\一键停止直连同步.ps1"
@@ -201,6 +262,7 @@ powershell -ExecutionPolicy Bypass -File "C:\insurance-automation\一键停止�
 | 文件 | 职责 |
 |---|---|
 | `erp_feishu_direct/consumer.py` | 主程序：订阅 MQ → 攒批 → 写飞书 |
+| `erp_feishu_direct/probe.py` | **独立自检脚本**（不依赖 8765），启动前体检 |
 | `erp_feishu_direct/config.py` | 配置加载（默认 → JSON → 环境变量） |
 | `erp_feishu_direct/mapper.py` | 消息解析 + 字段映射（纯函数） |
 | `erp_feishu_direct/store.py` | 幂等映射存储（JSON，原子写） |
@@ -222,6 +284,7 @@ powershell -ExecutionPolicy Bypass -File "C:\insurance-automation\一键停止�
 
 **Q: `AccessDenied ... not created`**
 消费组没在阿里云控制台创建。见步骤 1。
+`probe.py` 会直接告诉你组名和该去哪儿建。
 
 **Q: `FEISHU_APP_ID ... 缺失`**
 `.env` 里没配飞书凭证。见步骤 4。
@@ -236,6 +299,10 @@ powershell -ExecutionPolicy Bypass -File "C:\insurance-automation\一键停止�
 **Q: 飞书报 1254062 SingleSelectFieldConvFail**
 用了单选列但选项不存在。改成文本类型最省事。
 
+**Q: 飞书报 1254043 / 1254002 资源不存在**
+多半是**没做「添加文档应用」**。应用权限 ⊕ 文档权限是两层，
+只开了 `bitable:app` 但没把应用加为该表的「可管理」协作者，就会这样。
+
 **Q: 飞书里出现重复行**
 确认幂等映射文件 `feishu_direct_sync_map.json` 在工作目录且可写。
 如果该文件被清空，历史记录会被当成新记录重复新增。
@@ -248,14 +315,23 @@ powershell -ExecutionPolicy Bypass -File "C:\insurance-automation\一键停止�
 分别看两个日志的「累计收到」条数 —— 同一段时间内两条链路的条数应该接近，
 而不是各占一半。
 
+**Q: 想确认消费组到底存不存在**
+用 `probe.py`。注意**不要**用 `/consumer/groupStatus` 接口判断 ——
+那是管理级接口，用消息消费的 AK 调用会固定返回 403
+`The OwnerId that your Access Key Id associated to is forbidden`，
+连已存在的组也查不出来，是个假信号。
+`probe.py` 走的是消费端点，靠 `404 MessageNotExist`（组存在）与
+`403 AccessDenied ... not created`（组不存在）区分。
+
 ---
 
 ## 八、测试
 
 ```bash
-.venv/Scripts/python.exe -m pytest tests/test_erp_feishu_direct.py tests/test_erp_feishu_direct_e2e.py -q
+.venv/Scripts/python.exe -m pytest tests/test_erp_feishu_direct.py tests/test_erp_feishu_direct_e2e.py tests/test_erp_feishu_direct_probe.py -q
 ```
 
-34 项，覆盖：时间戳转换、消息解析（含双层 JSON、rename）、字段映射、
+41 项，覆盖：时间戳转换、消息解析（含双层 JSON、rename）、字段映射、
 幂等存储持久化与过期清理，以及用假飞书客户端跑完整闭环
-（首次新增 → 重复转更新 → 超 500 条分批）。
+（首次新增 → 重复转更新 → 超 500 条分批），
+外加自检脚本的各项判定（缺列 / 日期列类型错 / 写测试后清理 / 组名重名拦截）。

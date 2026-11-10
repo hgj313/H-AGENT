@@ -9,7 +9,7 @@
     "secret_key": "",
     "topic": "JS_PROD_MQ",
     "tag": "CLOCK_RECORD_CREATE",
-    "group": "GID_FEISHU_DIRECT_SYNC",
+    "group": "feishu-direct-sync",
     "use_tls": false,
     "max_consecutive_errors": 5
   },
@@ -54,11 +54,12 @@
     "打卡日期": "punchTime"
   },
   "notes": [
-    "1. 【必做前置】阿里云 RocketMQ 控制台 → 消费者组 → 新建 GID_FEISHU_DIRECT_SYNC。不创建会报 AccessDenied: resource ... not created。",
-    "2. 【重要】mq.group 必须与现有 MQ 桥接（GID_INSURANCE_AGENT_PROCESS）不同，否则两条链路互相抢消息。",
+    "1. 【必做前置】阿里云 RocketMQ 控制台 → 消费者组 → 新建 feishu-direct-sync（订阅 tag 填 CLOCK_RECORD_CREATE）。不创建会报 AccessDenied: resource ... not created。",
+    "2. 【重要】mq.group 必须与现有 MQ 桥接（insurance-automation）不同，否则两条链路互相抢消息，各收一半。",
     "3. 密钥不要写在这里 —— 走 .env 环境变量：ROCKETMQ_ACCESS_KEY / ROCKETMQ_SECRET_KEY / FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_APP_TOKEN。",
     "4. feishu.table_id 与 table_name 二选一：填 table_name 则按表名自动查 ID。",
     "5. batch.window_seconds 是攒批窗口：ERP 逐条推送，攒批后一次性写飞书（避开 10 QPS 限制）。",
-    "6. 幂等映射文件 feishu_direct_sync_map.json 自动生成，记录 日期+身份证号 → 飞书 record_id。"
+    "6. 幂等映射文件 feishu_direct_sync_map.json 自动生成，记录 日期+身份证号 → 飞书 record_id。",
+    "7. 启动前先自检：H-AGENT\\.venv\\Scripts\\python.exe -m erp_feishu_direct.probe --write-test"
   ]
 }

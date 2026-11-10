@@ -72,7 +72,11 @@ PDF：PyMuPDF 文字层 + 扫描件 MiniMax-M3 视觉 OCR。LangGraph：policy_p
 ## ERP / MQ / 短信
 - page_size：fetch_all_punch_data=500、fetch_project_orders=500、fetch_user_list=1000
 - 打卡链路：ERP `findCompleteLaborCalculation/page`（HMAC-SHA256 签名，X-Timestamp/X-Nonce/X-Sign）→ `coverage_check.sync_punch_data()` 三接口并发 → `db.upsert_punch_records()` → 表 `punch_records` UNIQUE(punch_date, identification_number)
-- MQ：topic=`JS_PROD_MQ`、group=`insurance-automation`、endpoint 带 `-public`、独立消费组 GID_INSURANCE_AGENT_PROCESS
+- MQ：topic=`JS_PROD_MQ`、tag=`CLOCK_RECORD_CREATE`、**group=`insurance-automation`**、endpoint 带 `-public`
+- ⚠️ **消费组真实名是 `insurance-automation`**（桥接日志实测）；历史文档里的 `GID_INSURANCE_AGENT_PROCESS` 是「语义命名」，实际**不存在**（实测 403 not created）。记「意图」不记「字符串」
+- ⚠️ **消费组必须在阿里云控制台预建**，否则消费报 `AccessDenied ... MQ_INST_xxx%<group> not created`
+- ⚠️ **`/consumer/groupStatus` 不能用来判消费组是否存在** —— 管理级接口，用消费 AK 调用固定 403 `OwnerId ... forbidden`，连已存在的组也查不出（假信号）。改用消费端点探活：`404 MessageNotExist`=组存在、`403 not created`=组不存在
+- ⚠️ 消费请求的 **tag 也参与资源键校验**：拿不存在的 tag 去消费，即使组存在也报 not created
 - 双 dedup：`last_daily_check.punch_date`（force 可绕）+ `daily_sms_sent_today.phones`（force 不可绕）
 - ⚠️ **通知安全规则**：`/api/summary/trigger?force=true`、`/api/reminder/check-expiry`、`/api/daily-check?force=true`、改 `notification_test_mode` 前**必须问用户**；例外=scheduler 定时任务
 - 双开关勿混：A=`punch_table_for_sms`（数据源），B=`notification_test_mode`（通知路由）
@@ -83,6 +87,16 @@ PDF：PyMuPDF 文字层 + 扫描件 MiniMax-M3 视觉 OCR。LangGraph：policy_p
 - 局限：一次一条、只能新增、限 10 QPS → **不适合全量打卡同步**（449 条/天）
 - `feishu-uploader-plugin/` 是飞书多维表格**自动化插件**（附件 PDF → 本地 /api/upload），方向相反
 - ⚠️ 待建：全量打卡同步应走 **Bitable 开放 API**（tenant_access_token + app_token + table_id + batch_create/batch_update，单次 500 条）
+
+## 飞书直连链路（ERP MQ → 飞书，独立进程）
+- 目录 `erp_feishu_direct/`：**不经过 8765、不写 SQLite**，纯内存直传 + JSON 幂等映射
+- `consumer.py`（主程序）/ `probe.py`（**独立自检，不依赖 8765**）/ `config.py` / `mapper.py` / `store.py` / `writer.py`
+- 消费组 `feishu-direct-sync`（≠ 桥接的 `insurance-automation`）；攒批 3s 窗口 / 单批 ≤500；单实例锁端口 8768
+- 幂等：业务主键 `(打卡日期,身份证号)` → 飞书 `record_id`，存 `feishu_direct_sync_map.json`（原子写，按天分桶留 7 天）
+- ⚠️ 飞书**双层权限**：应用权限 `bitable:app`（+发布版本）**⊕** 文档权限（多维表格「...」→「...更多」→「添加文档应用」加为**可管理**）。只做前者会 1254043/数据为空
+- ⚠️ 日期列必须传 **13 位毫秒 int**（字符串报 1254064）；「打卡日期」归零到当天零点、「打卡时间」保留时分秒
+- ⚠️ **消费者程序不在飞书端跑** —— 飞书开放平台不提供常驻进程、不能主动订阅外部 MQ，它是「被调用方」
+- 必用 `H-AGENT\.venv`（`mq_http_sdk` 只装在这）；`mq_http_sdk` 需 Python 3.12+ 兼容补丁（去 `HTTPSConnection` 的 `strict` 参数）
 
 ## 服务稳定性
 - 8765 **仅 127.0.0.1 监听**。常驻：计划任务 `InsuranceAgentWatchdog`(SYSTEM) 跑 `pythonw service_watchdog.py`
