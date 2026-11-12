@@ -30,6 +30,12 @@
 - 工种双字段：`_OCCUPATION_CLASS_PATTERN`→occupation_class；`_JOB_PATTERN`→job_title；job_title 空则退化
 - 跨行工种合并：`X类职业\n工种` → 合并前"职业"后插 `\ue000`，合并后还原（⚠️ 不能用 `\x00`）
 - 利宝批单生效日重复 → `_strip_zero_count_remove_markers` + `_is_repeated_effective_date`（起止同天且重复→清空交 validator 回填）
+- **行级增删保判定**：pre_region 回溯到「上一个身份证号后」→ 会吞进**上一行的状态单元格**；
+  原 `_detect_row_modification_type` 是「减保优先」全局扫描 → 混合增/减批单会把新增人员误判成减保
+  - 消歧依据 = **表头列序**（状态列相对证件号列的左右）：PDF 表头按从左到右出现在抽取文本中
+  - 状态列在**右** → 取 `post_region`（黄河《雇员变动清单》）；在**左** → 取 `pre_region`（中国人寿《被保险人变动清单》）
+  - 实现 `_detect_status_column_side` / `_first_marker_in` / `_detect_row_modification_type_by_column`
+  - ⚠️ **仅「同时命中增+减标记」的歧义场景启用**，单标记场景走原逻辑 → 既有行为零变化
 
 ## date_parser 整体期间矩阵
 - 「自X起至Y止」：日期间允许任意中文+数字+时间词
