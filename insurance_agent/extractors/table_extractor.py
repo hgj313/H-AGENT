@@ -14,6 +14,7 @@
 - 默认 → 增保
 """
 
+import logging
 import re
 from insurance_agent.domain import InsuredPerson
 from insurance_agent.tools import (
@@ -24,6 +25,8 @@ from insurance_agent.tools import (
     extract_company_name,
 )
 from .base import BaseExtractor
+
+logger = logging.getLogger(__name__)
 
 
 class TableExtractor(BaseExtractor):
@@ -76,6 +79,17 @@ class TableExtractor(BaseExtractor):
     # 表示"新+旧同步替换"——这种格式的PDF「减少被保险人」列只显示姓名+编号
     # 没有身份证号，extractor 只能抓到「增加」一侧；mod_type 一律标 增保
     _SIMULTANEOUS_MARKERS = ["同期增减", "同期替换", "同期置换"]
+
+    # 状态/变动类型列的列名（2026-11-12 新增）
+    # 用途：判断「状态列」相对「证件号列」在表格中的左右位置，
+    #       从而确定每一行的增删标记应该从 pre_region 还是 post_region 取。
+    _STATUS_COLUMN_PATTERN = re.compile(
+        r"变动类型|变更类型|批改类型|增删类型|变动情况|变更情况|人员变动|状态"
+    )
+    # 证件号列的列名（长名优先："证件号码" 含 "证件号"，短名会被长名抢先匹配）
+    _ID_COLUMN_PATTERN = re.compile(
+        r"证件号码|身份证号码|身份证件号码|证件号|身份证号"
+    )
 
     # 批单"生效日"语境标记（2026-11-03 新增）
     # 利宝批单正文里同一个生效日会被描述两次：
@@ -222,6 +236,8 @@ class TableExtractor(BaseExtractor):
         if not id_with_pos:
             return persons
         valid_ids = [i for i, _ in id_with_pos]
+        # 第一个身份证号的位置 → 表头一定在它之前（用于判断状态列相对证件号列的位置）
+        first_id_pos = id_with_pos[0][1]
 
         # 2. 按出现位置逐个处理每个身份证号
         for id_number, id_pos in id_with_pos:
@@ -317,7 +333,13 @@ class TableExtractor(BaseExtractor):
             # 4.5 (2026-09-17 新增) 每行 mod_type 检测
             # 中国人寿"被保险人变动清单"在 pre_region 含变动类型列（增加/减少/替换），
             # 同一份批单可能混合增/减（7月31替换人 (1).pdf 验证过）→ 必须 per-row 检测
-            row_mod_type = self._detect_row_modification_type(pre_region + post_region)
+            # 2026-11-12 增强：pre/post 拼接后同时含「增」「减」标记时（如黄河批单
+            # 《雇员变动清单》状态列在证件号右侧，pre_region 会吞进上一行的状态单元格），
+            # 改由 `_detect_row_modification_type_by_column` 按表头列序消歧，
+            # 单标记场景仍走原逻辑（行为不变）。
+            row_mod_type = self._detect_row_modification_type_by_column(
+                pre_region, post_region, list_text, first_id_pos
+            )
             mod_type_for_person = row_mod_type if row_mod_type else mod_type
 
             # 5. 在身份证号附近提取公司名 / 用工单位
@@ -564,3 +586,146 @@ class TableExtractor(BaseExtractor):
         if any(m in region for m in cls._ADD_MARKERS):
             return "增保"
         return ""
+
+    @classmethod
+    def _detect_status_column_side(cls, list_text: str, first_id_pos: int = -1) -> str:
+        """判断「状态/变动类型」列在「证件号」列的哪一侧
+
+        表格表头在 PDF 文本里按**从左到右**的顺序出现，所以比较两个列名
+        在文本中的先后位置，就能还原出它们的左右关系。
+
+        Returns:
+            "after"  → 状态列在证件号列**右侧** → 本行状态取 post_region
+            "before" → 状态列在证件号列**左侧** → 本行状态取 pre_region
+            ""       → 表头里找不到列名 → 调用方回退到原有判定逻辑
+        """
+        if not list_text:
+            return ""
+
+        # 表头一定在第一行数据之前 → 只扫描第一个身份证号之前的部分
+        if first_id_pos < 0:
+            m = re.search(r"\d{17}[\dXx]", list_text)
+            if not m:
+                return ""
+            first_id_pos = m.start()
+        header_zone = list_text[:first_id_pos]
+
+        id_matches = list(cls._ID_COLUMN_PATTERN.finditer(header_zone))
+        status_matches = list(cls._STATUS_COLUMN_PATTERN.finditer(header_zone))
+        if not id_matches or not status_matches:
+            return ""
+
+        # 取最后一个（散文在前、表头在后，列名只可能出现在表头里）
+        id_pos = id_matches[-1].start()
+        status_pos = status_matches[-1].start()
+
+        # 同一表头块内的列名彼此靠近；距离太远说明是正文里偶然出现的同名词
+        if abs(status_pos - id_pos) > 400:
+            return ""
+
+        return "after" if status_pos > id_pos else "before"
+
+    @classmethod
+    def _first_marker_in(cls, region: str, prefer_standalone: bool = False) -> str:
+        """取 region 中**最先出现**的增/删标记 → "增保" / "减保" / ""
+
+        与 `_detect_row_modification_type` 的本质区别：
+        后者是「减保优先」的全局扫描（只要区域里有减保词就判减保）；
+        本方法是「位置优先」，用于在 pre/post 两段拼成的混合区域里
+        定位**本行**的状态单元格。
+
+        Args:
+            prefer_standalone: 优先采信「独立单元格」形态的标记
+                （前后都是换行或区域边界），避免误取正文散文里的同义词。
+                黄河批单《雇员变动清单》的「删除」「新增」就是独立单元格；
+                中国人寿《被保险人变动清单》的「增加主被保险人」是单元格拼接，
+                不满足独立形态 → 此时退回「最先出现」规则。
+        """
+        if not region:
+            return ""
+        region = cls._strip_zero_count_remove_markers(region)
+
+        candidates = []  # (pos, type, is_standalone)
+        for marker in cls._REMOVE_MARKERS:
+            p = region.find(marker)
+            if p >= 0:
+                candidates.append((p, "减保", cls._is_standalone_cell(region, p, len(marker))))
+        for marker in cls._ADD_MARKERS:
+            p = region.find(marker)
+            if p >= 0:
+                candidates.append((p, "增保", cls._is_standalone_cell(region, p, len(marker))))
+
+        if not candidates:
+            return ""
+
+        if prefer_standalone:
+            standalone = [c for c in candidates if c[2]]
+            if standalone:
+                return min(standalone, key=lambda c: c[0])[1]
+
+        return min(candidates, key=lambda c: c[0])[1]
+
+    @staticmethod
+    def _is_standalone_cell(region: str, start: int, length: int) -> bool:
+        """判断 region[start:start+length] 是否是一个独立单元格的内容
+
+        独立 = 前面是区域开头或换行，后面是区域结尾或换行。
+        """
+        end = start + length
+        before_ok = start == 0 or region[start - 1] == "\n"
+        after_ok = end >= len(region) or region[end] == "\n"
+        return before_ok and after_ok
+
+    @classmethod
+    def _detect_row_modification_type_by_column(
+        cls,
+        pre_region: str,
+        post_region: str,
+        list_text: str = "",
+        first_id_pos: int = -1,
+    ) -> str:
+        """行级增删保判定（按「状态列相对证件号列的位置」消歧）
+
+        背景（2026-11-12 黄河批单「替换1人-深圳春羽园林工程有限公司1112」）：
+          《雇员变动清单》表头 = 序号|姓名|证件号|职业代码|职业/工种|状态|备注，
+          **状态列在证件号列右侧**。第 2 行（新增）的 pre_region 会回溯到
+          第 1 行（删除）的状态单元格 —— pre+post 拼起来同时含「删除」「新增」，
+          而 `_detect_row_modification_type` 是「减保优先」的全局扫描
+          → 第 2 行被误判成减保（该行其实应入库为增保）。
+
+        消歧依据：表头里「状态/变动类型」列相对「证件号」列的位置。
+          - 状态列在证件号**右**侧 → 本行状态在 post_region
+          - 状态列在证件号**左**侧 → 本行状态在 pre_region
+            （中国人寿《被保险人变动清单》属于后者：变动类型列在证件号左侧）
+
+        ⚠️ **只有「同时命中增标记和减标记」的歧义场景才启用本消歧**，
+           单标记场景完全走原逻辑 → 既有行为零变化。
+        """
+        combined = (pre_region or "") + (post_region or "")
+        base = cls._detect_row_modification_type(combined)
+        if not base:
+            return base
+
+        # 只命中减保 或 只命中增保 → 无歧义，保持原逻辑不动
+        stripped = cls._strip_zero_count_remove_markers(combined)
+        has_remove = any(m in stripped for m in cls._REMOVE_MARKERS)
+        has_add = any(m in stripped for m in cls._ADD_MARKERS)
+        if not (has_remove and has_add):
+            return base
+
+        side = cls._detect_status_column_side(list_text, first_id_pos)
+        if side == "after":
+            picked = cls._first_marker_in(post_region or "", prefer_standalone=True)
+        elif side == "before":
+            picked = cls._first_marker_in(pre_region or "")
+        else:
+            return base
+
+        if not picked:
+            return base
+
+        logger.info(
+            "[行级消歧] 状态列在证件号列%s侧 → 本行取「%s」（原判定「%s」）",
+            "右" if side == "after" else "左", picked, base,
+        )
+        return picked
