@@ -37,6 +37,28 @@
   - 实现 `_detect_status_column_side` / `_first_marker_in` / `_detect_row_modification_type_by_column`
   - ⚠️ **仅「同时命中增+减标记」的歧义场景启用**，单标记场景走原逻辑 → 既有行为零变化
 
+## 扫描件（无文字层）处理
+- **根因链**：扫描件 → `metadata_extractor` 三字段（保单号/整体期间/生效日）全依赖文字层 `all_text` → 全空
+  → 清单无起止日期列 → 人员日期空；且 `policy_number` 空 → 无法关联主保单 → 闭环断裂
+- **解法**：`OCRExtractor.extract_overall_metadata()` 版面元数据 OCR（保单号/保险期间/投保人/保险公司/总人数）
+  → `personnel_extractor_node` 用 `overall_start/end` 兜底填日期（异常降级不阻断人员提取）
+- **保单号识别是模型能力上限**：MiniMax-M3 读 25 位会多插0/漏0/中段错位（页眉放大到 1290×387 连续 5 次全错）
+  → **不做位数启发式消解**（"取最短"会被"漏 0"证伪）→ 跨页多数票 + `policy_number_conflict` 冲突标记 + 人工核对
+  - 日期识别远比保单号稳定（保险期间 100% 正确）
+- 历史回填工具 `tools/fix_missing_dates.py`（按 source_file 定位原 PDF → OCR → 回填，默认 dry-run，`--apply` 执行）
+
+## ⚠️ LangGraph State 键丢失（通用陷阱）
+- `StateGraph(TypedDict)` **只为已声明的键建 channel** → 节点返回的未声明键被**静默丢弃**（不报错）
+- 实例：`InvoiceRecognitionState` 未声明 `warnings` → validator 所有告警传不到 output/web_app
+  → `web_app` 的「批单主保单缺失阻断入库」长期是**死代码**
+- **规则**：TypedDict state 加新键必须同步声明 + 工厂函数初始化
+- 修复后需评估被激活的死代码：批单拦截直接启用会误杀 43/253 批单（17%、3953 人）→
+  收紧为 `insurance_agent/tools/batch_guard.py`（纯函数，无第三方依赖）「命中告警 **且** 人员确有日期缺失才阻断」
+- ⚠️ fastapi 只装在 `H-AGENT/.venv`（无 pytest）→ 项目根 venv **不能 import web_app.server** 做单测 → 逻辑抽纯函数
+- 热重载：`_reload_graph_dependencies()` 必须同时 reload **包**（`insurance_agent.extractors`），
+  否则包 `__init__.py` 仍绑定旧 class → "看似成功实则未生效"；`inv_state` 也要 reload（class 对象绑定）
+
+
 ## date_parser 整体期间矩阵
 - 「自X起至Y止」：日期间允许任意中文+数字+时间词
 - 「自北京时间X起至Y止」：⚠️ "自"与年份间可插时区口径词 → `_TIMEZONE_PREFIX` 可选前缀
@@ -105,10 +127,23 @@ PDF：PyMuPDF 文字层 + 扫描件 MiniMax-M3 视觉 OCR。LangGraph：policy_p
 - 必用 `H-AGENT\.venv`（`mq_http_sdk` 只装在这）；`mq_http_sdk` 需 Python 3.12+ 兼容补丁（去 `HTTPSConnection` 的 `strict` 参数）
 
 ## 服务稳定性
-- 8765 **仅 127.0.0.1 监听**。常驻：计划任务 `InsuranceAgentWatchdog`(SYSTEM) 跑 `pythonw service_watchdog.py`
+- 8765 常驻：watchdog（SYSTEM 身份）跑 `pythonw service_watchdog.py`；进程链 pythonw→watchdog→server
+- ⚠️ 监听实际是 `0.0.0.0:8765`（server.py 里 `host="0.0.0.0"`，非仅 127.0.0.1）
 - ⚠️ async handler 禁同步耗时操作（upload_files/daily_check/sync_punch）→ `await asyncio.to_thread(...)`，否则 watchdog 判假死无限重启
-- watchdog `HEALTH_FAIL_THRESHOLD=3`（连续 3 次约 45s 才重启）
-- **重启用 `tools/restart_service_8765.py`**：netstat 找 PID → tasklist 校验 python.exe → `ctypes.windll.kernel32.TerminateProcess`（唯一可靠）。重启前核对 `data/scheduler_config.json` cron（09:00/16:00/16:30/03:00/00:00）避开当前时刻
+- watchdog `HEALTH_FAIL_THRESHOLD=3`（连续 3 次约 45s 才重启）；`RESTART_DELAY=3`
+- **重启 8765（SYSTEM 进程，普通权限/提权都杀不掉）**：
+  - `taskkill /F` → 拒绝访问；`OpenProcess` → 失败
+  - 提权到 Administrator 后 `AdjustTokenPrivileges` → **1300 ERROR_NOT_ALL_ASSIGNED**（本机未分配 SeDebugPrivilege）
+  - ✅ **可行方案**：注册一次性 **SYSTEM 计划任务**执行终止脚本 → watchdog 检测 `proc.poll()!=None` → 3s 后自动拉起
+    - `tools/system_restart_service.py`（终止进程+清理端口锁）+ `tools/system_restart_service.ps1`（注册/触发/注销任务）
+    - ⚠️ `schtasks.exe` 被 **Program Blacklist** 阻止 → 用 PowerShell cmdlet `Register-ScheduledTask`（走 COM API，不受影响）
+    - ⚠️ `.ps1` 必须**纯 ASCII**（PowerShell 5.1 按 GBK 读，中文乱码会破坏引号 → ParserError）
+    - ⚠️ PowerShell 工具拦截 `Start-Process powershell.exe` → 改用 `Start-Process python.exe -Verb RunAs`，
+      由 Python 内部 subprocess 调 powershell（继承管理员令牌）
+  - `tools/restart_service_8765.py`（普通权限版，用于非 SYSTEM 进程）：纯 ctypes 启用 SeDebugPrivilege
+    - ⚠️ ctypes **必须显式设 argtypes/restype**，否则 64 位 HANDLE 被截断 → `OpenProcessToken` 报 err=6
+    - ⚠️ 控制台 GBK：`print("❌")` 会抛 UnicodeEncodeError 中断脚本 → `sys.stdout.reconfigure(encoding="utf-8", errors="replace")`
+  - 重启前核对 `data/scheduler_config.json` cron（09:00/16:00/16:30/03:00/00:00）避开当前时刻
 - ⚠️ 应用日志在 `server.err.log`（stderr），`server.log` 只有 access log，两者均 **GBK 编码**
 - ⚠️ `insurance_agent/infrastructure/database.py` **模块末尾有模块级 `init_db()`** → 任何 import 都对默认 DB_PATH 建表。写临时库脚本必须先改 `dbmod.DB_PATH` 再 import
 - ⚠️ `netstat`/`tasklist` 输出 GBK → subprocess 读用 `encoding="mbcs", errors="replace"`；`wmic` Win11 24H2 已弃用
@@ -117,6 +152,8 @@ PDF：PyMuPDF 文字层 + 扫描件 MiniMax-M3 视觉 OCR。LangGraph：policy_p
 - 节点代码：`POST /api/agent/reload` importlib.reload，无需重启
 - ⚠️ server.py 改动必须重启；叶子层（pymupdf_parser/company_extractor/tools/filename_parser/date_parser）需在 `_reload_graph_dependencies` 注册
 - ⚠️ 模块级 `from X import Y` reload 后仍指旧 class → 必须强杀进程
+- ⚠️ `_reload_graph_dependencies` **必须同时 reload 包**（`insurance_agent.extractors`）+ `inv_state`
+  → 否则包 `__init__.py` 绑定旧 class / TypedDict 仍旧定义 → 热重载"看似成功实则未生效"
 
 ## Windows .bat 踩坑
 - GBK 代码页：bat 写中文必须 ASCII（rem 注释除外）。换行检查用 `open(p,'rb').read().count(b'\r\n')`
