@@ -10,12 +10,16 @@ DI：所有 Extractor 通过构造器注入。
 """
 
 from typing import Optional
+import logging
 from insurance_agent.domain import PDFDocument, InsuredPerson, ExtractionResult
 from insurance_agent.extractors import (
     BaseExtractor, TableExtractor, InlineExtractor, IndividualExtractor,
     BlockKVExtractor, OCRExtractor,  # 2026-09-17 新增 BlockKVExtractor
 )
 from insurance_agent.agents.invoice_recognition.states.inv_state import InvoiceRecognitionState
+
+
+logger = logging.getLogger(__name__)
 
 
 class PersonnelExtractorNode:
@@ -53,6 +57,11 @@ class PersonnelExtractorNode:
         insurance_company = state.get("insurance_company", "")
 
         persons: list[InsuredPerson] = []
+        # 2026-11-13 新增：扫描件版面元数据（保单号/保险期间）
+        # 扫描件没有文字层 → metadata_extractor 取不到保单号与保险期间 →
+        # 人员日期全空、policy_number 全空 → 无法关联主保单回填。
+        # 这里对首页做一次版面元数据 OCR，补上这块缺失的信息。
+        ocr_meta: dict = {}
 
         if format_hint == "no_list":
             # 不记名投保（灵工版等）：只有总投保员工人数，无法逐人提取
@@ -69,6 +78,19 @@ class PersonnelExtractorNode:
                     "final_response": '{"error": "OCR 提取器未注入 LLM 客户端"}',
                 }
             page_images = state.get("page_images", [])
+            # 2026-11-13：先读版面元数据（首页通常带保单号与保险期间）
+            # ⚠️ 这里刻意不吞异常：元数据 OCR 失败不应阻断人员提取，
+            #    失败时降级为「无元数据」，人员仍照常提取（日期留空）。
+            # max_pages=4：页眉每页都印着保单号 → 跨页投票交叉验证，
+            # 避免视觉模型把长数字串读错一位（实测低清图会多插 0）。
+            try:
+                ocr_meta = self._ocr.extract_overall_metadata(
+                    page_images=page_images,
+                    max_pages=4,
+                ) or {}
+            except Exception as e:
+                logger.warning("扫描件版面元数据 OCR 失败（不影响人员提取）: %s", e)
+                ocr_meta = {}
             try:
                 persons = self._ocr.extract(
                     policy_holder=policy_holder,
@@ -78,6 +100,14 @@ class PersonnelExtractorNode:
             except Exception as e:
                 # 失败透传：直接抛异常，不兜底
                 raise RuntimeError(f"OCR 提取失败: {e}") from e
+
+            # 2026-11-13：版面元数据兜底保险公司 / 投保人
+            # （扫描件下文字层拿不到，只能靠首页 OCR；已有值优先，不覆盖）
+            if ocr_meta:
+                if insurance_company in ("", "unknown") and ocr_meta.get("insurance_company"):
+                    insurance_company = ocr_meta["insurance_company"]
+                if not policy_holder and ocr_meta.get("policy_holder"):
+                    policy_holder = ocr_meta["policy_holder"]
 
         else:
             # 文字层：table / inline / individual 格式
@@ -112,8 +142,16 @@ class PersonnelExtractorNode:
                     persons.extend(self._table.extract(text, policy_holder, insurance_company))
 
         # 用整体保险期间兜底缺日期的人员
-        overall_start = state.get("working_memory", {}).get("overall_start_date", "")
-        overall_end = state.get("working_memory", {}).get("overall_end_date", "")
+        # 2026-11-13：扫描件下 working_memory 里的整体期间来自文字层 → 为空，
+        #   用 OCR 读回的版面元数据兜底（已有值优先，不覆盖文字层结果）。
+        overall_start = (
+            state.get("working_memory", {}).get("overall_start_date", "")
+            or ocr_meta.get("overall_start_date", "")
+        )
+        overall_end = (
+            state.get("working_memory", {}).get("overall_end_date", "")
+            or ocr_meta.get("overall_end_date", "")
+        )
         for p in persons:
             if not p.start_date:
                 p.start_date = overall_start
@@ -121,7 +159,10 @@ class PersonnelExtractorNode:
                 p.end_date = overall_end
 
         # 构造 ExtractionResult 存回 state
-        policy_number = state.get("working_memory", {}).get("policy_number", "")
+        policy_number = (
+            state.get("working_memory", {}).get("policy_number", "")
+            or ocr_meta.get("policy_number", "")
+        )
         # 2026-09-21 增强：读 batch/main policy_number + policy_type，供下游入库用
         batch_policy_number = state.get("working_memory", {}).get("batch_policy_number", "")
         main_policy_number = state.get("working_memory", {}).get("main_policy_number", "")
@@ -148,11 +189,22 @@ class PersonnelExtractorNode:
         return {
             "status": "executing",
             "extraction_result": result.to_dict(),
+            # 2026-11-13：把扫描件 OCR 读回的版面元数据并回 working_memory，
+            #   让下游 validator（主保单关联）与入库环节能拿到保单号与整体期间。
+            "working_memory": {
+                **state.get("working_memory", {}),
+                "policy_number": policy_number,
+                "overall_start_date": overall_start,
+                "overall_end_date": overall_end,
+                **({"insurance_company": insurance_company} if insurance_company else {}),
+                **({"policy_holder": policy_holder} if policy_holder else {}),
+            },
             "tool_results": {
                 **state.get("tool_results", {}),
                 "personnel_extractor": {
                     "extracted_count": len(persons),
                     "format_hint": format_hint,
+                    **({"ocr_metadata": ocr_meta} if ocr_meta else {}),
                 },
             },
         }

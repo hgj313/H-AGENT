@@ -43,6 +43,19 @@ class ValidatorNode:
 
         # --- 完整性校验 ---
         warnings = list(reconstruction_warnings) + list(link_warnings)
+
+        # 2026-11-13：扫描件保单号跨页读数不一致时提示人工核对
+        # （视觉模型读长数字串会偶发多插/漏 0，保单号错一位会导致主保单关联失效）
+        ocr_meta = (
+            (state.get("tool_results", {}) or {})
+            .get("personnel_extractor", {})
+            .get("ocr_metadata", {})
+        ) or {}
+        if ocr_meta.get("policy_number_conflict"):
+            warnings.append(
+                f"扫描件保单号跨页识别不一致，需人工核对: {ocr_meta.get('policy_number_votes')}"
+            )
+
         for p_dict in persons_dicts:
             if not p_dict.get("name"):
                 warnings.append(f"缺少姓名: ID={p_dict.get('id_number')}")

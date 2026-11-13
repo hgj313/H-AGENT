@@ -72,6 +72,7 @@ from insurance_agent.tools import coverage_check
 from insurance_agent.tools.daily_check_service import run_daily_check
 from insurance_agent.tools.uninsured_summary import run_uninsured_summary
 from insurance_agent.tools.daily_cleanup import run_daily_cleanup
+from insurance_agent.tools.batch_guard import evaluate_batch_guard
 from insurance_agent.tools.feishu_webhook_pusher import (
     init_pusher as init_feishu_pusher,
     get_pusher as get_feishu_pusher,
@@ -167,8 +168,14 @@ def _reload_graph_dependencies() -> None:
         "insurance_agent.tools.company_extractor",
         "insurance_agent.tools.filename_parser",
         "insurance_agent.tools.date_parser",  # 2026-09-17 新增：双字段日期正则
+        "insurance_agent.tools.batch_guard",  # 2026-11-13 新增：批单入库守卫
         "insurance_agent.tools",
         "insurance_agent.infrastructure.parsers.pymupdf_parser",
+        # 状态层（2026-11-13 新增）
+        # ⚠️ 必须在 graph 之前 reload：graph.py 顶层 `from ...states.inv_state import
+        #    InvoiceRecognitionState` 绑定的是 class 对象，inv_state 不 reload 则
+        #    TypedDict 仍是旧定义（例：新增 warnings 键不会被 LangGraph 识别）
+        "insurance_agent.agents.invoice_recognition.states.inv_state",
         # 节点层
         "insurance_agent.agents.invoice_recognition.nodes.policy_parser_node",
         "insurance_agent.agents.invoice_recognition.nodes.metadata_extractor_node",
@@ -181,6 +188,13 @@ def _reload_graph_dependencies() -> None:
         "insurance_agent.extractors.individual_extractor",
         "insurance_agent.extractors.block_kv_extractor",  # 2026-09-17 新增
         "insurance_agent.extractors.ocr_extractor",
+        # ⚠️ 抽取器**包**必须一起 reload（2026-11-13 修复）
+        #   extractors/__init__.py 里 `from .ocr_extractor import OCRExtractor` 绑定的是
+        #   class 对象；只 reload 子模块不会更新包内绑定，
+        #   capability.py 的 `from insurance_agent.extractors import OCRExtractor`
+        #   仍会拿到**旧 class** → 新增的方法（如 extract_overall_metadata）不存在，
+        #   调用时被 try/except 静默吞掉，热重载"看起来成功"实则没生效。
+        "insurance_agent.extractors",
         # 顶层 graph（最后 reload 才能拿到所有最新子模块）
         "insurance_agent.agents.invoice_recognition.capability",
         "insurance_agent.agents.invoice_recognition.graph",
@@ -280,6 +294,14 @@ def _process_single_pdf(fpath: str) -> dict:
         # 必须在 persist 之前阻断，否则空日期的人员记录仍会被 upsert 进库
         # （参见 森炜 0072423000 批单错填 6894300 日期事件）
         # 2026-09-21 改造：兼容文件名不含"批单"/"BD"的批单 — 用 working_memory["policy_type"] 判定
+        #
+        # 2026-11-13 加固（重要）：拦截条件由「warning 文本命中」改为「命中 warning 且人员确有日期缺失」
+        #   背景：InvoiceRecognitionState 未声明 warnings 键 → LangGraph 静默丢弃该键
+        #        → 本分支从未真正执行过（长期死代码）。
+        #   修复透传后若直接启用，实测历史 253 个批单中 43 个（17%、共 3953 人）找不到主保单，
+        #        但这 43 个批单人员在库中的日期缺失数为 0（日期来自清单/整体期间兜底），
+        #        直接启用会造成大面积误拦截回归。
+        #   现语义：只有「确实会写入空日期记录」时才阻断，与防御初衷完全一致。
         is_batch = (
             fname_info.policy_type == "批单"
             or (final_state.get("working_memory") or {}).get("policy_type") == "批单"
@@ -288,22 +310,25 @@ def _process_single_pdf(fpath: str) -> dict:
                      is_batch, fname, fname_info.policy_type,
                      (final_state.get("working_memory") or {}).get("policy_type"))
         if is_batch and not result_dict.get("error"):
-            main_missing_warnings = [
-                w for w in warnings
-                if "未找到对应主保单" in w
-                or ("主保单号" in w and "不一致" in w)
-            ]
-            if main_missing_warnings:
-                msg = main_missing_warnings[0]
-                logger.warning("批单 %s 主保单缺失/不匹配：%s", fname, msg)
+            # 2026-11-13：判定逻辑抽到 insurance_agent.tools.batch_guard（纯函数、无第三方依赖）
+            guard = evaluate_batch_guard(warnings, result_dict.get("insured_persons"))
+            if guard["should_block"]:
+                logger.warning(
+                    "批单 %s 主保单缺失/不匹配且 %d/%d 人缺保险期间，阻断入库: %s",
+                    fname, guard["missing_date_cnt"], guard["total_persons"], guard["warning"])
                 return {
                     "file_name": fname,
-                    "error": f"批单主保单缺失/不匹配：{msg}",
+                    "error": guard["reason"],
                     "warnings": warnings,
                     "policy_number": result_dict.get("policy_number", ""),
                     "policy_holder": result_dict.get("policy_holder", ""),
                     "insured_persons": [],
                 }
+            if guard["warning"]:
+                # 人员日期齐全 → 放行（日期另有来源），仅保留告警供人工核对
+                logger.info(
+                    "批单 %s 主保单缺失/不匹配，但人员日期齐全，放行入库: %s",
+                    fname, guard["warning"])
 
         # 注册到保单文件库
         if not result_dict.get("error"):
@@ -890,10 +915,15 @@ async def upload_files(
     # 构建返回数据
     summary = []
     for r in results:
+        # ⚠️ 2026-11-13：warnings 必须透传到前端
+        #   否则「扫描件保单号跨页识别不一致，需人工核对」这类告警
+        #   只存在于服务端日志，用户在界面上看不到 → 无法人工核对
+        r_warnings = r.get("warnings") or []
         if r.get("error"):
             summary.append({
                 "file_name": r.get("file_name", ""),
                 "error": r["error"],
+                "warnings": r_warnings,
                 "persons": [],
             })
             continue
@@ -909,6 +939,7 @@ async def upload_files(
             "persons_count": len(persons),
             "add_count": add_count,
             "remove_count": remove_count,
+            "warnings": r_warnings,
             "persons": persons,
         })
 

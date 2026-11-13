@@ -21,6 +21,14 @@ import time
 PORT = 8765
 EXPECT_EXE = ("python.exe", "pythonw.exe")
 
+# ⚠️ 控制台默认 GBK 编码，直接 print emoji（❌/✅/→）会抛 UnicodeEncodeError
+#    并中断脚本 —— 必须把 stdout 切到 UTF-8 且 errors=replace
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:  # pragma: no cover - 老版本 Python
+    pass
+
 
 def find_listener_pid() -> int | None:
     """找出监听 8765 的进程 PID（Windows 10+ 用 netstat -ano）"""
@@ -101,6 +109,80 @@ def terminate(pid: int) -> bool:
         ctypes.windll.kernel32.CloseHandle(handle)
 
 
+def enable_debug_privilege() -> bool:
+    """启用 SeDebugPrivilege（管理员令牌默认是"禁用"状态）。
+
+    为什么必须显式启用：
+        8765 服务由 SYSTEM 身份的 watchdog 计划任务拉起。
+        即使进程已提权到 Administrator，OpenProcess 仍会返回 0
+        —— 因为 SeDebugPrivilege 默认在管理员令牌里处于 Disabled 状态，
+        不显式启用就没有"打开任意进程句柄"的权限。
+
+    返回 True 表示特权已启用（或本就无需）。
+    """
+    from ctypes import wintypes
+
+    TOKEN_ADJUST_PRIVILEGES = 0x0020
+    TOKEN_QUERY = 0x0008
+    SE_PRIVILEGE_ENABLED = 0x0002
+
+    class LUID(ctypes.Structure):
+        _fields_ = [("LowPart", wintypes.DWORD), ("HighPart", wintypes.LONG)]
+
+    class LUID_AND_ATTRIBUTES(ctypes.Structure):
+        _fields_ = [("Luid", LUID), ("Attributes", wintypes.DWORD)]
+
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+    # ⚠️ 必须显式声明 argtypes/restype：
+    #    ctypes 默认把返回值当 32 位 int，HANDLE 在 64 位下会被截断
+    #    → GetCurrentProcess() 返回值错乱 → OpenProcessToken 报 ERROR_INVALID_HANDLE(6)
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    advapi32.OpenProcessToken.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)
+    ]
+    advapi32.OpenProcessToken.restype = wintypes.BOOL
+    advapi32.LookupPrivilegeValueW.argtypes = [
+        wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.POINTER(LUID)
+    ]
+    advapi32.LookupPrivilegeValueW.restype = wintypes.BOOL
+    advapi32.AdjustTokenPrivileges.argtypes = [
+        wintypes.HANDLE, wintypes.BOOL, ctypes.POINTER(LUID_AND_ATTRIBUTES),
+        wintypes.DWORD, ctypes.c_void_p, ctypes.c_void_p,
+    ]
+    advapi32.AdjustTokenPrivileges.restype = wintypes.BOOL
+
+    htoken = wintypes.HANDLE()
+    if not advapi32.OpenProcessToken(
+        kernel32.GetCurrentProcess(),
+        TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY,
+        ctypes.byref(htoken),
+    ):
+        print(f"  OpenProcessToken 失败 (err={ctypes.get_last_error()})")
+        return False
+    try:
+        luid = LUID()
+        if not advapi32.LookupPrivilegeValueW(None, "SeDebugPrivilege", ctypes.byref(luid)):
+            print(f"  LookupPrivilegeValueW 失败 (err={ctypes.get_last_error()})")
+            return False
+        attr = LUID_AND_ATTRIBUTES(luid, SE_PRIVILEGE_ENABLED)
+        if not advapi32.AdjustTokenPrivileges(
+            htoken, False, ctypes.byref(attr), 0, None, None
+        ):
+            print(f"  AdjustTokenPrivileges 失败 (err={ctypes.get_last_error()})")
+            return False
+        # 返回非 0（ERROR_NOT_ALL_ASSIGNED）表示部分特权未启用
+        err = ctypes.get_last_error()
+        if err == 0:
+            print("  SeDebugPrivilege 已启用")
+            return True
+        print(f"  AdjustTokenPrivileges 返回 {err}（可能本就无需）")
+        return False
+    finally:
+        kernel32.CloseHandle(htoken)
+
+
 def main():
     pid = find_listener_pid()
     if not pid:
@@ -114,6 +196,7 @@ def main():
     print("  校验通过：确认为 python 进程")
 
     print("→ TerminateProcess 终止服务（watchdog 将自动拉起）")
+    enable_debug_privilege()
     if not terminate(pid):
         print("❌ TerminateProcess 失败")
         return 1

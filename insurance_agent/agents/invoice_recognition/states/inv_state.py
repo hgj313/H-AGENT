@@ -47,6 +47,11 @@ class InvoiceRecognitionState(TypedDict):
     extraction_result: Optional[dict]  # 序列化的 ExtractionResult
     llm_calls: int
 
+    # ⚠️ 必须显式声明，否则 LangGraph 会静默丢弃该键
+    # （StateGraph(TypedDict) 只为已声明的键建 channel，未声明的键在节点返回时被丢弃，
+    #   导致 validator_node 产出的 warnings 永远传不到 output_node / web_app）
+    warnings: list[str]
+
 
 def create_invoice_recognition_state(
     user_goal: str = "",
@@ -79,4 +84,5 @@ def create_invoice_recognition_state(
         "format_hint": "",
         "extraction_result": None,
         "llm_calls": 0,
+        "warnings": [],
     }

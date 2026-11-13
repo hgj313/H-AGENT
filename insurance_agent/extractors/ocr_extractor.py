@@ -7,13 +7,14 @@
 import base64
 import json
 import logging
+import re
 from typing import Any, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from insurance_agent.domain import InsuredPerson
 from .base import BaseExtractor
-from insurance_agent.tools import parse_json_strict
+from insurance_agent.tools import parse_json_strict, extract_overall_insurance_period
 
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,60 @@ _OCR_PROMPT = """请识别图片中的被保人员清单，提取以下字段并
 [{"name":"张三","id_number":"110101199003078811","birth_date":"1990-03-07","company":"某有限公司","job_title":"砌筑工","occupation_class":"5","start_date":"2024-01-01","end_date":"2024-12-31","modification_type":"增保"}]
 
 没有人员清单则返回 []"""
+
+
+# 扫描件「版面元数据」OCR Prompt（2026-11-13 新增）
+#
+# 背景：扫描件没有文字层 → metadata_extractor 的保单号 / 保险期间 / 批单生效日
+#      **全部**取自 PyMuPDF 文字层（all_text）→ 扫描件下三者全空。
+#      后果链：
+#        ① 人员 start_date/end_date 为空（清单表本身也没有起止日期列）
+#        ② policy_number 为空 → 无法关联主保单 → 没有第二条补数途径 → 闭环断裂
+#      本 Prompt 让视觉模型把首页的版面信息读回来，补上这条缺失的入口。
+_METADATA_PROMPT = """请识别这张保险单页面的版面元数据，以 JSON 对象返回：
+- policy_number: 保险单号码 / 保单号（逐字识别，不要推测、不要补零或改写）
+- overall_start_date: 保险期间的起始日期（YYYY-MM-DD）
+- overall_end_date: 保险期间的终止日期（YYYY-MM-DD）
+- policy_holder: 投保人 / 被保险人的公司名称
+- insurance_company: 保险公司名称
+- total_persons: 被保险人总人数（纯数字字符串）
+
+识别要点：
+1. 保险期间通常在"保险期间""报告期"栏，表述形如
+   "自XXXX年XX月XX日零时起，至XXXX年XX月XX日二十四时止"。
+2. 保单号通常在页眉"保险单号："后面，数字较长，请逐位抄写。
+   ⚠️ 保单号中间的 0 极易出错：**既不要自行补零，也不要漏掉零**。
+     抄写后请数一遍位数，与图中位数核对一致再输出。
+3. 找不到对应信息时该字段填空字符串 ""，不要猜测、不要编造。
+只返回 JSON 对象，不要输出任何其他文字。"""
+
+# 版面元数据的字段名（OCR 返回与归一化共用）
+_METADATA_FIELDS = (
+    "policy_number",
+    "overall_start_date",
+    "overall_end_date",
+    "policy_holder",
+    "insurance_company",
+    "total_persons",
+)
+
+# 日期归一化：2026年10月01日 / 2026-10-01 / 2026/10/01 → YYYY-MM-DD
+_CN_DATE_PATTERN = re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日")
+_ISO_DATE_PATTERN = re.compile(r"\b(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})\b")
+
+
+def _looks_like_policy_number(value: str) -> bool:
+    """保单号格式校验：12~40 位，去掉空白后只能是数字/字母/连字符
+
+    用来过滤掉 OCR 把保单号写成「保险单号：」「6130104…」这类带标签或
+    长度明显不对（年份、金额、页码）的返回值。
+    """
+    if not value:
+        return False
+    compact = re.sub(r"\s+", "", value)
+    if not (12 <= len(compact) <= 40):
+        return False
+    return bool(re.fullmatch(r"[0-9A-Za-z\-]+", compact))
 
 
 class OCRExtractor(BaseExtractor):
@@ -105,6 +160,204 @@ class OCRExtractor(BaseExtractor):
             all_persons.extend(persons)
 
         return all_persons
+
+    def extract_overall_metadata(
+        self,
+        page_images: Optional[list[str]] = None,
+        max_pages: int = 4,
+    ) -> dict:
+        """扫描件「版面元数据」OCR：读回保单号 / 保险期间 / 投保人 / 保险公司
+
+        背景（2026-11-13）：
+          扫描件无文字层 → metadata_extractor 的保单号与保险期间均取自
+          PyMuPDF 文字层 → 全空 → 人员入库后 start_date/end_date 为空，
+          且 policy_number 为空 → 无法关联主保单回填（闭环断裂）。
+          本方法对首页做一次版面元数据 OCR，补上这条缺失的入口。
+
+        跨页交叉验证（max_pages 默认 4）：
+          扫描件页眉几乎每页都印着同一个保单号。视觉模型读长数字串时
+          可能多插/少插 0（实测低分辨率下会把 25 位读成 26 位），
+          而保单号错一位就会导致主保单关联失效。
+          因此对前 N 页各读一次，对保单号做**多数投票**：
+          全部一致 → 高置信采纳；不一致 → 取首页结果并打 warning（可观测）。
+
+        Args:
+            page_images: list of base64 PNG 字符串
+            max_pages: 最多识别前几页（首页通常带全部版面信息）
+
+        Returns:
+            dict，键：policy_number / overall_start_date / overall_end_date /
+            policy_holder / insurance_company / total_persons / raw_text /
+            policy_number_conflict。
+
+        失败透传：LLM 未注入 → ValueError；LLM 调用失败 → 原样抛异常。
+        """
+        if not self._llm:
+            raise ValueError("OCRExtractor: llm_client 未注入，无法执行 OCR")
+
+        images = (page_images or [])[:max_pages]
+        if not images:
+            logger.warning("OCRExtractor: 无图片输入，无法提取版面元数据")
+            return {}
+
+        merged: dict[str, str] = {}
+        raw_chunks: list[str] = []
+        # 每页各自读出的保单号，用于跨页投票
+        page_policy_numbers: list[str] = []
+
+        for page_num, img_b64 in enumerate(images, start=1):
+            message = HumanMessage(
+                content=[
+                    {"type": "text", "text": _METADATA_PROMPT},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{img_b64}",
+                            "detail": "high",
+                        },
+                    },
+                ]
+            )
+            logger.info(f"版面元数据 OCR 调用视觉模型（第 {page_num} 页）")
+            response = self._llm.invoke([SystemMessage(content=_SYSTEM_PROMPT), message])
+            raw = response.content if hasattr(response, "content") else str(response)
+            raw_chunks.append(raw)
+
+            try:
+                parsed = parse_json_strict(raw)
+            except Exception as exc:
+                logger.warning(f"版面元数据 OCR 第 {page_num} 页 JSON 解析失败: {exc}")
+                continue
+            if not isinstance(parsed, dict):
+                continue
+            page_policy_numbers.append(
+                re.sub(r"\s+", "", str(parsed.get("policy_number", "") or ""))
+            )
+            for key in _METADATA_FIELDS:
+                value = parsed.get(key)
+                if value and not merged.get(key):
+                    merged[key] = str(value).strip()
+
+        result = self._normalize_metadata(merged, raw_chunks)
+
+        # --- 跨页投票：保单号必须多页一致才算高置信 ---
+        valid_numbers = [n for n in page_policy_numbers if _looks_like_policy_number(n)]
+        if valid_numbers:
+            votes = {}
+            for n in valid_numbers:
+                votes[n] = votes.get(n, 0) + 1
+            winner, count = max(votes.items(), key=lambda kv: (kv[1], -valid_numbers.index(kv[0])))
+
+            if len(votes) > 1:
+                # 平票且候选之间只是「0 的个数不同」→ 视为同一个号的不同误读。
+                # 实证：视觉模型在长数字串上**补零**比漏零更常见
+                #      （25 位的 6130104121920260000000182 被读成 26 位的
+                #        ...000000182 / ...00000182），故取最短的那个。
+                top = [n for n, c in votes.items() if c == count]
+                if len(top) > 1 and all(
+                    self._is_zero_ambiguity(top[0], other) for other in top[1:]
+                ):
+                    # 只是「0 的个数」不同 → 同一个号的不同误读。
+                    # ⚠️ 不在此强制采纳任何一个：实测「多插 0」与「漏 0」都会发生，
+                    #    单靠位数无法判定谁对（会静默污染保单号）。
+                    #    处理：保留首页读数 + 标记冲突，交由人工核对。
+                    logger.info(
+                        "扫描件跨页保单号仅零的个数不同：%s（不自动消解，保留首页读数）",
+                        top,
+                    )
+
+            conflict = len(votes) > 1
+            if conflict:
+                logger.warning(
+                    "扫描件跨页保单号不一致：%s（采用 %s，需人工核对）", votes, winner,
+                )
+            # 采纳条件：多数票过半、或仅有一页可判；平票保留首页读数
+            if count > len(valid_numbers) / 2 or len(valid_numbers) == 1:
+                result["policy_number"] = winner
+            result["policy_number_conflict"] = conflict
+            result["policy_number_votes"] = votes
+        else:
+            result["policy_number_conflict"] = False
+            result["policy_number_votes"] = {}
+
+        return result
+
+    @staticmethod
+    def _is_zero_ambiguity(a: str, b: str) -> bool:
+        """两个数字串是否只是「0 的个数」不同（去掉所有 0 后相同）
+
+        用于识别视觉模型把同一个保单号读成不同位数的误读。
+        """
+        if not a or not b or a == b:
+            return False
+        if "0" not in a or "0" not in b:
+            return False
+        return a.replace("0", "") == b.replace("0", "")
+
+    @classmethod
+    def _normalize_metadata(cls, merged: dict, raw_chunks: list[str]) -> dict:
+        """规范化版面元数据：日期统一 YYYY-MM-DD，保单号做格式校验
+
+        - 日期：优先用 OCR 返回值（已归一化）；缺失时用既有规则
+          ``extract_overall_insurance_period`` 从 OCR 原文兜底解析。
+        - 保单号：优先用 OCR 返回值（需通过格式校验）；否则从原文里
+          挑一个最像保单号的长数字串。
+        """
+        result = dict(merged)
+        raw_text = "\n".join(raw_chunks)
+
+        # --- 日期 ---
+        start = cls._normalize_date(merged.get("overall_start_date", ""))
+        end = cls._normalize_date(merged.get("overall_end_date", ""))
+        if not (start and end):
+            rule_start, rule_end = extract_overall_insurance_period(raw_text)
+            start = start or (rule_start or "")
+            end = end or (rule_end or "")
+        result["overall_start_date"] = start
+        result["overall_end_date"] = end
+
+        # --- 保单号 ---
+        policy_number = re.sub(r"\s+", "", merged.get("policy_number", ""))
+        if not _looks_like_policy_number(policy_number):
+            policy_number = cls._find_policy_number_in_text(raw_text)
+        result["policy_number"] = policy_number
+
+        result["raw_text"] = raw_text
+        return result
+
+    @staticmethod
+    def _normalize_date(value: str) -> str:
+        """把日期规范化成 YYYY-MM-DD（支持 2026-10-01 / 2026年10月01日 / 2026/10/01）"""
+        if not value:
+            return ""
+        text = str(value).strip()
+        m = _CN_DATE_PATTERN.search(text)
+        if m:
+            try:
+                return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+            except ValueError:
+                return ""
+        m = _ISO_DATE_PATTERN.search(text)
+        if m:
+            try:
+                return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+            except ValueError:
+                return ""
+        return ""
+
+    @staticmethod
+    def _find_policy_number_in_text(text: str) -> str:
+        """从 OCR 原文中兜底找保单号
+
+        保单号是长数字串（15~32 位），优先取落在常见区间（18~25 位）的候选；
+        没有则取最长的一串。身份证号（18 位）与保单号同量级，靠区间优先区分。
+        """
+        candidates = re.findall(r"\d{15,32}", text.replace(",", ""))
+        if not candidates:
+            return ""
+        preferred = [c for c in candidates if 18 <= len(c) <= 25]
+        pool = preferred or candidates
+        return max(pool, key=len)
 
     @staticmethod
     def _looks_like_company_name(name: str) -> bool:
