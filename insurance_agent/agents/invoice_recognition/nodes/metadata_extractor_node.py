@@ -256,13 +256,30 @@ class MetadataExtractorNode:
         main_no = ""    # 主保单号
 
         if is_endorsement:
-            # 批单：先匹配"批单号"再匹配"保险单号"
-            m_batch = re.search(r"批单号[：:\s]*([A-Z0-9]{16,30})", text)
-            if m_batch:
-                batch_no = m_batch.group(1)
-            m_main = re.search(r"保险单号[：:\s]*([A-Z0-9]{16,30})", text)
-            if m_main:
-                main_no = m_main.group(1)
+            # 批单号：按标签优先级匹配（2026-11-23 扩充）
+            #   "批单号码"  众安（PE07...）：注意比"批单号"多一个"码"字
+            #   "批单号"    利宝 / 太保（71...）
+            #   "业务凭证号" 国寿「被保险人变动清单」（2026G01...）：国寿批改凭证的编号
+            for p_batch in (
+                r"批单号码[：:\s]*([A-Z0-9]{16,30})",
+                r"批单号[：:\s]*([A-Z0-9]{16,30})",
+                r"业务凭证号[：:\s]*([A-Z0-9]{16,30})",
+            ):
+                m_batch = re.search(p_batch, text)
+                if m_batch:
+                    batch_no = m_batch.group(1)
+                    break
+            # 主保单号：国寿用"保险合同号"，众安用"保单号码"
+            for p_main in (
+                r"保险单号[：:\s]*([A-Z0-9]{16,30})",
+                r"保险合同号[：:\s]*([A-Z0-9]{16,30})",
+                r"保单号码[：:\s]*([A-Z0-9]{16,30})",
+                r"保单号[：:\s]*([A-Z0-9]{16,30})",
+            ):
+                m_main = re.search(p_main, text)
+                if m_main:
+                    main_no = m_main.group(1)
+                    break
 
             # 2026-09-28 阳光保险批单特定格式：批单号 = "End.NO.<batch>"，保单号 = "PolicyNO.<main>"
             # 标签和值之间可能隔行（如"批单号：\n保单号：\nEnd.NO.HGC...\nPolicyNO.HGC..."），
@@ -311,6 +328,7 @@ class MetadataExtractorNode:
             r"汇交号[/／\s]*保险合同号[：:\s]*([A-Z0-9]{16,30})", # 2.5 中国人寿绿洲团体意外险"在保名单"汇交号（2026-09-17 新增）
             r"保险合同号[：:\s]*([A-Z0-9]{16,30})",                # 2.6 中国人寿"汇交号/保险合同号"另一形式
             r"保险单号码?[：:\s]*([A-Z0-9]{16,30})",              # 3. 利宝"保险单号"/北部湾"保险单号码"（2026-09-22 增"码"兼容）
+            r"保单号码[：:\s]*([A-Z0-9]{16,30})",                 # 3.5 众安"保单号码"（PS07...，2026-11-23 新增）
             r"保单号[：:\s]*([A-Z0-9]{16,30})",                  # 4. 利宝等：主保单号
             r"保单流水号[\s\S]{0,30}?([A-Z0-9]{16,30})",          # 5. 太保：保单内部流水号（fallback）
         ]
@@ -355,6 +373,16 @@ class MetadataExtractorNode:
         if "本次批改" in text or "批文" in text:
             return True
         if "批单生效日期" in text or "自" in text and "零时起生效" in text and "批" in text:
+            return True
+        # 2026-11-23 众安：批单标签是"批单号码"（比"批单号"多一个"码"字），
+        #   主单标签是"保单号码"（不是"保险单号"）→ 上面的"批单号 + 保险单号"组合判不出来。
+        if "批单号码" in text:
+            return True
+        # 2026-11-23 国寿「被保险人变动清单」：批改凭证编号用"业务凭证号"（2026G01...），
+        #   主单用"保险合同号"，全文没有"批单"二字 → 旧逻辑全判成主保单，
+        #   结果主单号被错填进 policy_number、批单号彻底丢失。
+        #   加"保险合同号"作必要条件，避免把带"业务凭证号"的投保单误判为批单。
+        if "业务凭证号" in text and "保险合同号" in text:
             return True
         return False
 

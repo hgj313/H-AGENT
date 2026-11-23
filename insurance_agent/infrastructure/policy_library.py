@@ -62,6 +62,32 @@ class PolicyLibrary:
         self._main_records: list[PolicyRecord] = []   # 主保单表
         self._batch_records: list[PolicyRecord] = []  # 批单表
         self._load()
+        self._index_sig = self._current_sig()
+
+    def _current_sig(self):
+        """索引文件的修改时间签名（用于检测外部改写）。"""
+        sig = []
+        for p in (self._index_main_path, self._index_batch_path):
+            try:
+                sig.append(int(os.path.getmtime(p) * 1000))
+            except OSError:
+                sig.append(0)
+        return tuple(sig)
+
+    def reload_if_changed(self) -> bool:
+        """索引文件被外部改写时自动重载，返回是否发生了重载。
+
+        2026-11-23 新增：号段提取规则修复后，历史索引需要离线重算
+        （见 `insurance_agent/tools/reindex_policy_numbers.py`）。该脚本直接改写
+        index JSON，而 8765 服务以 SYSTEM 权限常驻运行、无法从普通会话重启，
+        因此这里加"文件变更自动重载"，让写盘结果立即生效，无需重启服务。
+        """
+        sig = self._current_sig()
+        if sig == getattr(self, "_index_sig", None):
+            return False
+        self._load()
+        self._index_sig = sig
+        return True
 
     @property
     def base_dir(self) -> str:
@@ -383,6 +409,8 @@ class PolicyLibrary:
             json.dump(main_data, f, ensure_ascii=False, indent=2)
         with open(self._index_batch_path, "w", encoding="utf-8") as f:
             json.dump(batch_data, f, ensure_ascii=False, indent=2)
+        # 同步签名，避免 reload_if_changed 把本次写入误判为"外部改写"
+        self._index_sig = self._current_sig()
 
     def __len__(self) -> int:
         return len(self._main_records) + len(self._batch_records)

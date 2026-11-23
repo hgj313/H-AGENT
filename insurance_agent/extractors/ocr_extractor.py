@@ -354,6 +354,15 @@ class OCRExtractor(BaseExtractor):
         """
         candidates = re.findall(r"\d{15,32}", text.replace(",", ""))
         if not candidates:
+            # 2026-11-23：保单号可能带字母前缀（众安 PS07... / PE07...）
+            # 或内嵌字母（国寿 2026G01000000066534333），纯数字正则完全匹配不到。
+            # 仅在纯数字候选为空时才启用宽松候选，并要求"数字占比 ≥ 70%"，
+            # 以免把普通英文长词当成保单号（保持既有行为不变）。
+            loose = re.findall(r"(?<![A-Za-z0-9])[A-Za-z0-9]{15,32}(?![A-Za-z0-9])",
+                                text.replace(",", ""))
+            loose = [c for c in loose if sum(ch.isdigit() for ch in c) >= 0.7 * len(c)]
+            candidates = loose
+        if not candidates:
             return ""
         preferred = [c for c in candidates if 18 <= len(c) <= 25]
         pool = preferred or candidates

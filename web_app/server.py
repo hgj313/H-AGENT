@@ -640,9 +640,28 @@ async def agent_reload():
 
     适用场景：开发者改了 insurance_agent 代码，希望立即生效而不想重启服务。
     仍建议优先重启服务以确保 100% 模块状态一致。
+
+    2026-11-23 增强：同时重建保单库实例。
+    importlib.reload 只换掉**类**，已存在的实例仍绑定旧类 → 旧实例不会拿到
+    新增方法（如 PolicyLibrary.reload_if_changed）。所以这里显式 new 一个实例，
+    让离线重算后的索引立即生效（服务以 SYSTEM 常驻，普通会话无权重启它）。
     """
+    global _policy_library
     before_sig = _compute_graph_signature()
     before_built = _graph_cache_signature
+    before_lib = len(_policy_library)
+
+    # 重建保单库实例（reload 模块后 new，才能用上新类的新方法）
+    import importlib as _il
+    if "insurance_agent.infrastructure.policy_library" in sys.modules:
+        try:
+            _il.reload(sys.modules["insurance_agent.infrastructure.policy_library"])
+        except Exception as e:
+            print(f"[WARN] reload policy_library 失败: {e}")
+    from insurance_agent.infrastructure.policy_library import PolicyLibrary as _PL
+    _policy_library = _PL()
+    _policy_library.reload_if_changed()
+
     get_invoice_graph(force_rebuild=True)
     after_sig = _compute_graph_signature()
     after_built = _graph_cache_signature
@@ -653,6 +672,12 @@ async def agent_reload():
         "after_signature": list(after_sig),
         "before_signature_built": list(before_built) if before_built else None,
         "after_signature_built": list(after_built),
+        "policy_library": {
+            "before_records": before_lib,
+            "after_records": len(_policy_library),
+            "main": len(_policy_library.main_records),
+            "batch": len(_policy_library.batch_records),
+        },
     }
 
 
@@ -1075,6 +1100,13 @@ async def get_policy_library(
       - 支持按 policy_type / 保单号精确 / 批单号精确 / 公司名模糊 / 起止时间范围 过滤
       - 返回 results 分组（main / batch / unindexed），便于前端分类展示
     """
+    # 0. 索引文件被离线重算脚本改写时自动重载（2026-11-23 新增）
+    #    服务以 SYSTEM 常驻、普通会话无权重启 → 用 mtime 签名检测变更并热重载。
+    try:
+        _policy_library.reload_if_changed()
+    except Exception:
+        pass
+
     # 1. 索引里的元数据
     main_records = _policy_library.main_records
     batch_records = _policy_library.batch_records
