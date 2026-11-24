@@ -133,7 +133,30 @@ def main():
 
     time.sleep(1.0)
 
-    # ② 起直连消费者守护
+    # ② 停旧消费者链路：8768 端口占用者（consumer）+ 其 watchdog 祖先
+    #    必须先停旧的，否则新 watchdog 会因单实例锁冲突直接退出。
+    cons_pids = pids_by_port(8768)
+    cons_targets = list(cons_pids)
+    for pid in cons_pids:
+        cur = pid
+        for _ in range(4):
+            p = parent_pid(cur)
+            if not p or p in cons_targets:
+                break
+            if p in py:
+                cons_targets.append(p)
+            cur = p
+    cons_killed = []
+    for pid in cons_targets:
+        if kill(pid):
+            cons_killed.append(pid)
+    result["consumer_pids_found"] = cons_pids
+    result["consumer_killed"] = cons_killed
+    result["steps"].append("old consumer stopped")
+
+    time.sleep(1.0)
+
+    # ③ 起直连消费者守护
     started = False
     try:
         subprocess.Popen(
@@ -149,8 +172,9 @@ def main():
     result["direct_consumer_started"] = started
     result["steps"].append("direct consumer started" if started else "direct consumer FAILED")
 
-    time.sleep(3.0)
+    time.sleep(4.0)
     result["port_8767_after"] = pids_by_port(8767)
+    result["port_8768_after"] = pids_by_port(8768)
     result["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
     try:

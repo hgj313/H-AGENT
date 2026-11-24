@@ -60,15 +60,41 @@ def log(msg):
 
 
 def _pid_alive(pid):
-    """检测 PID 是否存活"""
+    """检测 PID 是否存活。
+
+    注意：直接 OpenProcess 对 **Session 0 / SYSTEM 进程** 会因 DACL 失败（err=5），
+    Medium 完整性级别下拿不到 PROCESS_QUERY_LIMITED_INFORMATION → 会误判「已死」，
+    导致本该生效的单实例锁失效、重复起消费者。
+    因此失败时用 tasklist 兜底（进程表全局可见，跨会话可靠）。
+    """
     try:
         import ctypes
         kernel32 = ctypes.windll.kernel32
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.CloseHandle.restype = ctypes.c_int
         handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
         if handle:
             kernel32.CloseHandle(handle)
             return True
-        return False
+    except Exception:
+        pass
+    # 兜底：tasklist 的进程表跨会话可见
+    try:
+        import subprocess
+        r = subprocess.run(
+            ["tasklist", "/FI", "PID eq %d" % pid, "/NH", "/FO", "CSV"],
+            capture_output=True, timeout=15,
+        )
+        raw = r.stdout or b""
+        for enc in ("utf-8", "gb18030"):
+            try:
+                out = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            out = raw.decode("gb18030", errors="replace")
+        return ('"%d"' % pid) in out
     except Exception:
         return False
 
