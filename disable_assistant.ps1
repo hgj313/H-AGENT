@@ -125,6 +125,35 @@ if (Test-Path $ConsumerLog) {
     }
 }
 
+# ---------- 5. 写执行结果（供程序读取验证，无需人工汇报）----------
+$ResultPath = Join-Path $Root '_disable_result.json'
+$portState = @{}
+foreach ($port in @(8765, 8767, 8768)) {
+    $conns = Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue
+    $portState["$port"] = if ($null -ne $conns) { $conns[0].OwningProcess } else { $null }
+}
+$consPids = @()
+$consumers = Get-CimInstance Win32_Process -Filter "Name like 'python%'" |
+             Where-Object { $_.CommandLine -match 'erp_feishu_direct' }
+if ($null -ne $consumers) { $consPids = @($consumers | ForEach-Object { $_.ProcessId }) }
+
+$result = [ordered]@{
+    finished_at     = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+    disable_flag    = (Test-Path $Flag)
+    port_owners     = $portState
+    consumer_pids   = $consPids
+    consumer_count  = $consPids.Count
+    mq_subscribed   = ((Test-Path $ConsumerLog) -and
+                       ((Get-Content $ConsumerLog -Raw -Encoding UTF8) -match 'group=insurance-automation'))
+    bridge_alive    = ((Get-Process -Id 7044 -ErrorAction SilentlyContinue) -ne $null)
+}
+try {
+    $result | ConvertTo-Json -Depth 4 | Set-Content -Path $ResultPath -Encoding UTF8
+    Write-Ok "  执行结果已写入: $ResultPath"
+} catch {
+    Write-Err "  结果写入失败: $($_.Exception.Message)"
+}
+
 Write-Host ''
 Write-Ok '完成。窗口可关闭。'
 try { $null = Read-Host "按 Enter 键关闭..." } catch { }

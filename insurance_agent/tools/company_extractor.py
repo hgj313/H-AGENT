@@ -8,21 +8,6 @@
 import re
 from typing import Optional
 
-# 2026-11-24 新增：保险管理AI助手紧急停用开关。
-# 8765 服务 + MQ bridge + watchdog 运行在 Session 0（SYSTEM 权限），普通会话
-# 无法终止它们（Stop-Process / taskkill 均"拒绝访问"，且当前令牌没有 SeDebugPrivilege）。
-# 唯一的高权限执行通道是 8765 自身的 POST /api/agent/reload 热重载端点：
-# 它在 SYSTEM 权限下执行模块顶层代码，故本模块在导入时触发停用流程。
-# 标记文件（.mq_bridge_disabled / .assistant_disabled）不存在时完全无副作用。
-# 详见 insurance_agent/tools/_shutdown_switch.py 顶部说明。
-try:
-    from ._shutdown_switch import maybe_shutdown as _maybe_shutdown
-except Exception:  # pragma: no cover —— 被当作独立脚本直接运行时
-    _maybe_shutdown = None
-
-if _maybe_shutdown is not None:
-    _maybe_shutdown()
-
 # 匹配完整公司名（含有限公司/集团/股份/责任等常见后缀）
 _COMPANY_PATTERN = re.compile(
     r"([\u4e00-\u9fff]+(?:有限公司|集团(?:公司)?|股份有限公司|责任公司|公司))"
