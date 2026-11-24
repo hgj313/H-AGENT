@@ -22,13 +22,13 @@ from ctypes import wintypes
 advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
-SERVICE_NAME = "WBInsuranceStage1"
+SERVICE_NAME_BASE = "WBInsuranceStage1"
 SERVICE_DISPLAY = "WorkBuddy Insurance Stage1 Runner"
 
 SC_MANAGER_CREATE_SERVICE = 0x0002
 SC_MANAGER_ALL_ACCESS = 0xF003F
 SERVICE_WIN32_OWN_PROCESS = 0x00000010
-SERVICE_AUTO_START = 0x00000002
+SERVICE_DEMAND_START = 0x00000003
 SERVICE_ERROR_NORMAL = 0x00000001
 SERVICE_ALL_ACCESS = 0x000F01FF
 DELETE = 0x00010000
@@ -50,6 +50,35 @@ advapi32.CloseServiceHandle.restype = wintypes.BOOL
 advapi32.QueryServiceStatusEx.restype = wintypes.BOOL
 kernel32.CloseHandle.restype = wintypes.BOOL
 
+# ⚠️ 必须显式声明 argtypes：否则 ctypes 默认按 32 位 int 传参，
+#    64 位 HANDLE（hSCManager / hService）会溢出报
+#    "OverflowError: int too long to convert"。
+advapi32.OpenSCManagerW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
+advapi32.CreateServiceW.argtypes = [
+    wintypes.HANDLE,      # hSCManager
+    wintypes.LPCWSTR,     # lpServiceName
+    wintypes.LPCWSTR,     # lpDisplayName
+    wintypes.DWORD,       # dwDesiredAccess
+    wintypes.DWORD,       # dwServiceType
+    wintypes.DWORD,       # dwStartType
+    wintypes.DWORD,       # dwErrorControl
+    wintypes.LPCWSTR,     # lpBinaryPathName
+    wintypes.LPVOID,      # lpLoadOrderGroup
+    wintypes.LPVOID,      # lpTagId
+    wintypes.LPVOID,      # lpDependencies
+    wintypes.LPVOID,      # lpServiceStartName
+    wintypes.LPVOID,      # lpPassword
+]
+advapi32.OpenServiceW.argtypes = [wintypes.HANDLE, wintypes.LPCWSTR, wintypes.DWORD]
+advapi32.StartServiceW.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID]
+advapi32.ControlService.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID]
+advapi32.DeleteService.argtypes = [wintypes.HANDLE]
+advapi32.CloseServiceHandle.argtypes = [wintypes.HANDLE]
+advapi32.QueryServiceStatusEx.argtypes = [
+    wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD, wintypes.LPVOID,
+]
+kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
 
 class SERVICE_STATUS(ctypes.Structure):
     _fields_ = [
@@ -67,10 +96,54 @@ def _err():
     return ctypes.get_last_error()
 
 
+def _query_state(hsvc):
+    st = SERVICE_STATUS()
+    advapi32.QueryServiceStatusEx(hsvc, 0, ctypes.byref(st), ctypes.sizeof(st), None)
+    return st
+
+
+def _delete_existing(name):
+    """删除可能残留的同名服务（ERROR_SERVICE_EXISTS / marked-for-delete 残留）。
+
+    用 sc.exe 而不是 ctypes：ControlService/OpenService 在残留句柄场景下容易踩
+    访问冲突，sc.exe 的 stop+delete 语义更稳（运行中则标记删除，停止后消失）。
+    返回 True 表示已清理干净。
+    """
+    import subprocess
+
+    def _sc(*args):
+        try:
+            r = subprocess.run(["sc.exe"] + list(args), capture_output=True, timeout=30)
+            raw = r.stdout + r.stderr
+            for enc in ("utf-8", "gb18030"):
+                try:
+                    return r.returncode, raw.decode(enc)
+                except UnicodeDecodeError:
+                    continue
+            return r.returncode, raw.decode("gb18030", errors="replace")
+        except Exception as e:
+            return -1, "failed: %r" % (e,)
+
+    rc, out = _sc("stop", name)
+    print("    sc stop -> rc=%s %s" % (rc, out.strip()[:120]))
+    time.sleep(2)
+    rc, out = _sc("delete", name)
+    print("    sc delete -> rc=%s %s" % (rc, out.strip()[:120]))
+    time.sleep(1)
+    # 确认是否真的消失
+    rc, out = _sc("query", name)
+    if "FAILED 1060" in out or "1060" in out:
+        return True
+    return "does not exist" in out or "1060" in out
+
+
 def main():
+    global SERVICE_NAME
     script = sys.argv[1] if len(sys.argv) > 1 else r"C:\insurance-automation\_sys_stage1.py"
     py = r"C:\insurance-automation\H-AGENT\.venv\Scripts\python.exe"
     bin_path = '"%s" "%s"' % (py, script)
+    # 服务名带时间戳：即使上次异常没删干净，也不会与残留冲突
+    SERVICE_NAME = "%s_%s" % (SERVICE_NAME_BASE, time.strftime("%H%M%S"))
 
     print("[1] OpenSCManager(CREATE_SERVICE)...")
     scm = advapi32.OpenSCManagerW(None, None, SC_MANAGER_CREATE_SERVICE)
@@ -81,15 +154,37 @@ def main():
 
     hsvc = None
     try:
-        print("[2] CreateServiceW(LocalSystem)...")
+        print("[2] CreateServiceW(LocalSystem) -> %s" % SERVICE_NAME)
+        # CreateServiceW 共 13 个参数：
+        #   hSCManager, lpServiceName, lpDisplayName, dwDesiredAccess, dwServiceType,
+        #   dwStartType, dwErrorControl, lpBinaryPathName, lpLoadOrderGroup, lpTagId,
+        #   lpDependencies, lpServiceStartName, lpPassword
+        # lpServiceStartName=None → 默认 LocalSystem 身份
         hsvc = advapi32.CreateServiceW(
             scm, SERVICE_NAME, SERVICE_DISPLAY, SERVICE_ALL_ACCESS,
-            SERVICE_WIN32_OWN_PROCESS, SERVICE_AUTO_START, SERVICE_ERROR_NORMAL,
-            bin_path, None, None, None, None,
+            SERVICE_WIN32_OWN_PROCESS, SERVICE_DEMAND_START, SERVICE_ERROR_NORMAL,
+            bin_path, None, None, None, None, None,
         )
         if not hsvc:
-            print("    FAIL err=%d" % _err())
-            return 3
+            err = _err()
+            if err == 1073:  # ERROR_SERVICE_EXISTS：清理残留后重试
+                print("    服务已存在(err=1073)，先清理残留...")
+                if _delete_existing(SERVICE_NAME):
+                    print("    残留已清理，重新创建")
+                    hsvc = advapi32.CreateServiceW(
+                        scm, SERVICE_NAME, SERVICE_DISPLAY, SERVICE_ALL_ACCESS,
+                        SERVICE_WIN32_OWN_PROCESS, SERVICE_DEMAND_START, SERVICE_ERROR_NORMAL,
+                        bin_path, None, None, None, None, None,
+                    )
+                    if not hsvc:
+                        print("    FAIL 重试后仍失败 err=%d" % _err())
+                        return 3
+                else:
+                    print("    FAIL 残留服务无法删除")
+                    return 3
+            else:
+                print("    FAIL err=%d" % err)
+                return 3
         print("    OK service=%s bin=%s" % (SERVICE_NAME, bin_path))
 
         print("[3] StartServiceW...")
@@ -97,6 +192,11 @@ def main():
             err = _err()
             if err == 1056:  # ERROR_SERVICE_ALREADY_RUNNING
                 print("    已在运行 (1056)")
+            elif err == 1053:  # ERROR_SERVICE_REQUEST_TIMEOUT
+                # 被拉起的程序没有调用 StartServiceCtrlDispatcher，SCM 等不到
+                # RUNNING 上报而超时；但**进程已经被拉起并正在执行脚本**，
+                # 后续的状态轮询会等到它自然退出。此处视为成功。
+                print("    超时(1053)：程序未注册控制分发器，但进程已拉起，继续等待其结束")
             else:
                 print("    FAIL err=%d" % err)
                 return 4
@@ -129,7 +229,25 @@ def main():
         return 0
     finally:
         if hsvc:
+            # 先停止再删除：运行中的服务无法 DeleteService（会残留 marked-for-delete）
+            try:
+                _st2 = SERVICE_STATUS()
+                advapi32.ControlService(hsvc, SERVICE_CONTROL_STOP, ctypes.byref(_st2))
+                for _ in range(20):
+                    st = _query_state(hsvc)
+                    if st.dwCurrentState == SERVICE_STOPPED:
+                        break
+                    time.sleep(1)
+            except Exception:
+                pass
+            advapi32.DeleteService(hsvc)
             advapi32.CloseServiceHandle(hsvc)
+            hsvc = None
+        # sc.exe 兜底：确保 SCM 里不留残留条目
+        try:
+            _delete_existing(SERVICE_NAME)
+        except Exception:
+            pass
         advapi32.CloseServiceHandle(scm)
 
 

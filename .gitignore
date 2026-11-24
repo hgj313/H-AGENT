@@ -46,3 +46,23 @@ tunnel.log
 tunnel_url.txt
 tunnel_stdout.log
 tunnel_stderr.log
+
+# ---- 保险管理AI助手停用 / 飞书直连链路：运行时状态与日志（勿提交）----
+# 停用标记（写入即表示 8765 助手已下线）
+.assistant_disabled
+# 单实例锁
+.erp_feishu_direct_watchdog.lock
+.server.port.lock
+.watchdog.lock
+# 停用执行结果与日志
+_disable_result.json
+_elevated_run.log
+_sys_stage1.log
+_sys_stage1_result.json
+# 直连消费者运行日志 / 幂等映射 / 死信
+erp_feishu_direct.log
+erp_feishu_direct_watchdog.log
+feishu_direct_sync_map.json
+feishu_direct_dlq.jsonl
+punch_sink.log
+feishu_sync_map_sink.json
