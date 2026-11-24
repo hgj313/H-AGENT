@@ -82,7 +82,13 @@ class PolicyWriter:
             if key in existing:
                 if key in seen_keys:
                     continue  # 同一批内重复（防重复新增）
-                to_update.append({"record_id": existing[key], "fields": fields})
+                # 同一人可能有多条历史行 → 全部替换，保持数据一致
+                for rid in existing[key]:
+                    to_update.append({"record_id": rid, "fields": fields})
+                if len(existing[key]) > 1:
+                    logger.info(
+                        "人员 %s 在表中已有 %d 条历史行，全部替换", key, len(existing[key])
+                    )
             else:
                 if key in seen_keys:
                     continue
@@ -106,9 +112,14 @@ class PolicyWriter:
 
     # ==================== 内部工具 ====================
 
-    def _build_existing_index(self) -> Dict[str, str]:
-        """拉取工人保险清单全表，建立 姓名|证件号 → record_id 索引"""
-        index: Dict[str, str] = {}
+    def _build_existing_index(self) -> Dict[str, List[str]]:
+        """拉取工人保险清单全表，建立 姓名|证件号 → [record_id, ...] 索引
+
+        ⚠️ 同一(姓名|证件号)可能有多条历史行（不同保单周期各一行，实测有 32 组）。
+        因此索引存**列表**而非单个 record_id —— 否则只会更新第一条，
+        留下另一条半新半旧的数据（保单号/状态不一致）。
+        """
+        index: Dict[str, List[str]] = {}
         try:
             records = self._client.list_records(WORKER_INSURANCE_TABLE, page_size=500)
         except Exception as e:
@@ -120,9 +131,14 @@ class PolicyWriter:
             name = str(f.get("姓名", "") or "").strip()
             id_no = str(f.get("证件号码", "") or "").strip()
             key = self._dedup_key({"name": name, "id_number": id_no})
-            if key and key not in index:
-                index[key] = r["record_id"]
-        logger.info("工人保险清单去重索引：%d 条", len(index))
+            if key:
+                index.setdefault(key, []).append(r["record_id"])
+
+        multi = {k: v for k, v in index.items() if len(v) > 1}
+        logger.info(
+            "工人保险清单去重索引：%d 个键（其中 %d 个键对应多条历史行）",
+            len(index), len(multi),
+        )
         return index
 
     @staticmethod
