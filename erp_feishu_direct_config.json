@@ -1,0 +1,71 @@
+{
+  "mq": {
+    "backend": "rocketmq",
+    "protocol": "http",
+    "host": "http://1756405205604856.mqrest.cn-qingdao-public.aliyuncs.com",
+    "port": 80,
+    "instance_id": "MQ_INST_1756405205604856_BX7N4khY",
+    "access_key": "",
+    "secret_key": "",
+    "topic": "JS_PROD_MQ",
+    "tag": "CLOCK_RECORD_CREATE",
+    "group": "feishu-direct-sync",
+    "use_tls": false,
+    "max_consecutive_errors": 5
+  },
+  "feishu": {
+    "app_id": "",
+    "app_secret": "",
+    "app_token": "",
+    "table_id": "tbleBKDnu48DOwTV",
+    "table_name": "今日打卡数据",
+    "timeout": 15,
+    "field_mapping": {}
+  },
+  "batch": {
+    "window_seconds": 3,
+    "max_batch_size": 500,
+    "consume_batch": 16,
+    "wait_seconds": 3
+  },
+  "sync": {
+    "enabled": true,
+    "map_keep_days": 7,
+    "retry": 3,
+    "retry_backoff": 2.0,
+    "purge_history": true,
+    "purge_keep_days": 0
+  },
+  "rename": {
+    "employeeName": "memberName",
+    "idCard": "identificationNumber",
+    "employeeId": "memberId",
+    "project": "projectName",
+    "team": "teamName",
+    "supplier": "supplierName",
+    "category": "categoryName",
+    "phone": "telephone",
+    "clockTime": "punchTime",
+    "signTime": "punchTime",
+    "signInTime": "punchTime",
+    "attendTime": "punchTime",
+    "checkinTime": "punchTime",
+    "punchDateTime": "punchTime",
+    "firstPunchTime": "punchTime",
+    "lastPunchTime": "punchTime",
+    "projectManagerName": "projectManager",
+    "projectManagerPhone": "managerPhone",
+    "projectManagerEmail": "managerEmail",
+    "打卡时间": "punchTime",
+    "打卡日期": "punchTime"
+  },
+  "notes": [
+    "1. 【必做前置】阿里云 RocketMQ 控制台 → 消费者组 → 新建 feishu-direct-sync（订阅 tag 填 CLOCK_RECORD_CREATE）。不创建会报 AccessDenied: resource ... not created。",
+    "2. 【重要】mq.group 必须与现有 MQ 桥接（insurance-automation）不同，否则两条链路互相抢消息，各收一半。",
+    "3. 密钥走 .env 环境变量：ROCKETMQ_ACCESS_KEY / ROCKETMQ_SECRET_KEY / FEISHU_APP_ID / FEISHU_APP_SECRET / FEISHU_APP_TOKEN。",
+    "4. 目标表：飞书「保险」文档 → 「今日打卡数据」tbleBKDnu48DOwTV，13 列已于 2026-11-24 建好（打卡日期/打卡时间为日期型，其余为文本型）。",
+    "5. sync.purge_history=true：启动时与每日零点清理「打卡日期」早于今天的行。原因：幂等映射只保留 map_keep_days 天，过期后同一人的新打卡会被当成新行插入 → 不清理必然出现重复行。",
+    "6. 幂等映射文件 feishu_direct_sync_map.json 自动生成，记录 日期+身份证号 → 飞书 record_id。",
+    "7. 启动前先自检：H-AGENT\\.venv\\Scripts\\python.exe -m erp_feishu_direct.probe --write-test"
+  ]
+}

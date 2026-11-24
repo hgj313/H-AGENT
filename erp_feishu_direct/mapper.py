@@ -42,6 +42,45 @@ _FALLBACK_FIELDS = {
     "打卡时间": ("punchTime", "clockTime", "signTime", "attendTime", "punchDate"),
 }
 
+# 字段别名兜底链（第二道保险）
+# ---------------------------------------------------------------
+# rename 是「一对一重命名」，一旦 ERP 改了字段名或配置里漏配，
+# 对应列就会静默变空。这里给每个飞书列再挂一条候选链，
+# 逐个尝试直到取到非空值 —— 与 realtime_punch_consumer._pick 同一思路。
+# 注意：这些别名是 **rename 之后** 的键名（即 ERP 原始字段名）。
+_FIELD_ALIASES = {
+    "姓名": ("name", "employeeName", "member_name"),
+    "身份证号": ("idCard", "identification_number", "idNo", "idCardNo"),
+    "项目名称": ("project", "project_name"),
+    "班组": ("team", "team_name"),
+    "劳务公司": ("supplier", "supplier_name"),
+    "劳务分类": ("category", "category_name", "workType"),
+    "审核状态": ("examination_status", "examinationStatus", "examStatus"),
+    "电话": ("phone", "mobile", "tel"),
+    "项目经理": ("projectManagerName", "project_manager", "managerName"),
+    "项目经理手机": ("projectManagerPhone", "manager_phone", "managerMobile"),
+    "项目经理邮箱": ("projectManagerEmail", "manager_email", "managerMail"),
+    "打卡日期": ("punch_date", "date", "workDate"),
+    "打卡时间": ("punch_time", "clockTime", "signTime", "attendTime", "firstPunchTime"),
+}
+
+# ERP 偶尔会推送字符串 "undefined" / "null"（服务端字段没取到就直接拼字符串）。
+# 这些不是真实值，写进飞书会显示成 "undefined"，必须当成空值跳过。
+_NULL_LITERALS = {"undefined", "null", "none", "nil", "nan"}
+
+
+def _is_blank(value: Any) -> bool:
+    """判断是否为空值：None、空串、以及 "undefined"/"null" 这类假值字面量"""
+    if value is None:
+        return True
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return True
+        if s.lower() in _NULL_LITERALS:
+            return True
+    return False
+
 # 需要转毫秒时间戳的列
 DATE_FIELDS = {"打卡日期", "打卡时间"}
 
@@ -134,20 +173,37 @@ def to_date_millis(raw: Any) -> Optional[int]:
 def extract_punch_date(event: Dict[str, Any]) -> str:
     """提取打卡日期 YYYY-MM-DD
 
-    优先用事件自带的 punchDate；没有则从 punchTime 里取日期部分；
-    都没有则用当前日期（ERP 消息一般总会带其中之一）。
+    ⚠️ 这里必须同时处理 **字符串日期** 和 **数字毫秒时间戳** 两种形态：
+    ERP 推的 ``punchTime`` 是 13 位 int（实测 firstPunchTime=1795390205000），
+    只按字符串解析会拿不到日期，从而静默回落到「今天」——
+    对补发/重投的历史消息会导致幂等键错位、重复建行。
+
+    优先用事件自带的 punchDate；没有则从打卡时间里取；都没有才用当前日期。
     """
-    raw = event.get("punchDate")
-    if raw:
+    # 1) 优先取显式的日期字段
+    for key in ("punchDate", "punchDateTime", "punch_date", "workDate", "date"):
+        raw = event.get(key)
+        if _is_blank(raw):
+            continue
         s = str(raw).strip()
         if len(s) >= 10 and s[4] in "-/" and s[7] in "-/":
             return s[:10].replace("/", "-")
+        ms = to_millis(raw)
+        if ms is not None:
+            return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d")
 
-    punch_time = event.get("punchTime")
-    if punch_time:
-        s = str(punch_time).strip()
+    # 2) 再从打卡时间戳里推导
+    for key in ("punchTime", "punch_time", "clockTime", "signTime",
+                "attendTime", "firstPunchTime", "lastPunchTime"):
+        raw = event.get(key)
+        if _is_blank(raw):
+            continue
+        s = str(raw).strip()
         if len(s) >= 10 and s[4] in "-/" and s[7] in "-/":
             return s[:10].replace("/", "-")
+        ms = to_millis(raw)
+        if ms is not None:
+            return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d")
 
     return datetime.now().strftime("%Y-%m-%d")
 
@@ -170,17 +226,20 @@ def build_fields(
 
     for feishu_col, erp_key in mapping.items():
         raw = event.get(erp_key)
-        if raw is None or raw == "":
-            # 主字段缺失 → 按兜底链依次尝试（ERP 消息常只带 punchTime）
-            for alt_key in _FALLBACK_FIELDS.get(feishu_col, ()):
+        if _is_blank(raw):
+            # 第一道兜底：打卡日期/打卡时间 的通用候选链
+            candidates = list(_FALLBACK_FIELDS.get(feishu_col, ()))
+            # 第二道兜底：字段别名链（防 rename 漏配 / ERP 改名）
+            candidates += list(_FIELD_ALIASES.get(feishu_col, ()))
+            for alt_key in candidates:
                 if alt_key == erp_key:
                     continue
                 alt = event.get(alt_key)
-                if alt is not None and alt != "":
+                if not _is_blank(alt):
                     raw = alt
                     break
 
-        if raw is None or raw == "":
+        if _is_blank(raw):
             continue
 
         if feishu_col in DATE_FIELDS:

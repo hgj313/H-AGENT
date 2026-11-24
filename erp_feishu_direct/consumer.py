@@ -48,6 +48,7 @@ from erp_feishu_direct.config import (
     missing_keys,
 )
 from erp_feishu_direct.mapper import normalize_events
+from erp_feishu_direct.purge import purge_history
 from erp_feishu_direct.store import SyncMapStore
 from erp_feishu_direct.writer import FeishuWriter
 
@@ -152,7 +153,8 @@ def _build_writer(cfg: Dict[str, Any]) -> FeishuWriter:
     return FeishuWriter(
         client=client,
         store=store,
-        field_mapping=None,
+        # 留空则用 mapper.DEFAULT_FIELD_MAPPING（13 列）
+        field_mapping=(fs.get("field_mapping") or None),
         table_id=fs.get("table_id", ""),
         max_batch_size=int(cfg.get("batch", {}).get("max_batch_size", 500)),
         retry=int(cfg.get("sync", {}).get("retry", 3)),
@@ -226,6 +228,34 @@ def run(cfg: Dict[str, Any]) -> int:
     writer = _build_writer(cfg)
     rename = cfg.get("rename", {}) or {}
 
+    # ---- 历史行清理 ----
+    # 幂等映射只保留 map_keep_days 天，过期后同一人的新打卡会被当成新行插入，
+    # 旧行又删不掉 → 同一人两行且无法自愈。所以每天必须清掉过期日期的行。
+    sync_cfg = cfg.get("sync", {}) or {}
+    purge_enabled = bool(sync_cfg.get("purge_history", True))
+    purge_keep_days = int(sync_cfg.get("purge_keep_days", 0))
+    last_purge_day = ""
+
+    def _do_purge(reason: str) -> None:
+        nonlocal last_purge_day
+        try:
+            res = purge_history(
+                writer._client,                      # noqa: SLF001
+                cfg["feishu"].get("table_id", ""),
+                keep_days=purge_keep_days,
+            )
+            last_purge_day = time.strftime("%Y-%m-%d")
+            if res.get("deleted"):
+                logger.info("[历史清理:%s] 边界 %s 之前，删除 %d 条（表内 %d 条）",
+                            reason, res.get("cutoff_date"), res.get("deleted"), res.get("total"))
+        except Exception as e:  # noqa: BLE001
+            logger.warning("[历史清理:%s] 失败（不影响实时同步）: %s", reason, e)
+
+    if purge_enabled:
+        _do_purge("启动")
+    else:
+        logger.info("已关闭历史行清理（sync.purge_history=false）")
+
     pending: List[Dict[str, Any]] = []
     last_flush = time.time()
     consecutive_errors = 0
@@ -236,6 +266,12 @@ def run(cfg: Dict[str, Any]) -> int:
     _STATS["started_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
 
     while not _STOP.is_set():
+        # 跨天检测：日期一变就清一次历史行（保证表里始终是「今日」数据）
+        if purge_enabled:
+            today = time.strftime("%Y-%m-%d")
+            if today != last_purge_day:
+                _do_purge("跨天")
+
         # 心跳：即使没消息也每 5 分钟打一次，便于确认进程存活
         if time.time() - last_heartbeat >= heartbeat_interval:
             logger.info(

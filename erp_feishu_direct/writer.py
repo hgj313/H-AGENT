@@ -229,10 +229,11 @@ class FeishuWriter:
         for punch_date, day_pairs in pairs.items():
             self._store.set_many(punch_date, day_pairs)
 
-        if len(pairs) < len(create_rows):
+        total_mapped = sum(len(v) for v in pairs.values())
+        if total_mapped < len(create_rows):
             logger.warning(
                 "映射回写不完整: %d/%d 条拿到 record_id",
-                sum(len(v) for v in pairs.values()), len(create_rows),
+                total_mapped, len(create_rows),
             )
 
     def _write_dlq(self, items: List, action: str) -> None:

@@ -65,6 +65,8 @@ def default_config() -> Dict[str, Any]:
             "table_id": "",
             "table_name": "",
             "timeout": 15,
+            # 可选：飞书列名 → ERP 标准字段名；留空则用 mapper.DEFAULT_FIELD_MAPPING
+            "field_mapping": {},
         },
         # 攒批参数：MQ 逐条推送，飞书批量写入，用滑动窗口合并
         "batch": {
@@ -81,6 +83,11 @@ def default_config() -> Dict[str, Any]:
             "retry_backoff": 2.0,
         },
         # ERP 字段名 → 本地标准字段名（沿用桥接程序的 rename 思路）
+        # ⚠️ 实测 ERP 推送的打卡消息里，项目经理三字段用的是
+        #    projectManagerName / projectManagerPhone / projectManagerEmail，
+        #    与 mapper.DEFAULT_FIELD_MAPPING 期望的 projectManager /
+        #    managerPhone / managerEmail 不同名 —— 缺这三条会导致
+        #    「项目经理」「项目经理手机」「项目经理邮箱」三列全空。
         "rename": {
             "employeeName": "memberName",
             "idCard": "identificationNumber",
@@ -98,6 +105,10 @@ def default_config() -> Dict[str, Any]:
             "punchDateTime": "punchTime",
             "firstPunchTime": "punchTime",
             "lastPunchTime": "punchTime",
+            # —— 项目经理三字段（实测 ERP 实际字段名）——
+            "projectManagerName": "projectManager",
+            "projectManagerPhone": "managerPhone",
+            "projectManagerEmail": "managerEmail",
             "打卡时间": "punchTime",
             "打卡日期": "punchTime",
         },
