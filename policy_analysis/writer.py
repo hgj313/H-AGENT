@@ -10,7 +10,9 @@
 """
 
 import logging
-from typing import Any, Dict, List
+import re
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 from .config import (
     INSURANCE_POLICY_TABLE,
@@ -21,6 +23,47 @@ from .config import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def to_date_millis(raw: Any) -> Optional[int]:
+    """把日期值转成飞书日期字段接受的 13 位毫秒时间戳
+
+    飞书日期字段（type=5）只接受 int 毫秒时间戳，传字符串报 1254064。
+    支持 'YYYY-MM-DD' / 'YYYY/MM/DD' / 'YYYY.MM.DD' / 10 位秒 / 13 位毫秒。
+    解析失败返回 None（该列不写入，避免污染）。
+    """
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        val = int(raw)
+        return val * 1000 if val < 10_000_000_000 else val
+
+    s = str(raw).strip()
+    if not s:
+        return None
+    s = s.replace("/", "-").replace(".", "-")
+    # 去掉可能带的时间部分（日期字段只要日期）
+    if " " in s:
+        s = s.split(" ")[0]
+    if "T" in s:
+        s = s.split("T")[0]
+
+    if s.isdigit() and len(s) in (10, 13):
+        val = int(s)
+        return val * 1000 if len(s) == 10 else val
+
+    m = re.match(r"^(\d{4})-(\d{1,2})-(\d{1,2})$", s)
+    if not m:
+        logger.warning("无法解析为日期，跳过该字段: %r", raw)
+        return None
+    try:
+        dt = datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        logger.warning("非法日期，跳过该字段: %r", raw)
+        return None
+    return int(dt.timestamp() * 1000)
 
 
 class PolicyWriter:
@@ -164,8 +207,10 @@ class PolicyWriter:
             "出生日期": p.get("birth_date", ""),
             "所属公司": p.get("company", ""),
             STATUS_FIELD: p.get("status", "正常"),
-            "起始时间": start,
-            "起止时间": end,
+            # ⚠️ 起始时间 / 起止时间 已是**日期型字段**（type=5），
+            #    必须传 13 位毫秒时间戳（int），传字符串报 1254064。
+            "起始时间": to_date_millis(start),
+            "起止时间": to_date_millis(end),
             "岗位名称": p.get("job_title", ""),
             "保险公司": policy_info.get("insurance_company", ""),
             "保单类型": policy_info.get("policy_type", ""),
