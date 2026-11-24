@@ -136,11 +136,16 @@ def main():
             log(f"启动保单分析监听 (python -m {MODULE}) ...")
             try:
                 log_file = open(LOG_PATH, "a", encoding="utf-8")
+                # ⚠️ Windows 上 Python stdout 默认 GBK；直接重定向到 UTF-8 文件句柄
+                #    会写出乱码。强制子进程用 UTF-8 输出。
+                env = dict(os.environ)
+                env["PYTHONIOENCODING"] = "utf-8"
                 proc = subprocess.Popen(
                     [PYTHON, "-u", "-m", MODULE],
                     cwd=HERE,
                     stdout=log_file,
                     stderr=log_file,
+                    env=env,
                     creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
                 )
                 log_file.close()

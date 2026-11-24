@@ -102,6 +102,22 @@ def _query_state(hsvc):
     return st
 
 
+def _sc(*args):
+    """调用 sc.exe 并自适应解码（Windows 原生命令输出为 GBK）"""
+    import subprocess
+    try:
+        r = subprocess.run(["sc.exe"] + list(args), capture_output=True, timeout=30)
+        raw = r.stdout + r.stderr
+        for enc in ("utf-8", "gb18030"):
+            try:
+                return r.returncode, raw.decode(enc)
+            except UnicodeDecodeError:
+                continue
+        return r.returncode, raw.decode("gb18030", errors="replace")
+    except Exception as e:
+        return -1, "failed: %r" % (e,)
+
+
 def _delete_existing(name):
     """删除可能残留的同名服务（ERROR_SERVICE_EXISTS / marked-for-delete 残留）。
 
@@ -109,21 +125,6 @@ def _delete_existing(name):
     访问冲突，sc.exe 的 stop+delete 语义更稳（运行中则标记删除，停止后消失）。
     返回 True 表示已清理干净。
     """
-    import subprocess
-
-    def _sc(*args):
-        try:
-            r = subprocess.run(["sc.exe"] + list(args), capture_output=True, timeout=30)
-            raw = r.stdout + r.stderr
-            for enc in ("utf-8", "gb18030"):
-                try:
-                    return r.returncode, raw.decode(enc)
-                except UnicodeDecodeError:
-                    continue
-            return r.returncode, raw.decode("gb18030", errors="replace")
-        except Exception as e:
-            return -1, "failed: %r" % (e,)
-
     rc, out = _sc("stop", name)
     print("    sc stop -> rc=%s %s" % (rc, out.strip()[:120]))
     time.sleep(2)
@@ -203,18 +204,34 @@ def main():
         print("    OK")
 
         print("[4] 等待服务执行完毕...")
+        # ⚠️ 一次性服务（DEMAND_START + ERROR_NORMAL）在最后一个服务进程退出后，
+        #    SCM 会**自动删除该服务**，hsvc 句柄随即陈旧 →
+        #    QueryServiceStatusEx 会抛 "access violation" SEH。
+        #    因此状态判定统一走 sc.exe query（子进程方式，稳定且能区分
+        #    1060=已删除 / 1072=标记删除），不再用陈旧句柄查状态。
         deadline = time.time() + 180
         last_state = None
+        gone_markers = ("1060", "1072", "does not exist", "未安装", "标记为删除")
         while time.time() < deadline:
-            st = SERVICE_STATUS()
-            advapi32.QueryServiceStatusEx(hsvc, 0, ctypes.byref(st), ctypes.sizeof(st), None)
-            if st.dwCurrentState != last_state:
+            rc_q, out_q = _sc("query", SERVICE_NAME)
+            if any(m in out_q for m in gone_markers):
+                print("    服务已从 SCM 消失（脚本执行完毕，SCM 自动删除）")
+                break
+            state = None
+            for line in out_q.splitlines():
+                t = line.strip()
+                if t.upper().startswith("STATE"):
+                    for tok in t.replace(":", " ").split():
+                        if tok.isdigit():
+                            state = int(tok)
+                            break
+                    break
+            if state is not None and state != last_state:
                 names = {SERVICE_RUNNING: "RUNNING", SERVICE_STOPPED: "STOPPED",
                          SERVICE_START_PENDING: "START_PENDING", SERVICE_STOP_PENDING: "STOP_PENDING"}
-                print("    state=%s exit=%d" % (names.get(st.dwCurrentState, st.dwCurrentState),
-                                              st.dwWin32ExitCode))
-                last_state = st.dwCurrentState
-            if st.dwCurrentState == SERVICE_STOPPED:
+                print("    state=%s" % names.get(state, state))
+                last_state = state
+            if state == SERVICE_STOPPED:
                 break
             time.sleep(2)
         else:
@@ -230,6 +247,7 @@ def main():
     finally:
         if hsvc:
             # 先停止再删除：运行中的服务无法 DeleteService（会残留 marked-for-delete）
+            # ⚠️ 句柄可能已因 SCM 自动删除而陈旧 → 所有 ctypes 调用都要兜异常
             try:
                 _st2 = SERVICE_STATUS()
                 advapi32.ControlService(hsvc, SERVICE_CONTROL_STOP, ctypes.byref(_st2))
@@ -240,8 +258,14 @@ def main():
                     time.sleep(1)
             except Exception:
                 pass
-            advapi32.DeleteService(hsvc)
-            advapi32.CloseServiceHandle(hsvc)
+            try:
+                advapi32.DeleteService(hsvc)
+            except Exception:
+                pass
+            try:
+                advapi32.CloseServiceHandle(hsvc)
+            except Exception:
+                pass
             hsvc = None
         # sc.exe 兜底：确保 SCM 里不留残留条目
         try:
