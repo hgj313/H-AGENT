@@ -51,10 +51,13 @@ def default_config() -> Dict[str, Any]:
             "tag": "CLOCK_RECORD_CREATE",
             # ⚠️ 必须与现有 MQ 桥接（insurance-automation）使用**不同的消费组**，
             #    否则两条链路会互相抢消息，导致各自只收到一半。
+            #    例外：旧桥接确认下线后，可设 allow_shared_group=true 复用该组。
             # ⚠️ 阿里云 RocketMQ 的消费组必须**先在控制台创建**，否则消费时报
             #    AccessDenied: resource MQ_INST_xxx%<group> not created。
             #    命名风格与现有实例保持一致（无 GID_ 前缀）。
             "group": "feishu-direct-sync",
+            # 允许与现有 MQ 桥接共用消费组（仅当旧桥接确认已停用时才可为 true）
+            "allow_shared_group": False,
             "use_tls": False,
             "max_consecutive_errors": 5,
         },

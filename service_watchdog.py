@@ -25,6 +25,12 @@ BRIDGE_SCRIPT = r"insurance_agent\tools\mq_punch_bridge.py"
 BRIDGE_LOG_PATH = r"C:\insurance-automation\mq_bridge_stderr.log"
 BRIDGE_RESTART_DELAY = 5  # bridge 崩溃后多久重启（秒）
 
+# ---- 全局停用标记 ----
+# 2026-11-24：打卡数据改由 erp_feishu_direct 直连飞书多维表格，
+# 本地保险管理AI助手（8765 服务 + MQ bridge）整体下线。
+# 创建该文件后，本 watchdog 不再拉起 server / bridge；删除则恢复。
+DISABLE_FLAG = r"C:\insurance-automation\.assistant_disabled"
+
 # 健康检查：不仅检测进程是否退出，还检测服务是否「假死」（端口在但接口无响应）
 HEALTH_URL = "http://127.0.0.1:8765/api/health"
 HEALTH_INTERVAL = 15    # 运行中每隔多少秒做一次健康检查（秒）
@@ -297,6 +303,10 @@ def log(msg: str):
 
 
 def main():
+    # 全局停用标记：存在则本 watchdog 直接退出，不再拉起 server / bridge
+    if os.path.exists(DISABLE_FLAG):
+        log(f"检测到停用标记 {DISABLE_FLAG}，保险管理AI助手已停用，watchdog 退出。")
+        return
     if _self_yield_to_venv():
         return
     log("=== watchdog 启动，监控保险管理AI助手服务 + MQ bridge（生命周期联动）===")

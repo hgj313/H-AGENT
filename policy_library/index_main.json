@@ -31213,7 +31213,7 @@
     },
     {
       "file_name": "保单·李正雄0929-1228.pdf",
-      "file_path": "C:\\windows\\TEMP\\insurance_upload_gjy5w_6y\\保单·李正雄0929-1228.pdf",
+      "file_path": "C:\\windows\\TEMP\\insurance_upload_s5mg3b7g\\保单·李正雄0929-1228.pdf",
       "stored_path": "C:\\insurance-automation\\policy_library\\保单·李正雄0929-1228.pdf",
       "policy_type": "保单",
       "policy_number": "PZFZ26440137230000000075",
@@ -34431,7 +34431,7 @@
     },
     {
       "file_name": "电子保单_成都林盛鑫屹园林绿化工程有限公司_小微_12652416800201450969_lnl.pdf",
-      "file_path": "C:\\windows\\TEMP\\insurance_upload_f1_l4ryw\\电子保单_成都林盛鑫屹园林绿化工程有限公司_小微_12652416800201450969_lnl.pdf",
+      "file_path": "C:\\windows\\TEMP\\insurance_upload_ma32q8_d\\电子保单_成都林盛鑫屹园林绿化工程有限公司_小微_12652416800201450969_lnl.pdf",
       "stored_path": "C:\\insurance-automation\\policy_library\\电子保单_成都林盛鑫屹园林绿化工程有限公司_小微_12652416800201450969_lnl.pdf",
       "policy_type": "保单",
       "policy_number": "12652416800201450969",
@@ -55541,6 +55541,127 @@
         {
           "name": "向邦清",
           "id_number": "51253519710219061X",
+          "modification_type": "增保"
+        }
+      ]
+    },
+    {
+      "file_name": "保单-重庆塑景建筑劳务有限公司-8116013100260154864000.pdf",
+      "file_path": "C:\\windows\\TEMP\\insurance_upload__wmky1ub\\保单-重庆塑景建筑劳务有限公司-8116013100260154864000.pdf",
+      "stored_path": "C:\\insurance-automation\\policy_library\\保单-重庆塑景建筑劳务有限公司-8116013100260154864000.pdf",
+      "policy_type": "保单",
+      "policy_number": "8116013100260154864000",
+      "main_policy_number": "",
+      "company": "重庆塑景建筑劳务有限公司",
+      "insurance_company": "利宝保险",
+      "start_date": "2026-11-25",
+      "end_date": "2026-12-24",
+      "endorsement_effective_date": "2026-11-25",
+      "persons_count": 21,
+      "persons": [
+        {
+          "name": "刘汉芬",
+          "id_number": "51230119710114166X",
+          "modification_type": "增保"
+        },
+        {
+          "name": "唐志田",
+          "id_number": "51230119650202163X",
+          "modification_type": "增保"
+        },
+        {
+          "name": "彭胜洪",
+          "id_number": "512301196502099074",
+          "modification_type": "增保"
+        },
+        {
+          "name": "刘文环",
+          "id_number": "512301197104118457",
+          "modification_type": "增保"
+        },
+        {
+          "name": "黄廷碧",
+          "id_number": "512301196308027843",
+          "modification_type": "增保"
+        },
+        {
+          "name": "马成义",
+          "id_number": "510229196906102443",
+          "modification_type": "增保"
+        },
+        {
+          "name": "谭钦佑",
+          "id_number": "513031196508013772",
+          "modification_type": "增保"
+        },
+        {
+          "name": "喻文锋",
+          "id_number": "510230196112264657",
+          "modification_type": "增保"
+        },
+        {
+          "name": "谢秀国",
+          "id_number": "510230196412074652",
+          "modification_type": "增保"
+        },
+        {
+          "name": "赵永国",
+          "id_number": "510230196704153870",
+          "modification_type": "增保"
+        },
+        {
+          "name": "王兴益",
+          "id_number": "512301196307063121",
+          "modification_type": "增保"
+        },
+        {
+          "name": "郑桂琼",
+          "id_number": "51303119730922378X",
+          "modification_type": "增保"
+        },
+        {
+          "name": "陈容",
+          "id_number": "513031197405293788",
+          "modification_type": "增保"
+        },
+        {
+          "name": "肖显琼",
+          "id_number": "510230196412114845",
+          "modification_type": "增保"
+        },
+        {
+          "name": "谭显万",
+          "id_number": "513031196504303772",
+          "modification_type": "增保"
+        },
+        {
+          "name": "何世平",
+          "id_number": "512301196304019192",
+          "modification_type": "增保"
+        },
+        {
+          "name": "谭钦富",
+          "id_number": "513031196312143778",
+          "modification_type": "增保"
+        },
+        {
+          "name": "夏明朴",
+          "id_number": "512301197011162838",
+          "modification_type": "增保"
+        },
+        {
+          "name": "周秀容",
+          "id_number": "512301196903128024",
+          "modification_type": "增保"
+        },
+        {
+          "name": "夏启华",
+          "id_number": "510224196408043733",
+          "modification_type": "增保"
+        },
+        {
+          "name": "钱小容",
+          "id_number": "512301196901153365",
           "modification_type": "增保"
         }
       ]

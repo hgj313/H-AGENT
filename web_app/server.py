@@ -2639,6 +2639,16 @@ if __name__ == "__main__":
     import os as _os
     import sys as _sys
 
+    # 全局停用标记（2026-11-24：打卡数据改由 erp_feishu_direct 直连飞书多维表格，
+    # 本地保险管理AI助手整体下线）。存在则拒绝启动，避免被任何 watchdog 误拉起。
+    _DISABLE_FLAG = _os.path.join(
+        _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+        ".assistant_disabled",
+    )
+    if _os.path.exists(_DISABLE_FLAG):
+        print(f"[disabled] 检测到停用标记 {_DISABLE_FLAG}，8765 服务不再启动。")
+        _sys.exit(0)
+
     # 单实例端口锁：OS 级原子创建，确保全局只有一个 server 能绑定 8765。
     # 多 watchdog（venv/uv）可能同时拉起多个 server 进程，抢不到锁的立即退出，
     # 避免「地址已被占用」崩溃循环；持有锁的 server 常驻服务。

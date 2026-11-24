@@ -306,12 +306,20 @@ def check_mq(cfg: Dict[str, Any], ck: Checker) -> None:
     group = mq["group"]
 
     # 与现有桥接组重名会互相抢消息 → 致命配置错误，必须拦下
+    # 例外：配置里显式 allow_shared_group=true（旧桥接已确认下线）
     if group in _BRIDGE_GROUPS:
-        ck.add("error", "消费组与现有 MQ 桥接重名",
-               f"group={group} 是保险AI助手桥接正在使用的消费组。\n"
-               "       → 同一消费组内会互相抢消息，各自只收到一半。"
-               "直连链路必须使用**另一个**消费组")
-        return
+        if not mq.get("allow_shared_group"):
+            ck.add("error", "消费组与现有 MQ 桥接重名",
+                   f"group={group} 是保险AI助手桥接正在使用的消费组。\n"
+                   "       → 同一消费组内会互相抢消息，各自只收到一半。"
+                   "直连链路必须使用**另一个**消费组；\n"
+                   "         若旧桥接已确认下线，可在配置里设 mq.allow_shared_group=true")
+            return
+        ck.add("warn", "消费组与旧 MQ 桥接重名（配置已显式允许）",
+               f"group={group}\n"
+               "       → 前提：旧桥接进程确实已停止。两者同时在跑会各收一半消息。")
+    else:
+        ck.add("ok", "消费组与现有 MQ 桥接不同名", f"group={group}")
 
     try:
         from mq_http_sdk.mq_client import MQClient
