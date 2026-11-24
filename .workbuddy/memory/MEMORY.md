@@ -115,6 +115,25 @@ PDF：PyMuPDF 文字层 + 扫描件 MiniMax-M3 视觉 OCR。LangGraph：policy_p
 - 局限：一次一条、只能新增、限 10 QPS → **不适合全量打卡同步**（449 条/天）
 - `feishu-uploader-plugin/` 是飞书多维表格**自动化插件**（附件 PDF → 本地 /api/upload），方向相反
 - ⚠️ 待建：全量打卡同步应走 **Bitable 开放 API**（tenant_access_token + app_token + table_id + batch_create/batch_update，单次 500 条）
+- ⚠️ **webhook 通道推英文 key**（`name/project_name/team_name/...`），**Bitable API 通道推中文列名**（`姓名/项目名称/...`）→ 两套命名**不可混用**
+- ⚠️ webhook 通道**零映射能力**（payload 扁平原样透传）；Bitable API 通道靠 `field_mapping` 字典显式映射
+- ⚠️ Bitable API 通道**未部署**（无 `.feishu_bitable.json`、无 `feishu_punch_sync_map` 表）
+
+## 飞书 webhook「字段缺失」根因（2026-11-24 定论）
+- ⚠️ **webhook 返回 `code=0` ≠ 字段落库** —— 触发器**不校验字段**（实测塞入完全
+  不存在的字段也返回 code=0），落库靠自动化流程的 **「输出设置」JSON Schema + 逐列映射**
+- **schema 是一次性快照且不可修改**：「输出设置」监听最近 3 分钟内发到该 webhook 的
+  最新一条请求生成示例结构；下游「添加记录」**只能引用 schema 内已声明的字段**；
+  改 schema 会让旧引用失效 → **payload 字段集变更后必须重新生成 schema + 重新绑列**，
+  否则新字段**静默丢失（不报错）**
+- 典型症状：表格「项目/班组/劳务公司」等列空，但推送日志显示成功
+- 三层判定法（`tools/diag_feishu_fields.py`）：① 本地 `punch_records` 字段空值
+  → ② 实发 payload 字段与值 → ③ 飞书映射层；前两层正常即锁定第三层
+- 修复（需用户在飞书端操作）：输出设置→用完整 11 字段 payload 重新生成 schema
+  →「添加记录」逐列重绑 → 跑 `--probe` 看自检行哪些列有值 → 删自检行
+- ⚠️ `800005651` **不在飞书官方错误码表**（官方仅 646/647/649/650/652 + 6003）；
+  实测特征 = **汇总链路批量突发推送撞限流**（单流程 5 次/秒），非字段问题
+- ⚠️ `punch_records` 每天 00:00 清空昨日（`days_to_keep=1`）→ **历史打卡无法回溯**
 
 ## 飞书直连链路（ERP MQ → 飞书，独立进程）
 - 目录 `erp_feishu_direct/`：**不经过 8765、不写 SQLite**，纯内存直传 + JSON 幂等映射
@@ -136,10 +155,17 @@ PDF：PyMuPDF 文字层 + 扫描件 MiniMax-M3 视觉 OCR。LangGraph：policy_p
   - 提权到 Administrator 后 `AdjustTokenPrivileges` → **1300 ERROR_NOT_ALL_ASSIGNED**（本机未分配 SeDebugPrivilege）
   - ✅ **可行方案**：注册一次性 **SYSTEM 计划任务**执行终止脚本 → watchdog 检测 `proc.poll()!=None` → 3s 后自动拉起
     - `tools/system_restart_service.py`（终止进程+清理端口锁）+ `tools/system_restart_service.ps1`（注册/触发/注销任务）
+      - ⚠️ 该 py **只能由 SYSTEM 计划任务调用**，手工运行必 `OpenProcess 失败 (err=0)`（权限不足）
+      - ⚠️ 其 `OpenProcess`/`TerminateProcess` **必须显式设 argtypes/restype**
+        （64 位 HANDLE 截断 → 表现为 err=0 的假失败；修后 `TerminateProcess -> True`）
+    - `tools/elevate_restart.bat` + `tools/elevate_restart.py`：提权入口
+      （Python 内部 subprocess 调 powershell，继承管理员令牌）
     - ⚠️ `schtasks.exe` 被 **Program Blacklist** 阻止 → 用 PowerShell cmdlet `Register-ScheduledTask`（走 COM API，不受影响）
+      - ⚠️ 非管理员下 `Register-ScheduledTask` → `拒绝访问 0x80070005` → 必须提权
     - ⚠️ `.ps1` 必须**纯 ASCII**（PowerShell 5.1 按 GBK 读，中文乱码会破坏引号 → ParserError）
-    - ⚠️ PowerShell 工具拦截 `Start-Process powershell.exe` → 改用 `Start-Process python.exe -Verb RunAs`，
-      由 Python 内部 subprocess 调 powershell（继承管理员令牌）
+    - ⚠️ PowerShell 工具**同时拦截** `Start-Process powershell.exe` **和** `Start-Process python.exe`
+      → 用 `.bat` 包装（`Start-Process xxx.bat -Verb RunAs` 可过）；Bash 调 powershell 也被拦
+    - ⚠️ `.server.port.lock` 清理报 `[WinError 32]`（文件被占用）→ **无害**，watchdog 拉起时自行处理
   - `tools/restart_service_8765.py`（普通权限版，用于非 SYSTEM 进程）：纯 ctypes 启用 SeDebugPrivilege
     - ⚠️ ctypes **必须显式设 argtypes/restype**，否则 64 位 HANDLE 被截断 → `OpenProcessToken` 报 err=6
     - ⚠️ 控制台 GBK：`print("❌")` 会抛 UnicodeEncodeError 中断脚本 → `sys.stdout.reconfigure(encoding="utf-8", errors="replace")`

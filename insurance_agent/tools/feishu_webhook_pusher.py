@@ -107,6 +107,53 @@ def _format_punch_time_for_feishu(raw: str) -> str:
 
 logger = logging.getLogger("feishu_webhook_pusher")
 
+# 推送时用于人眼核对的关键字段（顺序对齐飞书表格常见列序）
+# 用途：成功日志把「实际发出的字段」全量摊开，避免出现
+# 「飞书某列为空 → 却无法判断是本地没给、还是飞书没落」的黑箱。
+_LOG_FIELDS = (
+    ("name", "姓名"),
+    ("id_number", "身份证号"),
+    ("project_name", "项目"),
+    ("team_name", "班组"),
+    ("supplier_name", "劳务公司"),
+    ("category_name", "劳务分类"),
+    ("project_manager", "项目经理"),
+    ("manager_phone", "经理手机"),
+    ("manager_email", "经理邮箱"),
+    ("punch_time", "打卡时间"),
+    ("punch_date", "打卡日期"),
+)
+
+
+def _format_fields_summary(payload: dict, max_len: int = 24) -> str:
+    """把 payload 的关键字段压成一行可读摘要，并标出空字段。
+
+    ⚠️ 排查飞书「列缺值」时，这是唯一能区分三种根因的手段：
+      ① 本地就没值（字段空）② 发出去了但飞书没落（schema/列类型问题）
+      ③ 字段名对不上（key 与表格列名不匹配）
+    """
+    if not isinstance(payload, dict):
+        return ""
+    known = {k for k, _ in _LOG_FIELDS}
+    parts = []
+    empty = []
+    for key, label in _LOG_FIELDS:
+        val = payload.get(key)
+        s = "" if val is None else str(val).strip()
+        if not s:
+            empty.append(label)
+            continue
+        parts.append(f"{label}={s[:max_len]}")
+    # payload 里出现但不在白名单中的额外字段（如 source）也一并显示
+    for k in payload:
+        if k in known:
+            continue
+        s = str(payload.get(k) or "").strip()
+        if s:
+            parts.append(f"{k}={s[:max_len]}")
+    tail = f" | 空字段: {','.join(empty)}" if empty else ""
+    return " | ".join(parts) + tail
+
 # 配置 / DLQ 路径
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CONFIG_PATH = os.path.join(_BASE_DIR, ".feishu_webhook.json")
@@ -353,8 +400,9 @@ class FeishuWebhookPusher:
                         self._stats["last_sent_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         _log(
                             f"[{source}] 推送成功 | client_token={headers['Client-Token'][:12]}... | "
-                            f"name={send_payload.get('name', '')} | punch_time={send_payload.get('punch_time', '')}"
-                            f"（原始值: {payload.get('punch_time', '')}）"
+                            f"字段数={len(send_payload)} | "
+                            f"{_format_fields_summary(send_payload)} | "
+                            f"punch_time原始值={payload.get('punch_time', '')}"
                         )
                         return
                     # 业务错误：不重试，落 DLQ

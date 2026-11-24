@@ -27,6 +27,7 @@ watchdog 检测到服务退出（proc.poll() != None）后会自动拉起新进�
 配套：tools/restart_service_8765.py 是**普通权限**版本（用于非 SYSTEM 进程）。
 """
 import ctypes
+import ctypes.wintypes
 import os
 import subprocess
 import sys
@@ -89,26 +90,40 @@ def main() -> int:
     log(f"目标 PID: {pid}")
 
     PROCESS_TERMINATE = 0x0001
-    handle = ctypes.windll.kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+
+    # ⚠️ 必须显式声明 argtypes/restype：
+    #    64 位 Windows 上 HANDLE 是 64 位，默认 restype=c_int 会把它截断成
+    #    32 位 → OpenProcess 返回垃圾句柄或 NULL（表现为 err=0 的假失败）。
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenProcess.argtypes = [ctypes.wintypes.DWORD, ctypes.wintypes.BOOL,
+                                      ctypes.wintypes.DWORD]
+    kernel32.OpenProcess.restype = ctypes.wintypes.HANDLE
+    kernel32.TerminateProcess.argtypes = [ctypes.wintypes.HANDLE, ctypes.wintypes.UINT]
+    kernel32.TerminateProcess.restype = ctypes.wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+    kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
+
+    handle = kernel32.OpenProcess(PROCESS_TERMINATE, False, pid)
     if not handle:
         log(f"OpenProcess 失败 (err={ctypes.get_last_error()})")
         return 1
     try:
-        ok = ctypes.windll.kernel32.TerminateProcess(handle, 1)
+        ok = kernel32.TerminateProcess(handle, 1)
         log(f"TerminateProcess -> {bool(ok)}")
         if not ok:
             return 1
     finally:
-        ctypes.windll.kernel32.CloseHandle(handle)
+        kernel32.CloseHandle(handle)
 
     # 等待进程真正退出（watchdog 靠 proc.poll() 感知）
     for _ in range(20):
         time.sleep(0.5)
-        h = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        h = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
         if not h:
             log("目标进程已退出")
             break
-        ctypes.windll.kernel32.CloseHandle(h)
+        kernel32.CloseHandle(h)
     else:
         log("⚠️ 目标进程 10s 后仍存活")
 
