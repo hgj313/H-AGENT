@@ -66,3 +66,12 @@ feishu_direct_sync_map.json
 feishu_direct_dlq.jsonl
 punch_sink.log
 feishu_sync_map_sink.json
+
+# ---- 本地保单导入（policy_analysis）运行产物：含姓名/证件号/保单号，勿提交 ----
+_local_import_analysis.json
+_local_import_analysis.json.bak2
+_local_import_upload.json
+_verify_e2e_report.json
+_policy_diff_result.json
+_att_cache/
+import_local_pdfs.log

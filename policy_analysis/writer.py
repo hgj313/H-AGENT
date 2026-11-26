@@ -11,6 +11,7 @@
 
 import logging
 import re
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -23,6 +24,63 @@ from .config import (
 )
 
 logger = logging.getLogger(__name__)
+
+# 飞书瞬时错误码：偶发，重试即可
+#   1254045 FieldNameNotFound —— 实测批量 create 偶发，逐条重试必成功
+#   1254607 Data not ready     —— 元信息未就绪
+#   1254291 rate limited       —— 频率限制
+_RETRYABLE_CODES = (1254045, 1254607, 1254291, 99991400)
+_RETRY_TIMES = 3
+_RETRY_BACKOFF = 1.5
+
+
+def _is_retryable(exc: Exception) -> bool:
+    code = getattr(exc, "code", None)
+    return code in _RETRYABLE_CODES
+
+
+def _batch_with_fallback(op, records: List[dict], table_id: str,
+                         label: str) -> List[dict]:
+    """批量写入 + 降级：批量失败则退避重试，仍失败则逐条写入
+
+    飞书 batch_create/batch_update 偶发返回 1254045 FieldNameNotFound，
+    但同一条记录单独写入必定成功 —— 因此必须有逐条降级兜底。
+
+    Returns:
+        成功写入的记录列表；逐条阶段仍有失败时抛 RuntimeError（调用方据此记账）
+    """
+    if not records:
+        return []
+    try:
+        return op(records, table_id=table_id)
+    except Exception as e:
+        if not _is_retryable(e):
+            raise
+        logger.warning("%s 批量失败(%s)，退避重试", label, e)
+        for attempt in range(2, _RETRY_TIMES + 1):
+            time.sleep(_RETRY_BACKOFF * attempt)
+            try:
+                return op(records, table_id=table_id)
+            except Exception as e2:
+                if not _is_retryable(e2):
+                    raise
+                logger.warning("%s 第 %d 次重试仍失败: %s", label, attempt, e2)
+
+    # 逐条降级
+    logger.warning("%s 降级为逐条写入（%d 条）", label, len(records))
+    out: List[dict] = []
+    failed: List[str] = []
+    for rec in records:
+        try:
+            out.extend(op([rec], table_id=table_id))
+        except Exception as e3:
+            logger.error("%s 逐条写入失败 %s: %s", label,
+                         rec.get("record_id", "?"), e3)
+            failed.append(str(e3))
+    if failed:
+        raise RuntimeError("%s 逐条写入仍失败 %d/%d 条: %s"
+                           % (label, len(failed), len(records), failed[:3]))
+    return out
 
 
 def to_date_millis(raw: Any) -> Optional[int]:
@@ -89,10 +147,11 @@ class PolicyWriter:
             return False
 
         try:
-            self._client.batch_update(
+            _batch_with_fallback(
+                self._client.batch_update,
                 [{"record_id": record_id, "fields": fields}],
-                table_id=INSURANCE_POLICY_TABLE,
-            )
+                INSURANCE_POLICY_TABLE,
+                "回写保险单号/批单号")
             logger.info("已回写保险单表 record_id=%s fields=%s", record_id, fields)
             return True
         except Exception as e:
@@ -101,18 +160,23 @@ class PolicyWriter:
 
     # ==================== 工人保险清单表：人员回写（去重） ====================
 
-    def write_persons(self, persons: List[dict], policy_info: Dict[str, Any]) -> Dict[str, int]:
+    def write_persons(self, persons: List[dict], policy_info: Dict[str, Any],
+                      index: Optional[Dict[str, List[str]]] = None) -> Dict[str, int]:
         """回写人员清单，返回 {"created": n, "updated": n}
 
         policy_info 需含：main_policy_number / batch_policy_number / policy_type /
         insurance_company / overall_start_date / overall_end_date
+
+        index: 可选的外部索引 {去重键: [record_id, ...]}。
+            ⚠️ 批量场景必须传入，否则每个文件都要拉一次全表（2482 条）建索引，
+            N 个文件 = N 次全表扫描。传入后会就地增量维护（新增记录也写回索引）。
         """
         if not persons:
             return {"created": 0, "updated": 0}
 
-        existing = self._build_existing_index()
+        existing = index if index is not None else self._build_existing_index()
 
-        to_create: List[dict] = []
+        to_create: List[tuple] = []   # (去重键, fields)
         to_update: List[dict] = []
         seen_keys = set()
 
@@ -135,23 +199,56 @@ class PolicyWriter:
             else:
                 if key in seen_keys:
                     continue
-                to_create.append({"fields": fields})
+                # ⚠️ 这里存**纯 fields**，不要包 {"fields": ...}：
+                #    下面 batch_create 还会再包一层，双重包装会变成
+                #    {"fields": {"fields": {...}}} → 飞书报 1254045 FieldNameNotFound
+                to_create.append((key, fields))
             seen_keys.add(key)
 
         created = updated = 0
+        new_records = []
         if to_create:
             try:
-                created = len(self._client.batch_create(to_create, table_id=WORKER_INSURANCE_TABLE))
+                new_records = _batch_with_fallback(
+                    self._client.batch_create,
+                    [{"fields": f} for _, f in to_create],
+                    WORKER_INSURANCE_TABLE,
+                    "批量新增人员")
+                created = len(new_records)
             except Exception as e:
                 logger.exception("批量新增人员失败: %s", e)
+                created = -1   # -1 = 失败（区别于「确实 0 条」）
         if to_update:
             try:
-                updated = len(self._client.batch_update(to_update, table_id=WORKER_INSURANCE_TABLE))
+                updated = len(_batch_with_fallback(
+                    self._client.batch_update,
+                    to_update,
+                    WORKER_INSURANCE_TABLE,
+                    "批量更新人员"))
             except Exception as e:
                 logger.exception("批量更新人员失败: %s", e)
+                updated = -1
+
+        # 增量维护索引：把本批**实际写入成功**的人员写回，供下一批复用
+        # （避免重复全表扫描）
+        #
+        # ⚠️ 绝不能对「创建失败」的 key 做 setdefault —— 那会让后续文件把
+        #    表里根本不存在的记录误判为「已存在」，转而去 update 一个
+        #    无效的 record_id，导致人员静默丢失。
+        if index is not None:
+            for (key, _), rec in zip(to_create, new_records or []):
+                rid = (rec.get("record_id") or rec.get("id")) if isinstance(rec, dict) else None
+                if rid:
+                    existing.setdefault(key, [])
+                    if rid not in existing[key]:
+                        existing[key].append(rid)
+            # 命中已有行（update）的 key 已在索引里，无需处理
 
         logger.info("人员回写完成：新增 %d，替换 %d", created, updated)
-        return {"created": created, "updated": updated}
+        stat = {"created": created, "updated": updated}
+        if created < 0 or updated < 0:
+            stat["error"] = "写入失败（详见日志）"
+        return stat
 
     # ==================== 内部工具 ====================
 

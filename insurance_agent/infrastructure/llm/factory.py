@@ -187,16 +187,37 @@ def create_llm(config: LLMConfig) -> Any:
     return get_llm_factory().create(config)
 
 
-def create_minimax_llm_from_env() -> Any:
+def create_minimax_llm_from_env(max_tokens: Optional[int] = None,
+                                timeout: Optional[float] = None) -> Any:
     """从环境变量创建 MiniMax LLM（便捷函数）
 
     读取 MINIMAX_API_KEY, MINIMAX_BASE_URL_ANTHROPIC 等环境变量。
     需要先 load_dotenv() 加载 .env 文件。
+
+    Args:
+        max_tokens: 单次响应最大 token 数。缺省读环境变量 MINIMAX_MAX_TOKENS，
+            都没有则用 4000。
+            ⚠️ 4000 对「一次性输出几十上百人 JSON」的场景会截断，
+            提取类任务建议显式传 32000。
+        timeout: 单次请求超时秒数。缺省读环境变量 MINIMAX_TIMEOUT，都没有则 60s。
+            ⚠️ 60s 对大清单提取会误报 APITimeoutError（实测 220 人要 56~60s，
+            正好卡在边界），提取类任务建议显式传 600。
     """
     import os
     api_key = os.getenv("MINIMAX_API_KEY")
     if not api_key:
         raise ValueError("MINIMAX_API_KEY 未配置，请检查 .env 文件")
+
+    if max_tokens is None:
+        env_mt = os.getenv("MINIMAX_MAX_TOKENS")
+        max_tokens = int(env_mt) if env_mt and env_mt.isdigit() else None
+
+    if timeout is None:
+        env_to = os.getenv("MINIMAX_TIMEOUT")
+        try:
+            timeout = float(env_to) if env_to else None
+        except ValueError:
+            timeout = None
 
     protocol = "anthropic"
     base_url = os.getenv("MINIMAX_BASE_URL_ANTHROPIC") or os.getenv("MINIMAX_BASE_URL_OPENAI")
@@ -213,5 +234,7 @@ def create_minimax_llm_from_env() -> Any:
         api_key=api_key,
         base_url=base_url,
         protocol=protocol,
+        max_tokens=max_tokens if max_tokens else 4000,
+        timeout=timeout if timeout else 60.0,
     )
     return create_llm(config)

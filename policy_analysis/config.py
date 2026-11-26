@@ -45,6 +45,15 @@ PROCESSED_STATE_PATH = os.path.join(PROJECT_ROOT, "policy_analysis_processed.jso
 # 轮询间隔（秒）
 POLL_INTERVAL = 30
 
+# 单次 LLM 响应最大 token 数。
+# 220 人的雇员清单 JSON ≈ 44K 字符 ≈ 15.5K token，4000 会直接截断 → 解析失败。
+LLM_MAX_TOKENS = 32000
+
+# 单次 LLM 请求超时（秒）。
+# ⚠️ 默认 60s 对大清单会误报 APITimeoutError：实测 220 人一次要 56~60s，
+# 正好卡在边界 → 时好时坏。给足余量。
+LLM_TIMEOUT = 600
+
 # 日志
 LOG_PATH = os.path.join(PROJECT_ROOT, "policy_analysis.log")
 
@@ -83,7 +92,14 @@ def load_llm_env() -> None:
 
 
 def create_llm_client():
-    """创建 MiniMax-M3 LLM 客户端（全量使用 MiniMax，无其他 provider）"""
+    """创建 MiniMax-M3 LLM 客户端（全量使用 MiniMax，无其他 provider）
+
+    ⚠️ max_tokens / timeout 都必须放大：
+    - max_tokens：默认 4000 装不下「一次性输出几十上百人 JSON」
+      （220 人 ≈ 15.5K token），响应会被截断 → JSON 解析失败 →
+      所有字段为空（表现为「提取到 0 人、保险公司为空、保单类型落到默认主保单」）。
+    - timeout：默认 60s，而 220 人单次就要 56~60s，正好卡在超时边界 → 时好时坏。
+    """
     load_llm_env()
     from insurance_agent.infrastructure.llm.factory import create_minimax_llm_from_env
-    return create_minimax_llm_from_env()
+    return create_minimax_llm_from_env(max_tokens=LLM_MAX_TOKENS, timeout=LLM_TIMEOUT)

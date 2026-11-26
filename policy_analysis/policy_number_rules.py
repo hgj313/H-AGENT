@@ -63,6 +63,18 @@ _DIGIT_LEAD_RULES = {"8": "主", "7": "批"}
 # 号段最小长度（太短容易把金额、年份、页码误当号）
 _MIN_NO_LEN = 12
 
+# 纯 32 位 hex 串 = md5 摘要（下载器/系统生成的随机文件名），绝不会是保单号
+_HEX32_RE = re.compile(r"^[0-9a-fA-F]{32}$")
+
+# 号后缀：`-2` / `-001` / `-112` 等批改序号
+_NO_SUFFIX = r"(?:-[A-Z0-9]{1,4})?"
+
+# 主保单号标签（长的排前面：「保单号码」必须先于「保单号」，
+# 否则 re 的最左优先会先命中「保单号」而漏掉后面的「码」字）
+_MAIN_LABEL_RE = (
+    r"(?:保险单号|保险合同号|保单号码|保单号)[：:\s]*([A-Z0-9]{12,30}%s)" % _NO_SUFFIX
+)
+
 _BATCH_NAME_PATTERN = re.compile(r"批单|批改|替换|批增|批减")
 
 
@@ -92,6 +104,8 @@ def extract_numbers_from_filename(file_name: str) -> Tuple[str, str]:
     name = re.sub(r"\.(pdf|PDF)$", "", file_name)
 
     candidates = re.findall(r"[A-Za-z0-9]{%d,}" % _MIN_NO_LEN, name)
+    # 过滤 md5 摘要型文件名（32 位纯 hex）
+    candidates = [c for c in candidates if not _HEX32_RE.match(c)]
     if not candidates:
         return "", ""
 
@@ -132,10 +146,11 @@ def extract_numbers_from_text(text: str) -> Tuple[str, List[str]]:
     if not text:
         return "", []
 
+    # 标签后允许「-序号」后缀：批单号常写作 662290212192026BZN00000765-004
     batch_labels = (
-        r"批单号码[：:\s]*([A-Z0-9]{12,30})",
-        r"批单号[：:\s]*([A-Z0-9]{12,30})",
-        r"业务凭证号[：:\s]*([A-Z0-9]{12,30})",
+        r"批单号码[：:\s]*([A-Z0-9]{12,30}%s)" % _NO_SUFFIX,
+        r"批单号[：:\s]*([A-Z0-9]{12,30}%s)" % _NO_SUFFIX,
+        r"业务凭证号[：:\s]*([A-Z0-9]{12,30}%s)" % _NO_SUFFIX,
     )
 
     batch_no = ""
@@ -146,12 +161,32 @@ def extract_numbers_from_text(text: str) -> Tuple[str, List[str]]:
             break
 
     all_nos: List[str] = []
-    for m in re.finditer(r"保险单号[：:\s]*([A-Z0-9]{12,30})", text):
+    for m in re.finditer(_MAIN_LABEL_RE, text):
         no = m.group(1)
         if no not in all_nos:
             all_nos.append(no)
 
     return batch_no, all_nos
+
+
+def _pick_more_specific(a: str, b: str) -> str:
+    """在两个候选号中选「更完整」的那个
+
+    当一个是另一个的前缀时（例如
+        文件名 `662290212192026BZN00000765`
+        正文   `662290212192026BZN00000765-004`）
+    取带后缀的更完整值 —— 批改序号是号码的一部分，截断等于丢信息。
+    两者互不相关时按传入顺序取 a。
+    """
+    if not a:
+        return b
+    if not b:
+        return a
+    if b.startswith(a):
+        return b
+    if a.startswith(b):
+        return a
+    return a
 
 
 def resolve_policy_numbers(text: str, file_name: str = "") -> Tuple[str, str, str]:
@@ -181,10 +216,11 @@ def resolve_policy_numbers(text: str, file_name: str = "") -> Tuple[str, str, st
             text_batch = only
 
     if tag_batch:
-        text_batch = tag_batch
+        text_batch = _pick_more_specific(text_batch, tag_batch)
 
-    main_no = file_main or text_main
-    batch_no = file_batch or text_batch
+    # 文件名号与正文号互为前缀时，取更完整（含批改序号）的那个
+    main_no = _pick_more_specific(text_main, file_main)
+    batch_no = _pick_more_specific(file_batch, text_batch)
 
     # 兜底：正文里有多个号
     if main_no and not batch_no:
